@@ -1,0 +1,77 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f4f7f9;
+    color: #333;
+    margin: 0;
+    padding: 2rem;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background-color: #ffffff;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+h1, h2 {
+    color: #1a253c;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+#requests-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+#requests-table th, #requests-table td {
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+#requests-table th {
+    background-color: #f8fafc;
+    font-weight: 600;
+}
+
+#requests-table tbody tr:hover {
+    background-color: #f1f5f9;
+}
+
+.status {
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+.status-pending_payment { background-color: #fffbeb; color: #b45309; }
+.status-op_return_broadcasted { background-color: #dcfce7; color: #166534; }
+.status-op_return_failed { background-color: #fee2e2; color: #991b1b; }
+/* Add other statuses as needed */
+
+.button-fulfill {
+    background-color: #2563eb;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background-color 0.2s;
+}
+
+.button-fulfill:hover {
+    background-color: #1d4ed8;
+}
+
+.button-fulfill:disabled {
+    background-color: #94a3b8;
+    cursor: not-allowed;
+}

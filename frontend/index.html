@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Time Capsule</title>
+    <link rel="stylesheet" href="css/styles.css"> 
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Digital Time Capsule</h1>
+        </header>
+
+        <main class="card">
+            <div id="compose-step" class="wizard-step active">
+                <h2 class="step-title">Step 1: Compose Your Immortal Message</h2>
+                <textarea id="message-input" placeholder="Write your message here. It will be preserved forever on the Bitcoin blockchain..."></textarea>
+                <div class="controls">
+                    <div id="byte-counter" class="counter">
+                        <span id="byte-counter-span">0 / 80 bytes</span>
+                        <div class="progress-bar-container">
+                            <div id="progress-bar" class="progress-bar"></div>
+                        </div>
+                    </div>
+                    <button id="seal-message-button" class="button-primary">Seal Your Message</button>
+                </div>
+            </div>
+
+            <div id="sealing-step" class="wizard-step">
+                <h2 class="step-title">Step 2: The Sealing Ceremony</h2>
+                <p class="review-prompt">You are about to permanently inscribe the following message onto the Bitcoin blockchain. This action is irreversible.</p>
+                <div class="message-review-box">
+                    <p id="final-message-review"></p>
+                </div>
+                <div class="button-group">
+                    <button id="cancel-step2-button" class="button-secondary" style="background: #d9534f; border-color: #d9534f;">Cancel</button>
+                    <button id="edit-message-button" class="button-secondary">Edit Message</button>
+                    <button id="confirm-seal-button" class="button-primary">Confirm & Immortalize!</button>
+                </div>
+            </div>
+
+            <div id="payment-step" class="wizard-step">
+                <h2 class="step-title">Step 3: Provide Payment</h2>
+                <p class="payment-prompt">To complete the process, send exactly <strong id="required-amount" class="highlight">...</strong> to the address below.</p>
+                <div id="qrcode"></div>
+                <div class="address-container" style="display: flex; align-items: center; gap: 10px; margin-bottom: 1.5rem;">
+                    <div id="payment-address" class="address-box" style="margin-bottom: 0; flex-grow: 1;">...</div>
+                    <button id="copy-address-button" class="button-secondary" style="padding: 8px 12px;" title="Copy Address">
+                        📋
+                    </button>
+                </div>
+                <div class="status-box">
+                    <p id="payment-status-display">Waiting for payment...</p>
+                    <div id="processing-indicator" class="spinner" style="display: none;"></div>
+                </div>
+                <div class="button-group" style="margin-top: 20px; justify-content: center;">
+                    <button id="cancel-step3-button" class="button-secondary" style="background: #d9534f; border-color: #d9534f;">Cancel Request</button>
+                </div>
+            </div>
+
+            <div id="success-step" class="wizard-step">
+                <h2 class="step-title success-title">🚀 Message Immortalized! 🚀</h2>
+                <p>Congratulations! Your message is now a permanent part of the Bitcoin blockchain.</p>
+                <div class="tx-info">
+                    <strong>Transaction ID:</strong>
+                    <span id="final-tx-id" class="tx-id"></span>
+                    <a id="explorer-link" href="#" target="_blank" class="explorer-link">View on Block Explorer</a>
+                </div>
+                <button id="create-new-message-button" class="button-primary">Immortalize Another Message</button>
+            </div>
+        </main>
+        <footer>
+            <p>&copy; 2025 Digital Time Capsule</p>
+        </footer>
+    </div>
+    <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
+    <script src="js/app.js"></script> 
+</body>
+</html>

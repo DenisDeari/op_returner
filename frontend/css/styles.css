@@ -1,0 +1,267 @@
+/* General Body Styles */
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: #0c1021;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    background-image: url('https://www.transparenttextures.com/patterns/stardust.png');
+}
+
+.container {
+    width: 100%;
+    max-width: 600px;
+    text-align: center;
+    padding: 2rem;
+}
+
+/* Header and Title */
+header h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 3rem;
+    color: #ff9900;
+    text-shadow: 0 0 10px #ff9900, 0 0 20px #ff9900;
+    margin-bottom: 0.5rem;
+}
+
+.subtitle {
+    font-size: 1.2rem;
+    color: #a0a0c0;
+    margin-bottom: 2rem;
+}
+
+/* Main Content Card */
+.card {
+    background: rgba(23, 28, 58, 0.7);
+    border: 1px solid #ff9900;
+    border-radius: 15px;
+    padding: 2rem;
+    box-shadow: 0 0 25px rgba(255, 153, 0, 0.3);
+    backdrop-filter: blur(10px);
+}
+
+/* Text Area */
+#message-input {
+    width: 100%;
+    height: 200px;
+    background-color: rgba(10, 15, 40, 0.8);
+    border: 1px dashed #4a5588;
+    border-radius: 10px;
+    padding: 1rem;
+    font-family: 'Roboto', sans-serif;
+    font-size: 1rem;
+    color: #e0e0e0;
+    resize: none;
+    box-sizing: border-box;
+    margin-bottom: 1rem;
+}
+
+#message-input:focus {
+    outline: none;
+    border: 1px solid #ff9900;
+    box-shadow: 0 0 10px rgba(255, 153, 0, 0.5);
+}
+
+/* Controls section */
+.controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+}
+
+/* Byte Counter */
+.counter {
+    font-size: 0.9rem;
+    color: #a0a0c0;
+    flex-grow: 1;
+    text-align: left;
+}
+
+.progress-bar-container {
+    background-color: #0c1021;
+    border-radius: 5px;
+    height: 10px;
+    margin-top: 5px;
+    overflow: hidden;
+    border: 1px solid #4a5588;
+}
+
+.progress-bar {
+    width: 0;
+    height: 100%;
+    background: linear-gradient(90deg, #ff9900, #ff5f6d);
+    transition: width 0.3s ease-in-out;
+}
+
+/* Buttons */
+.button-primary {
+    background: linear-gradient(45deg, #ff7e5f, #feb47b);
+    color: #111;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(255, 126, 95, 0.4);
+}
+
+.button-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(255, 126, 95, 0.6);
+}
+
+/* Footer */
+footer {
+    margin-top: 2rem;
+}
+
+footer a {
+    color: #a0a0c0;
+    text-decoration: none;
+    transition: color 0.3s;
+}
+
+footer a:hover {
+    color: #ff9900;
+}
+
+/* Wizard Flow */
+.wizard-step {
+    display: none; /* Hide all steps by default */
+    animation: fadeIn 0.5s;
+}
+
+.wizard-step.active {
+    display: block; /* Show only the active step */
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.step-title {
+    font-size: 1.5rem;
+    color: #ff9900;
+    margin-bottom: 1.5rem;
+}
+
+/* Step 2: Sealing Ceremony */
+.review-prompt {
+    margin-bottom: 1rem;
+    color: #a0a0c0;
+}
+.message-review-box {
+    background-color: rgba(10, 15, 40, 0.9);
+    border: 1px solid #4a5588;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    min-height: 100px;
+    white-space: pre-wrap; /* Preserves line breaks from the textarea */
+    word-wrap: break-word;
+    text-align: left;
+    color: #e0e0e0;
+}
+.button-group {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.button-secondary {
+    background: transparent;
+    border: 1px solid #4a5588;
+    color: #a0a0c0;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+.button-secondary:hover {
+    background-color: #4a5588;
+    color: #fff;
+}
+
+
+/* Step 3: Payment */
+.payment-prompt {
+    margin-bottom: 1.5rem;
+}
+.highlight {
+    color: #ff9900;
+    font-weight: bold;
+}
+#qrcode {
+    margin: 1rem auto;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 8px;
+    display: inline-block;
+}
+.address-box {
+    background: rgba(10, 15, 40, 0.9);
+    border: 1px solid #4a5588;
+    padding: 0.75rem;
+    border-radius: 5px;
+    font-family: monospace;
+    word-break: break-all;
+    margin-bottom: 1.5rem;
+}
+.status-box {
+    min-height: 50px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+}
+
+/* Spinner for processing indicator */
+.spinner {
+    border: 4px solid rgba(255, 255, 255, 0.2);
+    border-left-color: #ff9900;
+    border-radius: 50%;
+    width: 30px;
+    height: 30px;
+    animation: spin 1s linear infinite;
+    margin-top: 10px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+
+/* Step 4: Success */
+.success-title {
+    color: #28a745; /* Green for success */
+    text-shadow: 0 0 10px #28a745;
+}
+.tx-info {
+    margin: 2rem 0;
+    background: rgba(10, 15, 40, 0.9);
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 5px solid #28a745;
+}
+.tx-id {
+    font-family: monospace;
+    word-break: break-all;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+.explorer-link {
+    color: #ff9900;
+    text-decoration: none;
+    font-weight: bold;
+}
+.explorer-link:hover {
+    text-decoration: underline;
+}
