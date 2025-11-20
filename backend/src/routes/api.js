@@ -14,20 +14,26 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         }
         const webhookUrl = `${config.WEBHOOK_RECEIVER_BASE_URL}/api/webhook/payment-notification`;
         const apiUrl = `${config.BLOCKCYPHER_API_BASE}/hooks?token=${config.BLOCKCYPHER_TOKEN}`;
-        const payload = { event: "confirmed-tx", address: btcAddress, url: webhookUrl };
         
-        console.log(`Registering webhook for ${btcAddress}...`);
-        try {
-            const response = await axios.post(apiUrl, payload);
-            console.log(`Successfully registered webhook. ID: ${response.data.id}`);
-            return response.data.id;
-        } catch (error) {
-            console.error("Error registering webhook:", error.message);
-            if (error.response) {
-                console.error('API Error Status:', error.response.status, 'Data:', error.response.data);
+        const events = ["unconfirmed-tx", "confirmed-tx"];
+        const hookIds = [];
+
+        console.log(`Registering webhooks for ${btcAddress}...`);
+
+        for (const eventType of events) {
+            const payload = { event: eventType, address: btcAddress, url: webhookUrl };
+            try {
+                const response = await axios.post(apiUrl, payload);
+                console.log(`Successfully registered ${eventType} webhook. ID: ${response.data.id}`);
+                hookIds.push(response.data.id);
+            } catch (error) {
+                console.error(`Error registering ${eventType} webhook:`, error.message);
+                if (error.response) {
+                    console.error('API Error Status:', error.response.status, 'Data:', error.response.data);
+                }
             }
-            return null;
         }
+        return hookIds.length > 0 ? hookIds.join(',') : null;
     }
 
     // --- API Endpoints ---
@@ -74,13 +80,13 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     });
 
     router.post('/message-request', async (req, res) => {
-        const { message } = req.body;
+        const { message, targetAddress } = req.body;
         if (!message || Buffer.byteLength(message, 'utf8') > 80) {
             return res.status(400).json({ error: "Message is required and must be under 80 bytes." });
         }
 
         try {
-            const result = await requestQueue.add(message, db, rootNode, config);
+            const result = await requestQueue.add(message, targetAddress, db, rootNode, config);
             
             const hookId = await registerWebhook(result.address);
             if (hookId) {

@@ -19,6 +19,12 @@
             <div id="compose-step" class="wizard-step active">
                 <h2 class="step-title">Step 1: Compose Your Immortal Message</h2>
                 <textarea id="message-input" placeholder="Write your message here. It will be preserved forever on the Bitcoin blockchain..."></textarea>
+                
+                <div class="input-group" style="margin-top: 1rem;">
+                    <label for="target-address-input" style="display: block; margin-bottom: 0.5rem; color: #a0a0a0;">Target Address (Optional)</label>
+                    <input type="text" id="target-address-input" placeholder="e.g. bc1q..." style="width: 100%; padding: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 4px;">
+                </div>
+
                 <div class="controls">
                     <div id="byte-counter" class="counter">
                         <span id="byte-counter-span">0 / 80 bytes</span>
@@ -74,7 +80,7 @@
             </div>
         </main>
         <footer>
-            <p>&copy; 2025 Digital Time Capsule</p>
+            <p>If you encounter any issues, please contact support@op-return.app</p>
         </footer>
     </div>
     <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>

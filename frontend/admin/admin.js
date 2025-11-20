@@ -1,8 +1,18 @@
 // frontend/admin/admin.js
 document.addEventListener('DOMContentLoaded', () => {
     const requestsBody = document.getElementById('requests-body');
+    const modal = document.getElementById('detail-modal');
+    const modalBody = document.getElementById('modal-body');
+    const closeButton = document.querySelector('.close-button');
     const API_BASE_URL = '/api/admin';
     let adminPassword = null;
+    let allRequests = []; // Store requests locally
+
+    // Close modal logic
+    closeButton.onclick = () => modal.style.display = "none";
+    window.onclick = (event) => {
+        if (event.target == modal) modal.style.display = "none";
+    }
 
     async function fetchRequests() {
         if (!adminPassword) {
@@ -31,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const requests = await response.json();
+            allRequests = requests; // Store for detail view
             renderRequests(requests); // Call the function to display the data
         } catch (error) {
             requestsBody.innerHTML = `<tr><td colspan="6">Error loading requests: ${error.message}</td></tr>`;
@@ -51,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td><span class="status status-${req.status}">${req.status.replace(/_/g, ' ')}</span></td>
                 <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${req.opReturnTxId}" target="_blank">${req.opReturnTxId.substring(0, 10)}...</a>` : 'N/A'}</td>
                 <td>
+                    <button class="button-details" data-id="${req.id}" style="background-color: #5bc0de; margin-right: 5px;">Details</button>
                     ${(req.status === 'payment_confirmed' || req.status === 'op_return_failed') ? 
                     `<button class="button-fulfill" data-id="${req.id}">Manually Fulfill</button>` : ''}
                     <button class="button-delete" data-id="${req.id}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
@@ -59,9 +71,71 @@ document.addEventListener('DOMContentLoaded', () => {
         `).join('');
     }
 
+    async function showDetails(requestId) {
+        const req = allRequests.find(r => r.id === requestId);
+        if (!req) return;
+
+        modal.style.display = "block";
+        modalBody.innerHTML = '<p>Loading transaction history...</p>';
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/address-transactions/${req.address}`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+            
+            let txHistoryHtml = '';
+            if (response.ok) {
+                const data = await response.json();
+                if (data.txs && data.txs.length > 0) {
+                    txHistoryHtml = `<ul class="tx-list">
+                        ${data.txs.map(tx => `
+                            <li class="tx-item">
+                                <strong>TXID:</strong> <a href="https://mempool.space/tx/${tx.hash}" target="_blank">${tx.hash.substring(0, 20)}...</a><br>
+                                <strong>Amount:</strong> ${tx.total} sats<br>
+                                <strong>Confirmations:</strong> ${tx.confirmations}<br>
+                                <strong>Time:</strong> ${tx.confirmed ? new Date(tx.confirmed).toLocaleString() : 'Unconfirmed'}
+                            </li>
+                        `).join('')}
+                    </ul>`;
+                } else {
+                    txHistoryHtml = '<p>No transactions found for this address.</p>';
+                }
+            } else {
+                txHistoryHtml = `<p style="color: red;">Error fetching transactions: ${response.statusText}</p>`;
+            }
+
+            modalBody.innerHTML = `
+                <div class="detail-section">
+                    <h3>General Info</h3>
+                    <p><strong>ID:</strong> ${req.id}</p>
+                    <p><strong>Status:</strong> ${req.status}</p>
+                    <p><strong>Created At:</strong> ${new Date(req.createdAt).toLocaleString()}</p>
+                    <p><strong>Message:</strong> ${req.message}</p>
+                </div>
+                <div class="detail-section">
+                    <h3>Payment Info</h3>
+                    <p><strong>Address:</strong> ${req.address}</p>
+                    <p><strong>Required Amount:</strong> ${req.requiredAmountSatoshis} sats</p>
+                </div>
+                <div class="detail-section">
+                    <h3>Transaction History (from Blockchain)</h3>
+                    ${txHistoryHtml}
+                </div>
+            `;
+
+        } catch (error) {
+            modalBody.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+        }
+    }
+
     requestsBody.addEventListener('click', async (event) => {
+        const detailsButton = event.target.closest('.button-details');
         const fulfillButton = event.target.closest('.button-fulfill');
         const deleteButton = event.target.closest('.button-delete');
+
+        if (detailsButton) {
+            showDetails(detailsButton.dataset.id);
+        }
 
         if (fulfillButton) {
             const button = fulfillButton;

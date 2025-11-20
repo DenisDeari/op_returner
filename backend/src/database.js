@@ -45,6 +45,15 @@ function initializeDatabase() {
             process.exit(1);
         }
         console.log("Table 'requests' created or already exists.");
+        
+        // Add targetAddress column if it doesn't exist
+        db.run("ALTER TABLE requests ADD COLUMN targetAddress TEXT", (err) => {
+            if (err && !err.message.includes("duplicate column name")) {
+                console.error("Error adding targetAddress column:", err.message);
+            } else {
+                console.log("Column 'targetAddress' checked/added.");
+            }
+        });
     });
 }
 

@@ -10,7 +10,7 @@ async function processNextInQueue(db, rootNode, config) {
         return;
     }
     isProcessing = true;
-    const { message, resolve, reject } = requestProcessingQueue.shift();
+    const { message, targetAddress, resolve, reject } = requestProcessingQueue.shift();
 
     try {
         const lastIdxRow = await new Promise((res, rej) => {
@@ -28,12 +28,12 @@ async function processNextInQueue(db, rootNode, config) {
         const address = bitcoin.payments.p2wpkh({ pubkey: pubkeyBuffer, network: config.NETWORK }).address;
         // --- END OF FIX ---
 
-        const requiredAmountSatoshis = 1000;
+        const requiredAmountSatoshis = 2000; // Increased to cover potential target output
         const newRequestId = uuidv4();
 
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString()];
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null];
         await new Promise((res, rej) => {
-            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
+            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });
         
         console.log(`[Queue] New request processed: ID ${newRequestId}`);
@@ -50,9 +50,9 @@ async function processNextInQueue(db, rootNode, config) {
     }
 }
 
-function add(message, db, rootNode, config) {
+function add(message, targetAddress, db, rootNode, config) {
     return new Promise((resolve, reject) => {
-        requestProcessingQueue.push({ message, resolve, reject });
+        requestProcessingQueue.push({ message, targetAddress, resolve, reject });
         console.log(`[Queue] Added to queue. Length: ${requestProcessingQueue.length}`);
         processNextInQueue(db, rootNode, config);
     });

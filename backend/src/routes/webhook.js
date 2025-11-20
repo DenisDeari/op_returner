@@ -28,7 +28,10 @@ function createWebhookRouter(db, rootNode, config) {
 
                     if (req) {
                         console.log(`[Webhook] Found matching request ID ${req.id} for address ${targetAddress}`);
-                        if (confirmations >= 1 && output.value >= req.requiredAmountSatoshis) {
+                        
+                        const isSufficientAmount = output.value >= req.requiredAmountSatoshis;
+
+                        if (confirmations >= 1 && isSufficientAmount) {
                             console.log(`[Webhook] Payment VALID for request ${req.id}`);
                             await new Promise((resolve, reject) => {
                                 db.run('UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ? AND (status = ? OR status = ?)',
@@ -36,6 +39,15 @@ function createWebhookRouter(db, rootNode, config) {
                             });
                             paymentProcessedForRequestObject = { ...req, paymentTxId: txHash };
                             break; // Address processed, break inner loop
+                        } else if (confirmations === 0 && isSufficientAmount) {
+                            console.log(`[Webhook] Unconfirmed payment detected for request ${req.id}`);
+                            if (req.status === 'pending_payment') {
+                                await new Promise((resolve, reject) => {
+                                    db.run('UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ?', 
+                                    ['payment_detected', txHash, req.id], (err) => err ? reject(err) : resolve());
+                                });
+                                console.log(`[Webhook] Request ${req.id} status updated to payment_detected.`);
+                            }
                         }
                     }
                 }

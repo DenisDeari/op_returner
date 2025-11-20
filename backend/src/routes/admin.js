@@ -1,5 +1,6 @@
 // backend/src/routes/admin.js
 const express = require('express');
+const axios = require('axios'); // Import axios
 const opReturnCreator = require('../op_return_creator');
 
 function createAdminRouter(db, rootNode, config) {
@@ -23,7 +24,7 @@ function createAdminRouter(db, rootNode, config) {
     router.get('/requests', protect, async (req, res) => { // Apply the corrected middleware
         try {
             const rows = await new Promise((resolve, reject) => {
-                db.all("SELECT id, message, status, createdAt, opReturnTxId, address, requiredAmountSatoshis FROM requests ORDER BY createdAt DESC", [], (err, rows) => {
+                db.all("SELECT * FROM requests ORDER BY createdAt DESC", [], (err, rows) => {
                     if (err) return reject(err);
                     resolve(rows);
                 });
@@ -31,6 +32,22 @@ function createAdminRouter(db, rootNode, config) {
             res.status(200).json(rows);
         } catch (error) {
             res.status(500).json({ error: 'Failed to retrieve requests' });
+        }
+    });
+
+    router.get('/address-transactions/:address', protect, async (req, res) => {
+        const { address } = req.params;
+        try {
+            const apiUrl = `${config.BLOCKCYPHER_API_BASE}/addrs/${address}/full?token=${config.BLOCKCYPHER_TOKEN}`;
+            const response = await axios.get(apiUrl);
+            res.status(200).json(response.data);
+        } catch (error) {
+            console.error(`Error fetching address details for ${address}:`, error.message);
+            if (error.response) {
+                res.status(error.response.status).json(error.response.data);
+            } else {
+                res.status(500).json({ error: 'Failed to fetch address transactions' });
+            }
         }
     });
 

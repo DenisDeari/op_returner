@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- DOM Elements for Step 1: Compose ---
     const messageInput = document.getElementById('message-input');
+    const targetAddressInput = document.getElementById('target-address-input');
     const byteCounterSpan = document.getElementById('byte-counter-span');
     const progressBar = document.getElementById('progress-bar');
     const sealMessageButton = document.getElementById('seal-message-button');
@@ -101,6 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Reset input fields
         messageInput.value = '';
+        if (targetAddressInput) targetAddressInput.value = '';
         finalMessageReview.textContent = '';
         qrcodeContainer.innerHTML = '';
         paymentStatusDisplay.textContent = 'Waiting for payment...';
@@ -146,6 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
      */
     async function createMessageRequest() {
         const message = messageInput.value;
+        const targetAddress = targetAddressInput ? targetAddressInput.value.trim() : null;
         const byteLength = new TextEncoder().encode(message).length;
 
         if (byteLength === 0) {
@@ -164,7 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(`${API_BASE_URL}/api/message-request`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: message }),
+                body: JSON.stringify({ message: message, targetAddress: targetAddress }),
             });
 
             const responseData = await response.json();

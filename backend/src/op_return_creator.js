@@ -71,7 +71,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         console.error("[OpReturnCreator] FATAL: Request or Config object is missing!");
         return null;
     }
-    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress } = request;
+    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress, targetAddress } = request;
     const { BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN } = config;
     const coinType = network === bitcoin.networks.bitcoin ? 0 : 1;
 
@@ -99,12 +99,46 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         const opReturnBuffer = Buffer.from(message, 'utf8');
 
         const opReturnScriptLength = bitcoin.payments.embed({ data: [opReturnBuffer] }).output.length;
-        const estimatedVBytes = 68 + opReturnScriptLength + 31 + 10;
+        let estimatedVBytes = 68 + opReturnScriptLength + 31 + 10;
+        
+        // If target address is present, add weight for its output
+        if (targetAddress) {
+            estimatedVBytes += 31; 
+        }
+
         const feeRateSatPerVByte = 2; // Consider making this dynamic
         const fee = estimatedVBytes * feeRateSatPerVByte;
-        const changeValue = inputValue - fee;
+        
+        const DUST_LIMIT = 546;
+        let targetValue = 0;
 
-        console.log(`[OpReturnCreator] Calculated fee: ${fee} sats for ${estimatedVBytes} vBytes. Change: ${changeValue}`);
+        // Add OP_RETURN output
+        const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
+        psbt.addOutput({
+            script: opReturnOutput.output,
+            value: 0,
+        });
+
+        // Add Target Address output if present
+        if (targetAddress) {
+            targetValue = DUST_LIMIT;
+            console.log(`[OpReturnCreator] Adding target output: ${targetValue} sats to ${targetAddress}`);
+            try {
+                psbt.addOutput({
+                    address: targetAddress,
+                    value: targetValue,
+                });
+            } catch (e) {
+                console.error(`[OpReturnCreator] Invalid target address ${targetAddress}:`, e);
+                // If invalid, we abort or continue without it? 
+                // Aborting is safer to avoid user confusion.
+                return null;
+            }
+        }
+
+        const changeValue = inputValue - fee - targetValue;
+
+        console.log(`[OpReturnCreator] Calculated fee: ${fee} sats. Target: ${targetValue}. Change: ${changeValue}`);
 
         psbt.addInput({
             hash: paymentTxId,
@@ -115,13 +149,6 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
             },
         });
 
-        const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
-        psbt.addOutput({
-            script: opReturnOutput.output,
-            value: 0,
-        });
-
-        const DUST_LIMIT = 546;
         if (changeValue >= DUST_LIMIT) {
             const changePath = `m/84'/${coinType}'/0'/1/0`; // TODO: Increment change index
             let changeAddressNode;
