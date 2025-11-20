@@ -3,86 +3,111 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digital Time Capsule</title>
+    <title>CHAIN_TERMINAL v1.0</title>
     <link rel="stylesheet" href="css/styles.css"> 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;700&family=VT323&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Digital Time Capsule</h1>
+    <div class="scanline"></div>
+    <div class="terminal-container">
+        <header class="terminal-header">
+            <div class="logo">CHAIN_TERMINAL v1.0</div>
+            <div class="status-indicator">ONLINE</div>
         </header>
 
-        <main class="card">
-            <div id="compose-step" class="wizard-step active">
-                <h2 class="step-title">Step 1: Compose Your Immortal Message</h2>
-                <textarea id="message-input" placeholder="Write your message here. It will be preserved forever on the Bitcoin blockchain..."></textarea>
+        <main class="dashboard-grid">
+            <!-- PANEL A: COMMAND INPUT -->
+            <section class="panel command-panel">
+                <h2 class="panel-title">> COMMAND_INPUT</h2>
+                <div class="input-group">
+                    <label for="message-input">DATA_PAYLOAD (Max 80 Bytes):</label>
+                    <textarea id="message-input" class="terminal-input" placeholder="ENTER MESSAGE SEQUENCE..."></textarea>
+                    <div id="byte-counter" class="byte-counter">0 / 80 BYTES</div>
+                </div>
                 
-                <div class="input-group" style="margin-top: 1rem;">
-                    <label for="target-address-input" style="display: block; margin-bottom: 0.5rem; color: #a0a0a0;">Target Address (Optional)</label>
-                    <input type="text" id="target-address-input" placeholder="e.g. bc1q..." style="width: 100%; padding: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 4px;">
+                <div class="input-group">
+                    <label for="target-address-input">RECIPIENT_ADDR (Leave empty for public broadcast):</label>
+                    <input type="text" id="target-address-input" class="terminal-input" placeholder="bc1q...">
                 </div>
 
-                <div class="controls">
-                    <div id="byte-counter" class="counter">
-                        <span id="byte-counter-span">0 / 80 bytes</span>
-                        <div class="progress-bar-container">
-                            <div id="progress-bar" class="progress-bar"></div>
-                        </div>
-                    </div>
-                    <button id="seal-message-button" class="button-primary">Seal Your Message</button>
-                </div>
-            </div>
+                <button id="execute-button" class="terminal-button">EXECUTE_PROTOCOL</button>
+            </section>
 
-            <div id="sealing-step" class="wizard-step">
-                <h2 class="step-title">Step 2: The Sealing Ceremony</h2>
-                <p class="review-prompt">You are about to permanently inscribe the following message onto the Bitcoin blockchain. This action is irreversible.</p>
-                <div class="message-review-box">
-                    <p id="final-message-review"></p>
+            <!-- PANEL B: SYSTEM LOG -->
+            <section class="panel log-panel">
+                <h2 class="panel-title">> SYSTEM_LOG</h2>
+                <div id="system-log" class="log-content">
+                    <div class="log-entry">> INITIALIZING SYSTEM...</div>
+                    <div class="log-entry">> CONNECTED TO NODE.</div>
+                    <div class="log-entry">> WAITING FOR INPUT...<span class="cursor">_</span></div>
                 </div>
-                <div class="button-group">
-                    <button id="cancel-step2-button" class="button-secondary" style="background: #d9534f; border-color: #d9534f;">Cancel</button>
-                    <button id="edit-message-button" class="button-secondary">Edit Message</button>
-                    <button id="confirm-seal-button" class="button-primary">Confirm & Immortalize!</button>
-                </div>
-            </div>
+            </section>
 
-            <div id="payment-step" class="wizard-step">
-                <h2 class="step-title">Step 3: Provide Payment</h2>
-                <p class="payment-prompt">To complete the process, send exactly <strong id="required-amount" class="highlight">...</strong> to the address below.</p>
-                <div id="qrcode"></div>
-                <div class="address-container" style="display: flex; align-items: center; gap: 10px; margin-bottom: 1.5rem;">
-                    <div id="payment-address" class="address-box" style="margin-bottom: 0; flex-grow: 1;">...</div>
-                    <button id="copy-address-button" class="button-secondary" style="padding: 8px 12px;" title="Copy Address">
-                        📋
-                    </button>
+            <!-- PANEL C: PROTOCOL INFO -->
+            <section class="panel info-panel">
+                <h2 class="panel-title">> TECH_SPECS</h2>
+                <div class="ascii-art">
+   [MSG] -> [HEX] -> [OP_RETURN]
+     |        |          |
+     v        v          v
+   USER     ENCODE     BLOCKCHAIN
                 </div>
-                <div class="status-box">
-                    <p id="payment-status-display">Waiting for payment...</p>
-                    <div id="processing-indicator" class="spinner" style="display: none;"></div>
-                </div>
-                <div class="button-group" style="margin-top: 20px; justify-content: center;">
-                    <button id="cancel-step3-button" class="button-secondary" style="background: #d9534f; border-color: #d9534f;">Cancel Request</button>
-                </div>
-            </div>
-
-            <div id="success-step" class="wizard-step">
-                <h2 class="step-title success-title">🚀 Message Immortalized! 🚀</h2>
-                <p>Congratulations! Your message is now a permanent part of the Bitcoin blockchain.</p>
-                <div class="tx-info">
-                    <strong>Transaction ID:</strong>
-                    <span id="final-tx-id" class="tx-id"></span>
-                    <a id="explorer-link" href="#" target="_blank" class="explorer-link">View on Block Explorer</a>
-                </div>
-                <button id="create-new-message-button" class="button-primary">Immortalize Another Message</button>
-            </div>
+                <p class="tech-text">
+                    PROTOCOL: OP_RETURN (0x6a)<br>
+                    MAX_PAYLOAD: 80 BYTES<br>
+                    CONSENSUS: PROOF-OF-WORK<br>
+                    STATUS: IMMUTABLE
+                </p>
+                <p class="tech-text">
+                    Data is embedded into transaction outputs using the OP_RETURN opcode. 
+                    Once mined, the message becomes a permanent, unprunable part of the distributed ledger.
+                </p>
+            </section>
         </main>
-        <footer>
-            <p>If you encounter any issues, please contact support@op-return.app</p>
+
+        <footer class="terminal-footer">
+            <p>> SYSTEM_ID: OP_RTN_NODE_01 | CONTACT: support@op-return.app</p>
         </footer>
     </div>
+
+    <!-- PAYMENT OVERLAY (Hidden by default) -->
+    <div id="payment-overlay" class="overlay" style="display: none;">
+        <div class="overlay-content">
+            <h2 class="overlay-title">PAYMENT_REQUIRED</h2>
+            <p class="overlay-text">TRANSFER EXACT AMOUNT TO INITIATE BROADCAST.</p>
+            
+            <div class="payment-details">
+                <div class="amount-display">REQ_FUNDS: <span id="required-amount" class="highlight">...</span></div>
+                <div id="qrcode" class="qr-display"></div>
+                <div class="address-display">
+                    <span id="payment-address">...</span>
+                    <button id="copy-address-button" class="icon-button">[COPY]</button>
+                </div>
+            </div>
+
+            <div id="payment-status-display" class="status-blink">WAITING_FOR_FUNDS...</div>
+            
+            <button id="cancel-button" class="terminal-button danger">ABORT_SEQUENCE</button>
+        </div>
+    </div>
+
+    <!-- SUCCESS OVERLAY (Hidden by default) -->
+    <div id="success-overlay" class="overlay" style="display: none;">
+        <div class="overlay-content success-border">
+            <h2 class="overlay-title">SEQUENCE_COMPLETE</h2>
+            <p class="overlay-text">TRANSACTION CONFIRMED. BLOCKCHAIN IMMUTABILITY ACHIEVED.</p>
+            
+            <div class="tx-details">
+                <p>TX_ID: <span id="final-tx-id">...</span></p>
+                <a id="explorer-link" href="#" target="_blank" class="terminal-link">[VIEW_ON_EXPLORER]</a>
+            </div>
+
+            <button id="reset-button" class="terminal-button">INITIATE_NEW_SEQUENCE</button>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
     <script src="js/app.js"></script> 
 </body>
