@@ -80,13 +80,13 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     });
 
     router.post('/message-request', async (req, res) => {
-        const { message, targetAddress } = req.body;
+        const { message, targetAddress, isPublic } = req.body;
         if (!message || Buffer.byteLength(message, 'utf8') > 80) {
             return res.status(400).json({ error: "Message is required and must be under 80 bytes." });
         }
 
         try {
-            const result = await requestQueue.add(message, targetAddress, db, rootNode, config);
+            const result = await requestQueue.add(message, targetAddress, isPublic, db, rootNode, config);
             
             const hookId = await registerWebhook(result.address);
             if (hookId) {
@@ -103,6 +103,29 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         } catch (error) {
             console.error(`Error in /api/message-request:`, error);
             res.status(500).json({ error: "Failed to process message request." });
+        }
+    });
+
+    router.get('/recent-messages', async (req, res) => {
+        try {
+            const rows = await new Promise((resolve, reject) => {
+                const sql = `
+                    SELECT message, createdAt, opReturnTxId, paymentTxId 
+                    FROM requests 
+                    WHERE (status = 'payment_confirmed' OR status = 'op_return_broadcasted') 
+                    AND isPublic = 1 
+                    ORDER BY createdAt DESC 
+                    LIMIT 10
+                `;
+                db.all(sql, [], (err, rows) => {
+                    if (err) return reject(err);
+                    resolve(rows);
+                });
+            });
+            res.status(200).json(rows);
+        } catch (error) {
+            console.error("Error fetching recent messages:", error);
+            res.status(500).json({ error: "Failed to fetch recent messages." });
         }
     });
 

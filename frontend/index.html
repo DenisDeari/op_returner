@@ -3,108 +3,102 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CHAIN_TERMINAL v1.0</title>
+    <title>CHAIN_TERMINAL</title>
     <link rel="stylesheet" href="css/styles.css"> 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;700&family=VT323&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="scanline"></div>
     <div class="terminal-container">
         <header class="terminal-header">
-            <div class="logo">CHAIN_TERMINAL v1.0</div>
-            <div class="status-indicator">ONLINE</div>
+            <div class="logo">CHAIN_TERMINAL</div>
+            <div class="status-indicator">SYSTEM ONLINE</div>
         </header>
 
         <main class="dashboard-grid">
             <!-- PANEL A: COMMAND INPUT -->
             <section class="panel command-panel">
-                <h2 class="panel-title">> COMMAND_INPUT</h2>
+                <h2 class="panel-title">New Transmission</h2>
                 <div class="input-group">
-                    <label for="message-input">DATA_PAYLOAD (Max 80 Bytes):</label>
-                    <textarea id="message-input" class="terminal-input" placeholder="ENTER MESSAGE SEQUENCE..."></textarea>
+                    <label for="message-input">DATA PAYLOAD (Max 80 Bytes)</label>
+                    <textarea id="message-input" class="terminal-input" placeholder="Enter message sequence..."></textarea>
                     <div id="byte-counter" class="byte-counter">0 / 80 BYTES</div>
                 </div>
                 
                 <div class="input-group">
-                    <label for="target-address-input">RECIPIENT_ADDR (Leave empty for public broadcast):</label>
+                    <label for="target-address-input">RECIPIENT ADDRESS (Optional)</label>
                     <input type="text" id="target-address-input" class="terminal-input" placeholder="bc1q...">
                 </div>
 
-                <button id="execute-button" class="terminal-button">EXECUTE_PROTOCOL</button>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="public-feed-checkbox" checked>
+                    <label for="public-feed-checkbox">Publish to Public Feed</label>
+                </div>
+
+                <button id="execute-button" class="terminal-button">BROADCAST</button>
             </section>
 
             <!-- PANEL B: SYSTEM LOG -->
             <section class="panel log-panel">
-                <h2 class="panel-title">> SYSTEM_LOG</h2>
+                <h2 class="panel-title">System Log</h2>
                 <div id="system-log" class="log-content">
-                    <div class="log-entry">> INITIALIZING SYSTEM...</div>
-                    <div class="log-entry">> CONNECTED TO NODE.</div>
-                    <div class="log-entry">> WAITING FOR INPUT...<span class="cursor">_</span></div>
+                    <div class="log-entry">> Initializing connection to node...</div>
+                    <div class="log-entry">> Connected. Waiting for input...</div>
                 </div>
             </section>
 
-            <!-- PANEL C: PROTOCOL INFO -->
-            <section class="panel info-panel">
-                <h2 class="panel-title">> TECH_SPECS</h2>
-                <div class="ascii-art">
-   [MSG] -> [HEX] -> [OP_RETURN]
-     |        |          |
-     v        v          v
-   USER     ENCODE     BLOCKCHAIN
+            <!-- PANEL C: RECENT MESSAGES -->
+            <section class="panel recent-panel">
+                <h2 class="panel-title">Recent Messages</h2>
+                <div id="recent-messages-list" class="recent-message-list">
+                    <!-- Messages will be populated here via JS -->
+                    <div class="recent-message-item">
+                        <div class="recent-message-text">Loading feed...</div>
+                    </div>
                 </div>
-                <p class="tech-text">
-                    PROTOCOL: OP_RETURN (0x6a)<br>
-                    MAX_PAYLOAD: 80 BYTES<br>
-                    CONSENSUS: PROOF-OF-WORK<br>
-                    STATUS: IMMUTABLE
-                </p>
-                <p class="tech-text">
-                    Data is embedded into transaction outputs using the OP_RETURN opcode. 
-                    Once mined, the message becomes a permanent, unprunable part of the distributed ledger.
-                </p>
             </section>
         </main>
 
         <footer class="terminal-footer">
-            <p>> SYSTEM_ID: OP_RTN_NODE_01 | CONTACT: support@op-return.app</p>
+            <p>CHAIN_TERMINAL | IMMUTABLE BITCOIN MESSAGING | v2.0.1</p>
         </footer>
     </div>
 
     <!-- PAYMENT OVERLAY (Hidden by default) -->
     <div id="payment-overlay" class="overlay" style="display: none;">
         <div class="overlay-content">
-            <h2 class="overlay-title">PAYMENT_REQUIRED</h2>
-            <p class="overlay-text">TRANSFER EXACT AMOUNT TO INITIATE BROADCAST.</p>
+            <h2 class="overlay-title">Payment Required</h2>
+            <p class="overlay-text">Transfer exact amount to initiate broadcast.</p>
             
             <div class="payment-details">
-                <div class="amount-display">REQ_FUNDS: <span id="required-amount" class="highlight">...</span></div>
+                <div class="amount-display">TOTAL: <span id="required-amount" class="highlight">...</span></div>
                 <div id="qrcode" class="qr-display"></div>
                 <div class="address-display">
                     <span id="payment-address">...</span>
-                    <button id="copy-address-button" class="icon-button">[COPY]</button>
+                    <button id="copy-address-button" class="icon-button">COPY</button>
                 </div>
             </div>
 
-            <div id="payment-status-display" class="status-blink">WAITING_FOR_FUNDS...</div>
+            <div id="payment-status-display" class="status-blink">Waiting for funds...</div>
             
-            <button id="cancel-button" class="terminal-button danger">ABORT_SEQUENCE</button>
+            <button id="cancel-button" class="terminal-button danger">CANCEL</button>
         </div>
     </div>
 
     <!-- SUCCESS OVERLAY (Hidden by default) -->
     <div id="success-overlay" class="overlay" style="display: none;">
         <div class="overlay-content success-border">
-            <h2 class="overlay-title">SEQUENCE_COMPLETE</h2>
-            <p class="overlay-text">TRANSACTION CONFIRMED. BLOCKCHAIN IMMUTABILITY ACHIEVED.</p>
+            <h2 class="overlay-title">Broadcast Confirmed</h2>
+            <p class="overlay-text">Message has been permanently embedded in the blockchain.</p>
             
-            <div class="tx-details">
-                <p>TX_ID: <span id="final-tx-id">...</span></p>
-                <a id="explorer-link" href="#" target="_blank" class="terminal-link">[VIEW_ON_EXPLORER]</a>
+            <div class="tx-details" style="margin: 20px 0;">
+                <p style="color: #888; font-size: 0.8rem;">TRANSACTION ID</p>
+                <p style="word-break: break-all; font-family: monospace; margin-bottom: 10px;"><span id="final-tx-id">...</span></p>
+                <a id="explorer-link" href="#" target="_blank" class="terminal-link">VIEW ON EXPLORER</a>
             </div>
 
-            <button id="reset-button" class="terminal-button">INITIATE_NEW_SEQUENCE</button>
+            <button id="reset-button" class="terminal-button">NEW MESSAGE</button>
         </div>
     </div>
 

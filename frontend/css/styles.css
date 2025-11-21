@@ -1,113 +1,107 @@
-/* --- CHAIN_TERMINAL v1.0 STYLES --- */
+/* --- CHAIN_TERMINAL v2.0 STYLES (Professional) --- */
 
 /* Variables */
 :root {
-    --bg-color: #0a0a0a;
-    --terminal-green: #0f0;
-    --terminal-amber: #ffb000;
-    --terminal-dim: #444;
-    --terminal-border: #0f0;
+    --bg-color: #111111;
+    --terminal-bg: #1a1a1a;
+    --bitcoin-orange: #F7931A;
+    --text-main: #E0E0E0;
+    --text-dim: #888888;
+    --border-color: #333333;
     --font-main: 'Fira Code', monospace;
-    --font-display: 'VT323', monospace;
+    --font-display: 'Fira Code', monospace; /* Unified font for cleaner look */
 }
 
 /* General Body Styles */
 body {
     font-family: var(--font-main);
     background-color: var(--bg-color);
-    color: var(--terminal-green);
+    color: var(--text-main);
     display: flex;
     justify-content: center;
     align-items: center;
     min-height: 100vh;
     margin: 0;
-    overflow: hidden; /* Prevent scrollbars from scanlines */
-}
-
-/* Scanline Effect */
-.scanline {
-    width: 100%;
-    height: 100px;
-    z-index: 10;
-    background: linear-gradient(0deg, rgba(0,0,0,0) 0%, rgba(0, 255, 0, 0.02) 50%, rgba(0,0,0,0) 100%);
-    opacity: 0.1;
-    position: absolute;
-    bottom: 100%;
-    pointer-events: none;
-    animation: scanline 10s linear infinite;
-}
-
-@keyframes scanline {
-    0% { bottom: 100%; }
-    100% { bottom: -100%; }
 }
 
 /* Container */
 .terminal-container {
     width: 95%;
-    max-width: 1200px;
+    max-width: 1400px;
     height: 90vh;
-    border: 2px solid var(--terminal-green);
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
-    padding: 20px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    padding: 0;
     display: flex;
     flex-direction: column;
-    background: rgba(0, 20, 0, 0.9);
-    position: relative;
+    background: var(--terminal-bg);
 }
 
 /* Header */
 .terminal-header {
     display: flex;
     justify-content: space-between;
-    border-bottom: 1px solid var(--terminal-green);
-    padding-bottom: 10px;
-    margin-bottom: 20px;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding: 15px 20px;
+    background: #222;
 }
 
 .logo {
     font-family: var(--font-display);
-    font-size: 2rem;
-    letter-spacing: 2px;
-    text-shadow: 0 0 5px var(--terminal-green);
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--bitcoin-orange);
+    letter-spacing: 1px;
 }
 
 .status-indicator {
-    font-weight: bold;
-    animation: blink 2s infinite;
+    font-size: 0.8rem;
+    color: #4caf50; /* Subtle green for online status */
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
-@keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+.status-indicator::before {
+    content: '';
+    display: block;
+    width: 8px;
+    height: 8px;
+    background-color: #4caf50;
+    border-radius: 50%;
 }
 
 /* Dashboard Grid */
 .dashboard-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 300px;
+    grid-template-columns: 350px 1fr 350px;
     grid-template-rows: 1fr;
-    gap: 20px;
+    gap: 1px; /* Creates borders between panels via background color */
+    background-color: var(--border-color); 
     flex-grow: 1;
     overflow: hidden;
 }
 
 /* Panels */
 .panel {
-    border: 1px solid var(--terminal-dim);
-    padding: 15px;
+    padding: 20px;
     display: flex;
     flex-direction: column;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--terminal-bg);
 }
 
 .panel-title {
     font-family: var(--font-display);
-    font-size: 1.5rem;
+    font-size: 0.9rem;
+    text-transform: uppercase;
     margin-top: 0;
-    margin-bottom: 15px;
-    border-bottom: 1px dashed var(--terminal-dim);
-    color: var(--terminal-amber);
+    margin-bottom: 20px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 10px;
 }
 
 /* Command Panel */
@@ -121,120 +115,162 @@ body {
 
 .input-group label {
     display: block;
-    margin-bottom: 5px;
+    margin-bottom: 8px;
     font-size: 0.8rem;
-    color: var(--terminal-amber);
+    color: var(--text-dim);
+    font-weight: 500;
 }
 
 .terminal-input {
     width: 100%;
-    background: transparent;
-    border: 1px solid var(--terminal-green);
-    color: var(--terminal-green);
+    background: #111;
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
     font-family: var(--font-main);
-    padding: 10px;
+    padding: 12px;
     box-sizing: border-box;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
 }
 
 .terminal-input:focus {
     outline: none;
-    box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
-    background: rgba(0, 255, 0, 0.05);
+    border-color: var(--bitcoin-orange);
 }
 
 textarea.terminal-input {
-    height: 150px;
+    height: 120px;
     resize: none;
+    line-height: 1.5;
 }
 
 .byte-counter {
     text-align: right;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     margin-top: 5px;
-    color: var(--terminal-dim);
+    color: var(--text-dim);
+}
+
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    color: var(--text-main);
+    cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+    accent-color: var(--bitcoin-orange);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
 }
 
 .terminal-button {
     margin-top: auto;
-    background: transparent;
-    border: 2px solid var(--terminal-green);
-    color: var(--terminal-green);
+    background: var(--bitcoin-orange);
+    border: none;
+    color: #000;
     font-family: var(--font-display);
-    font-size: 1.5rem;
-    padding: 10px;
+    font-size: 1rem;
+    font-weight: 700;
+    padding: 15px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background 0.2s;
     text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .terminal-button:hover {
-    background: var(--terminal-green);
-    color: #000;
-    box-shadow: 0 0 15px var(--terminal-green);
+    background: #ffaa33;
 }
 
 .terminal-button.danger {
-    border-color: #f00;
-    color: #f00;
+    background: #d32f2f;
+    color: #fff;
 }
 
 .terminal-button.danger:hover {
-    background: #f00;
-    color: #000;
-    box-shadow: 0 0 15px #f00;
+    background: #b71c1c;
 }
 
-/* Log Panel */
+/* Log Panel (Center) */
 .log-panel {
     grid-column: 2;
     overflow-y: auto;
-    font-family: var(--font-main);
     font-size: 0.9rem;
+    background: #151515; /* Slightly darker for contrast */
 }
 
 .log-content {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 8px;
 }
 
 .log-entry {
     word-break: break-all;
+    padding: 5px 0;
+    border-bottom: 1px solid #222;
+    color: #ccc;
 }
 
-.cursor {
-    animation: blink 1s infinite;
+.log-entry:last-child {
+    border-bottom: none;
 }
 
-/* Info Panel */
-.info-panel {
+/* Recent Messages Panel (Right) */
+.recent-panel {
     grid-column: 3;
+    overflow-y: auto;
 }
 
-.ascii-art {
-    font-family: monospace;
-    white-space: pre;
-    font-size: 0.7rem;
-    color: var(--terminal-dim);
-    margin-bottom: 20px;
-    text-align: center;
+.recent-message-list {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
 }
 
-.tech-text {
+.recent-message-item {
+    background: #222;
+    padding: 12px;
+    border: 1px solid var(--border-color);
     font-size: 0.8rem;
-    line-height: 1.4;
-    color: #aaa;
-    margin-bottom: 15px;
+}
+
+.recent-message-text {
+    color: var(--text-main);
+    margin-bottom: 8px;
+    word-break: break-word;
+    font-weight: 500;
+}
+
+.recent-message-meta {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    display: flex;
+    justify-content: space-between;
+}
+
+.recent-message-link {
+    color: var(--bitcoin-orange);
+    text-decoration: none;
+}
+
+.recent-message-link:hover {
+    text-decoration: underline;
 }
 
 /* Footer */
 .terminal-footer {
-    margin-top: 20px;
-    border-top: 1px solid var(--terminal-dim);
-    padding-top: 10px;
-    font-size: 0.8rem;
-    color: var(--terminal-dim);
+    border-top: 1px solid var(--border-color);
+    padding: 10px 20px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
     text-align: right;
+    background: #222;
 }
 
 /* Overlays */
@@ -244,7 +280,8 @@ textarea.terminal-input {
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.9);
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(2px);
     z-index: 100;
     display: flex;
     justify-content: center;
@@ -252,40 +289,35 @@ textarea.terminal-input {
 }
 
 .overlay-content {
-    background: #000;
-    border: 2px solid var(--terminal-green);
+    background: var(--terminal-bg);
+    border: 1px solid var(--bitcoin-orange);
     padding: 40px;
     width: 500px;
     text-align: center;
-    box-shadow: 0 0 50px rgba(0, 255, 0, 0.2);
-}
-
-.overlay-content.success-border {
-    border-color: var(--terminal-amber);
-    box-shadow: 0 0 50px rgba(255, 176, 0, 0.2);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
 }
 
 .overlay-title {
     font-family: var(--font-display);
-    font-size: 2rem;
+    font-size: 1.5rem;
     margin-top: 0;
-    color: var(--terminal-green);
-    animation: blink 2s infinite;
-}
-
-.success-border .overlay-title {
-    color: var(--terminal-amber);
+    color: var(--bitcoin-orange);
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .payment-details {
     margin: 30px 0;
-    border: 1px dashed var(--terminal-dim);
+    background: #111;
+    border: 1px solid var(--border-color);
     padding: 20px;
 }
 
 .amount-display {
     font-size: 1.2rem;
     margin-bottom: 20px;
+    color: var(--text-main);
+    font-weight: bold;
 }
 
 .qr-display {
@@ -298,20 +330,23 @@ textarea.terminal-input {
 .address-display {
     font-family: monospace;
     background: #222;
-    padding: 10px;
-    border: 1px solid #444;
+    padding: 12px;
+    border: 1px solid #333;
     display: flex;
     justify-content: space-between;
     align-items: center;
     font-size: 0.8rem;
+    color: var(--text-dim);
 }
 
 .icon-button {
     background: transparent;
     border: none;
-    color: var(--terminal-green);
+    color: var(--bitcoin-orange);
     cursor: pointer;
     font-family: var(--font-main);
+    font-size: 0.8rem;
+    font-weight: bold;
 }
 
 .icon-button:hover {
@@ -321,14 +356,15 @@ textarea.terminal-input {
 .status-blink {
     margin-bottom: 20px;
     font-weight: bold;
-    animation: blink 1s infinite;
+    color: var(--text-main);
 }
 
 .terminal-link {
-    color: var(--terminal-amber);
+    color: var(--bitcoin-orange);
     text-decoration: none;
     display: block;
     margin-top: 10px;
+    font-weight: bold;
 }
 
 .terminal-link:hover {
@@ -336,15 +372,17 @@ textarea.terminal-input {
 }
 
 /* Responsive */
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
     .dashboard-grid {
         grid-template-columns: 1fr;
-        grid-template-rows: auto auto auto;
+        grid-template-rows: auto 400px auto;
         overflow-y: auto;
     }
     
     .terminal-container {
         height: auto;
         min-height: 100vh;
+        width: 100%;
+        border: none;
     }
 }

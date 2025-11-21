@@ -6,13 +6,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_BYTES = 80;
     let statusIntervalId = null;
     let currentRequestId = null;
+    let feedIntervalId = null;
 
     // --- DOM Elements ---
     const messageInput = document.getElementById('message-input');
     const targetAddressInput = document.getElementById('target-address-input');
+    const publicFeedCheckbox = document.getElementById('public-feed-checkbox');
     const byteCounter = document.getElementById('byte-counter');
     const executeButton = document.getElementById('execute-button');
     const systemLog = document.getElementById('system-log');
+    const recentMessagesList = document.getElementById('recent-messages-list');
     
     // Overlays
     const paymentOverlay = document.getElementById('payment-overlay');
@@ -34,23 +37,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Helper Functions ---
 
     /**
-     * Adds a message to the system log with a typewriter effect.
+     * Adds a message to the system log.
      */
-    function logToSystem(message, type = 'info') {
+    function logToSystem(message) {
         const logEntry = document.createElement('div');
         logEntry.className = 'log-entry';
-        logEntry.textContent = `> ${message}`;
         
-        // Remove cursor from previous last element
-        const oldCursor = systemLog.querySelector('.cursor');
-        if (oldCursor) oldCursor.remove();
-
-        // Add new cursor
-        const cursorSpan = document.createElement('span');
-        cursorSpan.className = 'cursor';
-        cursorSpan.textContent = '_';
-        logEntry.appendChild(cursorSpan);
-
+        const timestamp = new Date().toLocaleTimeString([], { hour12: false });
+        logEntry.textContent = `[${timestamp}] ${message}`;
+        
         systemLog.appendChild(logEntry);
         systemLog.scrollTop = systemLog.scrollHeight;
     }
@@ -75,9 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
         byteCounter.textContent = `${byteLength} / ${MAX_BYTES} BYTES`;
         
         if (byteLength >= MAX_BYTES) {
-            byteCounter.style.color = '#ff0000';
+            byteCounter.style.color = '#d32f2f';
         } else {
-            byteCounter.style.color = '#444';
+            byteCounter.style.color = '#888';
         }
     }
 
@@ -99,20 +94,20 @@ document.addEventListener('DOMContentLoaded', () => {
         paymentOverlay.style.display = 'none';
         successOverlay.style.display = 'none';
         
-        logToSystem('SYSTEM RESET. READY FOR NEW INPUT.');
+        logToSystem('System ready for new transmission.');
     }
 
     /**
      * Cancels the current request.
      */
     async function cancelRequest() {
-        if (confirm("ABORT SEQUENCE? THIS ACTION IS IRREVERSIBLE.")) {
+        if (confirm("Cancel current broadcast sequence?")) {
             if (currentRequestId) {
                 try {
                     await fetch(`${API_BASE_URL}/api/request/${currentRequestId}`, {
                         method: 'DELETE'
                     });
-                    logToSystem(`REQUEST ${currentRequestId} TERMINATED.`);
+                    logToSystem(`Request ${currentRequestId} cancelled.`);
                 } catch (error) {
                     console.error("Error deleting request:", error);
                 }
@@ -127,22 +122,26 @@ document.addEventListener('DOMContentLoaded', () => {
     async function executeProtocol() {
         const message = messageInput.value;
         const targetAddress = targetAddressInput ? targetAddressInput.value.trim() : null;
+        const isPublic = publicFeedCheckbox.checked;
         const byteLength = new TextEncoder().encode(message).length;
 
         if (byteLength === 0) {
-            logToSystem('ERROR: PAYLOAD EMPTY. ABORTING.');
-            alert("ERROR: PAYLOAD EMPTY.");
+            logToSystem('Error: Payload is empty.');
+            alert("Please enter a message.");
             return;
         }
 
-        logToSystem('INITIATING PROTOCOL...');
-        logToSystem('ENCODING PAYLOAD...');
-
+        logToSystem('Initiating broadcast sequence...');
+        
         try {
             const response = await fetch(`${API_BASE_URL}/api/message-request`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: message, targetAddress: targetAddress }),
+                body: JSON.stringify({ 
+                    message: message, 
+                    targetAddress: targetAddress,
+                    isPublic: isPublic
+                }),
             });
 
             const responseData = await response.json();
@@ -151,15 +150,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentRequestId = responseData.requestId;
                 localStorage.setItem('activeRequestId', currentRequestId);
                 
-                logToSystem('PAYMENT GATEWAY OPENED.');
+                logToSystem('Payment gateway initialized.');
                 showPaymentOverlay(responseData);
                 checkStatus(currentRequestId);
             } else {
-                logToSystem(`ERROR: ${responseData.error}`);
-                alert(`ERROR: ${responseData.error}`);
+                logToSystem(`Error: ${responseData.error}`);
+                alert(`Error: ${responseData.error}`);
             }
         } catch (error) {
-            logToSystem('CRITICAL NETWORK FAILURE.');
+            logToSystem('Network connection failed.');
             console.error("Error:", error);
         }
     }
@@ -197,17 +196,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
             switch (data.status) {
                 case 'pending_payment':
-                    paymentStatusDisplay.textContent = 'WAITING_FOR_FUNDS...';
+                    paymentStatusDisplay.textContent = 'Waiting for funds...';
                     statusIntervalId = setTimeout(() => checkStatus(requestId), 5000);
                     break;
                 case 'payment_detected':
-                    paymentStatusDisplay.textContent = 'PAYMENT DETECTED. AWAITING CONFIRMATION...';
-                    logToSystem('PAYMENT SIGNAL DETECTED. VERIFYING...');
+                    paymentStatusDisplay.textContent = 'Payment detected. Awaiting confirmation...';
+                    if (paymentStatusDisplay.textContent !== 'Payment detected. Awaiting confirmation...') {
+                        logToSystem('Payment signal detected. Verifying...');
+                    }
                     statusIntervalId = setTimeout(() => checkStatus(requestId), 5000);
                     break;
                 case 'payment_confirmed':
-                    paymentStatusDisplay.textContent = 'PAYMENT CONFIRMED. BROADCASTING...';
-                    logToSystem('FUNDS SECURED. BROADCASTING OP_RETURN...');
+                    paymentStatusDisplay.textContent = 'Payment confirmed. Broadcasting...';
+                    logToSystem('Funds secured. Broadcasting OP_RETURN...');
                     statusIntervalId = setTimeout(() => checkStatus(requestId), 3000);
                     break;
                 case 'op_return_broadcasted':
@@ -218,18 +219,82 @@ document.addEventListener('DOMContentLoaded', () => {
                     finalTxIdEl.textContent = data.opReturnTxId;
                     explorerLink.href = `https://mempool.space/tx/${data.opReturnTxId}`;
                     
-                    logToSystem('SEQUENCE COMPLETE. IMMUTABILITY ACHIEVED.');
+                    logToSystem('Sequence complete. Message immutable.');
                     logToSystem(`TXID: ${data.opReturnTxId}`);
+                    
+                    // Refresh feed immediately after success
+                    fetchRecentMessages();
                     break;
                 case 'op_return_failed':
-                    paymentStatusDisplay.textContent = 'BROADCAST FAILED. CONTACT SUPPORT.';
-                    logToSystem('CRITICAL ERROR: BROADCAST FAILED.');
+                    paymentStatusDisplay.textContent = 'Broadcast failed. Contact support.';
+                    logToSystem('Critical Error: Broadcast failed.');
                     clearTimeout(statusIntervalId);
                     break;
             }
         } catch (error) {
             console.error("Status check error:", error);
         }
+    }
+
+    /**
+     * Fetches and displays recent public messages.
+     */
+    async function fetchRecentMessages() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/recent-messages`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const messages = await response.json();
+            renderRecentMessages(messages);
+        } catch (error) {
+            console.error("Error fetching recent messages:", error);
+            renderErrorState();
+        }
+    }
+
+    function renderErrorState() {
+        recentMessagesList.innerHTML = '';
+        const errorItem = document.createElement('div');
+        errorItem.className = 'recent-message-item';
+        errorItem.innerHTML = '<div class="recent-message-text" style="color: #d32f2f;">System Offline: Feed Unavailable</div>';
+        recentMessagesList.appendChild(errorItem);
+    }
+
+    function renderRecentMessages(messages) {
+        recentMessagesList.innerHTML = '';
+
+        if (messages.length === 0) {
+            const emptyItem = document.createElement('div');
+            emptyItem.className = 'recent-message-item';
+            emptyItem.innerHTML = '<div class="recent-message-text" style="color: #666;">No recent public broadcasts.</div>';
+            recentMessagesList.appendChild(emptyItem);
+            return;
+        }
+
+        messages.forEach(msg => {
+            const item = document.createElement('div');
+            item.className = 'recent-message-item';
+            
+            const date = new Date(msg.createdAt).toLocaleString();
+            const txIdShort = msg.opReturnTxId ? `${msg.opReturnTxId.substring(0, 8)}...` : 'Pending';
+            
+            item.innerHTML = `
+                <div class="recent-message-text">${escapeHtml(msg.message)}</div>
+                <div class="recent-message-meta">
+                    <span>${date}</span>
+                    <a href="https://mempool.space/tx/${msg.opReturnTxId}" target="_blank" class="recent-message-link">TX: ${txIdShort}</a>
+                </div>
+            `;
+            recentMessagesList.appendChild(item);
+        });
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     // --- Event Listeners ---
@@ -241,15 +306,23 @@ document.addEventListener('DOMContentLoaded', () => {
     copyAddressButton.addEventListener('click', () => {
         navigator.clipboard.writeText(paymentAddressEl.textContent);
         const originalText = copyAddressButton.textContent;
-        copyAddressButton.textContent = '[COPIED]';
+        copyAddressButton.textContent = 'COPIED';
         setTimeout(() => copyAddressButton.textContent = originalText, 2000);
     });
 
     // --- Init ---
+    if (window.location.protocol === 'file:') {
+        logToSystem('WARNING: Running via file protocol. API calls will fail.');
+    }
+
     const savedRequestId = localStorage.getItem('activeRequestId');
     if (savedRequestId) {
         currentRequestId = savedRequestId;
-        logToSystem('RESUMING PREVIOUS SESSION...');
+        logToSystem('Resuming previous session...');
         checkStatus(currentRequestId);
     }
+
+    // Initial fetch and periodic update for feed
+    fetchRecentMessages();
+    feedIntervalId = setInterval(fetchRecentMessages, 30000); // Update every 30s
 });

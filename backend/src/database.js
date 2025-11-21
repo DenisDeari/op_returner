@@ -54,6 +54,15 @@ function initializeDatabase() {
                 console.log("Column 'targetAddress' checked/added.");
             }
         });
+
+        // Add isPublic column if it doesn't exist
+        db.run("ALTER TABLE requests ADD COLUMN isPublic INTEGER DEFAULT 1", (err) => {
+            if (err && !err.message.includes("duplicate column name")) {
+                console.error("Error adding isPublic column:", err.message);
+            } else {
+                console.log("Column 'isPublic' checked/added.");
+            }
+        });
     });
 }
 
