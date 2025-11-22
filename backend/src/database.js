@@ -63,6 +63,24 @@ function initializeDatabase() {
                 console.log("Column 'isPublic' checked/added.");
             }
         });
+
+        // Add feeRate column if it doesn't exist
+        db.run("ALTER TABLE requests ADD COLUMN feeRate INTEGER DEFAULT 2", (err) => {
+            if (err && !err.message.includes("duplicate column name")) {
+                console.error("Error adding feeRate column:", err.message);
+            } else {
+                console.log("Column 'feeRate' checked/added.");
+            }
+        });
+
+        // Add amountToSend column if it doesn't exist
+        db.run("ALTER TABLE requests ADD COLUMN amountToSend INTEGER DEFAULT 0", (err) => {
+            if (err && !err.message.includes("duplicate column name")) {
+                console.error("Error adding amountToSend column:", err.message);
+            } else {
+                console.log("Column 'amountToSend' checked/added.");
+            }
+        });
     });
 }
 

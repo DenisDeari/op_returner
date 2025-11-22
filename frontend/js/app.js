@@ -12,6 +12,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('message-input');
     const targetAddressInput = document.getElementById('target-address-input');
     const publicFeedCheckbox = document.getElementById('public-feed-checkbox');
+    const amountInput = document.getElementById('amount-input');
+    const feeRateSlider = document.getElementById('fee-rate-slider');
+    const feeRateDisplay = document.getElementById('fee-rate-display');
+    const costNetworkFee = document.getElementById('cost-network-fee');
+    const costRecipientAmount = document.getElementById('cost-recipient-amount');
+    const costTotal = document.getElementById('cost-total');
     const byteCounter = document.getElementById('byte-counter');
     const executeButton = document.getElementById('execute-button');
     const systemLog = document.getElementById('system-log');
@@ -48,6 +54,25 @@ document.addEventListener('DOMContentLoaded', () => {
         
         systemLog.appendChild(logEntry);
         systemLog.scrollTop = systemLog.scrollHeight;
+    }
+
+    /**
+     * Updates the cost breakdown.
+     */
+    function updateCostBreakdown() {
+        const feeRate = parseInt(feeRateSlider.value);
+        const amountToSend = parseInt(amountInput.value) || 0;
+        
+        feeRateDisplay.textContent = feeRate;
+
+        const estimatedVBytes = 200;
+        const networkFee = estimatedVBytes * feeRate;
+        const serviceFee = 2000;
+        const total = networkFee + serviceFee + amountToSend;
+
+        costNetworkFee.textContent = `~${networkFee} sats`;
+        costRecipientAmount.textContent = `${amountToSend} sats`;
+        costTotal.textContent = `~${total} sats`;
     }
 
     /**
@@ -123,6 +148,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const message = messageInput.value;
         const targetAddress = targetAddressInput ? targetAddressInput.value.trim() : null;
         const isPublic = publicFeedCheckbox.checked;
+        const feeRate = parseInt(feeRateSlider.value);
+        const amountToSend = parseInt(amountInput.value) || 0;
         const byteLength = new TextEncoder().encode(message).length;
 
         if (byteLength === 0) {
@@ -140,7 +167,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ 
                     message: message, 
                     targetAddress: targetAddress,
-                    isPublic: isPublic
+                    isPublic: isPublic,
+                    feeRate: feeRate,
+                    amountToSend: amountToSend
                 }),
             });
 
@@ -299,6 +328,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
     messageInput.addEventListener('input', updateByteCounter);
+    amountInput.addEventListener('input', updateCostBreakdown);
+    feeRateSlider.addEventListener('input', updateCostBreakdown);
     executeButton.addEventListener('click', executeProtocol);
     cancelButton.addEventListener('click', cancelRequest);
     resetButton.addEventListener('click', resetState);
@@ -324,5 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial fetch and periodic update for feed
     fetchRecentMessages();
+    updateCostBreakdown(); // Init cost display
     feedIntervalId = setInterval(fetchRecentMessages, 30000); // Update every 30s
 });

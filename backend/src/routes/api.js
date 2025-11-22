@@ -80,13 +80,13 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     });
 
     router.post('/message-request', async (req, res) => {
-        const { message, targetAddress, isPublic } = req.body;
+        const { message, targetAddress, isPublic, feeRate, amountToSend } = req.body;
         if (!message || Buffer.byteLength(message, 'utf8') > 80) {
             return res.status(400).json({ error: "Message is required and must be under 80 bytes." });
         }
 
         try {
-            const result = await requestQueue.add(message, targetAddress, isPublic, db, rootNode, config);
+            const result = await requestQueue.add(message, targetAddress, isPublic, feeRate, amountToSend, db, rootNode, config);
             
             const hookId = await registerWebhook(result.address);
             if (hookId) {

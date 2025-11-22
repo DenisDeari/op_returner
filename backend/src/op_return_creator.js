@@ -71,7 +71,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         console.error("[OpReturnCreator] FATAL: Request or Config object is missing!");
         return null;
     }
-    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress, targetAddress } = request;
+    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress, targetAddress, feeRate, amountToSend } = request;
     const { BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN } = config;
     const coinType = network === bitcoin.networks.bitcoin ? 0 : 1;
 
@@ -106,7 +106,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
             estimatedVBytes += 31; 
         }
 
-        const feeRateSatPerVByte = 2; // Consider making this dynamic
+        const feeRateSatPerVByte = feeRate || 2; 
         const fee = estimatedVBytes * feeRateSatPerVByte;
         
         const DUST_LIMIT = 546;
@@ -121,7 +121,9 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
 
         // Add Target Address output if present
         if (targetAddress) {
-            targetValue = DUST_LIMIT;
+            // Use amountToSend if specified (>0), otherwise default to DUST_LIMIT (subsidized by service fee)
+            targetValue = (amountToSend && amountToSend > 0) ? amountToSend : DUST_LIMIT;
+            
             console.log(`[OpReturnCreator] Adding target output: ${targetValue} sats to ${targetAddress}`);
             try {
                 psbt.addOutput({

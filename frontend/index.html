@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CHAIN_TERMINAL</title>
+    <title>SatWire</title>
     <link rel="stylesheet" href="css/styles.css"> 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,7 +12,7 @@
 <body>
     <div class="terminal-container">
         <header class="terminal-header">
-            <div class="logo">CHAIN_TERMINAL</div>
+            <div class="logo">SatWire</div>
             <div class="status-indicator">SYSTEM ONLINE</div>
         </header>
 
@@ -33,7 +33,36 @@
 
                 <div class="checkbox-group">
                     <input type="checkbox" id="public-feed-checkbox" checked>
-                    <label for="public-feed-checkbox">Publish to Public Feed</label>
+                    <label for="public-feed-checkbox">Publish to Website-Feed</label>
+                </div>
+
+                <div class="input-group">
+                    <label for="amount-input">AMOUNT TO SEND (SATS)</label>
+                    <input type="number" id="amount-input" class="terminal-input" min="0" placeholder="Optional value transfer...">
+                </div>
+
+                <div class="input-group">
+                    <label for="fee-rate-slider">NETWORK FEE RATE: <span id="fee-rate-display" style="color: var(--bitcoin-orange);">2</span> sats/vByte</label>
+                    <input type="range" id="fee-rate-slider" min="1" max="10" value="2" style="width: 100%; accent-color: var(--bitcoin-orange);">
+                </div>
+
+                <div class="cost-breakdown" style="background: #111; border: 1px solid var(--border-color); padding: 15px; margin-bottom: 20px; font-size: 0.85rem; color: var(--text-dim);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span>Network Fee:</span>
+                        <span id="cost-network-fee">~400 sats</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span>Service Fee:</span>
+                        <span>2000 sats</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <span>Recipient Amount:</span>
+                        <span id="cost-recipient-amount">0 sats</span>
+                    </div>
+                    <div style="border-top: 1px solid #333; margin-top: 10px; padding-top: 10px; display: flex; justify-content: space-between; color: var(--bitcoin-orange); font-weight: bold;">
+                        <span>TOTAL:</span>
+                        <span id="cost-total">~2400 sats</span>
+                    </div>
                 </div>
 
                 <button id="execute-button" class="terminal-button">BROADCAST</button>
@@ -50,7 +79,7 @@
 
             <!-- PANEL C: RECENT MESSAGES -->
             <section class="panel recent-panel">
-                <h2 class="panel-title">Recent Messages</h2>
+                <h2 class="panel-title">Messages by other Users</h2>
                 <div id="recent-messages-list" class="recent-message-list">
                     <!-- Messages will be populated here via JS -->
                     <div class="recent-message-item">
@@ -61,7 +90,7 @@
         </main>
 
         <footer class="terminal-footer">
-            <p>CHAIN_TERMINAL | IMMUTABLE BITCOIN MESSAGING | v2.0.1</p>
+            <p>SatWire | BITCOIN MESSAGING & VALUE TRANSFER | support@op-return.app</p>
         </footer>
     </div>
 

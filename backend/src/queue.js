@@ -10,7 +10,7 @@ async function processNextInQueue(db, rootNode, config) {
         return;
     }
     isProcessing = true;
-    const { message, targetAddress, isPublic, resolve, reject } = requestProcessingQueue.shift();
+    const { message, targetAddress, isPublic, feeRate, amountToSend, resolve, reject } = requestProcessingQueue.shift();
 
     try {
         const lastIdxRow = await new Promise((res, rej) => {
@@ -28,12 +28,17 @@ async function processNextInQueue(db, rootNode, config) {
         const address = bitcoin.payments.p2wpkh({ pubkey: pubkeyBuffer, network: config.NETWORK }).address;
         // --- END OF FIX ---
 
-        const requiredAmountSatoshis = 2000; // Increased to cover potential target output
+        // Calculate required amount
+        const estimatedVBytes = 200;
+        const serviceFee = 2000;
+        const networkFee = estimatedVBytes * (feeRate || 2);
+        const requiredAmountSatoshis = networkFee + serviceFee + (amountToSend || 0);
+
         const newRequestId = uuidv4();
 
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, isPublic ? 1 : 0];
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, isPublic ? 1 : 0, feeRate || 2, amountToSend || 0];
         await new Promise((res, rej) => {
-            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, isPublic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
+            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, isPublic, feeRate, amountToSend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });
         
         console.log(`[Queue] New request processed: ID ${newRequestId}`);
@@ -50,9 +55,9 @@ async function processNextInQueue(db, rootNode, config) {
     }
 }
 
-function add(message, targetAddress, isPublic, db, rootNode, config) {
+function add(message, targetAddress, isPublic, feeRate, amountToSend, db, rootNode, config) {
     return new Promise((resolve, reject) => {
-        requestProcessingQueue.push({ message, targetAddress, isPublic, resolve, reject });
+        requestProcessingQueue.push({ message, targetAddress, isPublic, feeRate, amountToSend, resolve, reject });
         console.log(`[Queue] Added to queue. Length: ${requestProcessingQueue.length}`);
         processNextInQueue(db, rootNode, config);
     });
