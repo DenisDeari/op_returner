@@ -10,7 +10,7 @@ async function processNextInQueue(db, rootNode, config) {
         return;
     }
     isProcessing = true;
-    const { message, targetAddress, isPublic, feeRate, amountToSend, resolve, reject } = requestProcessingQueue.shift();
+    const { message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, resolve, reject } = requestProcessingQueue.shift();
 
     try {
         const lastIdxRow = await new Promise((res, rej) => {
@@ -36,9 +36,9 @@ async function processNextInQueue(db, rootNode, config) {
 
         const newRequestId = uuidv4();
 
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, isPublic ? 1 : 0, feeRate || 2, amountToSend || 0];
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, isPublic ? 1 : 0, feeRate || 2, amountToSend || 0, refundAddress || null];
         await new Promise((res, rej) => {
-            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, isPublic, feeRate, amountToSend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
+            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, isPublic, feeRate, amountToSend, refundAddress) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });
         
         console.log(`[Queue] New request processed: ID ${newRequestId}`);
@@ -55,9 +55,9 @@ async function processNextInQueue(db, rootNode, config) {
     }
 }
 
-function add(message, targetAddress, isPublic, feeRate, amountToSend, db, rootNode, config) {
+function add(message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, db, rootNode, config) {
     return new Promise((resolve, reject) => {
-        requestProcessingQueue.push({ message, targetAddress, isPublic, feeRate, amountToSend, resolve, reject });
+        requestProcessingQueue.push({ message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, resolve, reject });
         console.log(`[Queue] Added to queue. Length: ${requestProcessingQueue.length}`);
         processNextInQueue(db, rootNode, config);
     });

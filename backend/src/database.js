@@ -81,6 +81,15 @@ function initializeDatabase() {
                 console.log("Column 'amountToSend' checked/added.");
             }
         });
+
+        // Add refundAddress column if it doesn't exist
+        db.run("ALTER TABLE requests ADD COLUMN refundAddress TEXT", (err) => {
+            if (err && !err.message.includes("duplicate column name")) {
+                console.error("Error adding refundAddress column:", err.message);
+            } else {
+                console.log("Column 'refundAddress' checked/added.");
+            }
+        });
     });
 }
 

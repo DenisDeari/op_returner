@@ -3,7 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SatWire</title>
+    <title>SatWire | Immutable Bitcoin Messaging & OP_RETURN Protocol</title>
+    <meta name="description" content="SatWire allows you to permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global value transfer terminal.">
+    <meta name="keywords" content="Bitcoin, OP_RETURN, Blockchain Message, Crypto, Immutable, SatWire">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://satwire.app/">
+    <meta property="og:title" content="SatWire | Immutable Bitcoin Messaging">
+    <meta property="og:description" content="Permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global.">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://satwire.app/">
+    <meta property="twitter:title" content="SatWire | Immutable Bitcoin Messaging">
+    <meta property="twitter:description" content="Permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global.">
+
     <link rel="stylesheet" href="css/styles.css"> 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,68 +27,89 @@
 <body>
     <div class="terminal-container">
         <header class="terminal-header">
-            <div class="logo">SatWire</div>
+            <h1 class="logo">SatWire</h1>
             <div class="status-indicator">SYSTEM ONLINE</div>
         </header>
 
         <main class="dashboard-grid">
             <!-- PANEL A: COMMAND INPUT -->
             <section class="panel command-panel">
-                <h2 class="panel-title">New Transmission</h2>
-                <div class="input-group">
-                    <label for="message-input">DATA PAYLOAD (Max 80 Bytes)</label>
-                    <textarea id="message-input" class="terminal-input" placeholder="Enter message sequence..."></textarea>
-                    <div id="byte-counter" class="byte-counter">0 / 80 BYTES</div>
-                </div>
-                
-                <div class="input-group">
-                    <label for="target-address-input">RECIPIENT ADDRESS (Optional)</label>
-                    <input type="text" id="target-address-input" class="terminal-input" placeholder="bc1q...">
-                </div>
-
-                <div class="checkbox-group">
-                    <input type="checkbox" id="public-feed-checkbox" checked>
-                    <label for="public-feed-checkbox">Publish to Website-Feed</label>
-                </div>
-
-                <div class="input-group">
-                    <label for="amount-input">AMOUNT TO SEND (SATS)</label>
-                    <input type="number" id="amount-input" class="terminal-input" min="0" placeholder="Optional value transfer...">
-                </div>
-
-                <div class="input-group">
-                    <label for="fee-rate-slider">NETWORK FEE RATE: <span id="fee-rate-display" style="color: var(--bitcoin-orange);">2</span> sats/vByte</label>
-                    <input type="range" id="fee-rate-slider" min="1" max="10" value="2" style="width: 100%; accent-color: var(--bitcoin-orange);">
-                </div>
-
-                <div class="cost-breakdown" style="background: #111; border: 1px solid var(--border-color); padding: 15px; margin-bottom: 20px; font-size: 0.85rem; color: var(--text-dim);">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                        <span>Network Fee:</span>
-                        <span id="cost-network-fee">~400 sats</span>
+                <div class="command-content">
+                    <h2 class="panel-title">New Transmission</h2>
+                    <div class="input-group">
+                        <label for="message-input">DATA PAYLOAD (Max 80 Bytes)</label>
+                        <textarea id="message-input" class="terminal-input" placeholder="Enter message sequence..."></textarea>
+                        <div id="byte-counter" class="byte-counter">0 / 80 BYTES</div>
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                        <span>Service Fee:</span>
-                        <span>2000 sats</span>
+                    
+                    <div class="input-group">
+                        <label for="target-address-input">RECIPIENT ADDRESS (Optional)</label>
+                        <input type="text" id="target-address-input" class="terminal-input" placeholder="bc1q...">
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                        <span>Recipient Amount:</span>
-                        <span id="cost-recipient-amount">0 sats</span>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="public-feed-checkbox" checked>
+                        <label for="public-feed-checkbox">Publish to Website-Feed</label>
                     </div>
-                    <div style="border-top: 1px solid #333; margin-top: 10px; padding-top: 10px; display: flex; justify-content: space-between; color: var(--bitcoin-orange); font-weight: bold;">
-                        <span>TOTAL:</span>
-                        <span id="cost-total">~2400 sats</span>
+
+                    <div class="input-group">
+                        <label for="amount-input">AMOUNT TO SEND (SATS)</label>
+                        <input type="number" id="amount-input" class="terminal-input" min="0" placeholder="Optional value transfer...">
+                    </div>
+
+                    <div class="input-group">
+                        <label for="refund-address-input">REFUND ADDRESS (Optional)</label>
+                        <input type="text" id="refund-address-input" class="terminal-input" placeholder="bc1q... (For refunds if error)">
+                    </div>
+
+                    <div class="input-group">
+                        <label for="fee-rate-slider">NETWORK FEE RATE: <span id="fee-rate-display" style="color: var(--bitcoin-orange);">2</span> sats/vByte</label>
+                        <input type="range" id="fee-rate-slider" min="1" max="10" value="2" style="width: 100%; accent-color: var(--bitcoin-orange);">
+                    </div>
+
+                    <div class="cost-breakdown" style="background: #111; border: 1px solid var(--border-color); padding: 15px; margin-bottom: 20px; font-size: 0.85rem; color: var(--text-dim);">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span>Network Fee:</span>
+                            <span id="cost-network-fee">~400 sats</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span>Service Fee:</span>
+                            <span>2000 sats</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span>Recipient Amount:</span>
+                            <span id="cost-recipient-amount">0 sats</span>
+                        </div>
+                        <div style="border-top: 1px solid #333; margin-top: 10px; padding-top: 10px; display: flex; justify-content: space-between; color: var(--bitcoin-orange); font-weight: bold;">
+                            <span>TOTAL:</span>
+                            <span id="cost-total">~2400 sats</span>
+                        </div>
                     </div>
                 </div>
 
                 <button id="execute-button" class="terminal-button">BROADCAST</button>
             </section>
 
-            <!-- PANEL B: SYSTEM LOG -->
+            <!-- PANEL B: ACTIVE TRANSMISSIONS & LOG -->
             <section class="panel log-panel">
-                <h2 class="panel-title">System Log</h2>
-                <div id="system-log" class="log-content">
-                    <div class="log-entry">> Initializing connection to node...</div>
-                    <div class="log-entry">> Connected. Waiting for input...</div>
+                <!-- Top: Active Transmissions -->
+                <div class="active-transmissions-panel">
+                    <h2 class="panel-title">Active Transmissions</h2>
+                    <div id="active-orders-list" class="orders-list">
+                        <!-- Orders will be populated here via JS -->
+                        <div class="order-item-placeholder" style="color: var(--text-dim); font-size: 0.8rem; text-align: center; padding-top: 20px;">
+                            No active transmissions.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bottom: System Log -->
+                <div class="system-log-panel">
+                    <h2 class="panel-title">System Log</h2>
+                    <div id="system-log" class="log-content">
+                        <div class="log-entry">> Initializing connection to node...</div>
+                        <div class="log-entry">> Connected. Waiting for input...</div>
+                    </div>
                 </div>
             </section>
 
@@ -94,40 +130,21 @@
         </footer>
     </div>
 
-    <!-- PAYMENT OVERLAY (Hidden by default) -->
-    <div id="payment-overlay" class="overlay" style="display: none;">
-        <div class="overlay-content">
-            <h2 class="overlay-title">Payment Required</h2>
-            <p class="overlay-text">Transfer exact amount to initiate broadcast.</p>
+    <!-- PAYMENT MODAL (Non-blocking) -->
+    <div id="payment-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span id="close-payment-modal" class="close-button">&times;</span>
+            <h2 class="modal-title">Payment Required</h2>
+            <p class="modal-text">Transfer exact amount to initiate broadcast.</p>
             
             <div class="payment-details">
-                <div class="amount-display">TOTAL: <span id="required-amount" class="highlight">...</span></div>
-                <div id="qrcode" class="qr-display"></div>
+                <div class="amount-display">TOTAL: <span id="modal-required-amount" class="highlight">...</span></div>
+                <div id="modal-qrcode" class="qr-display"></div>
                 <div class="address-display">
-                    <span id="payment-address">...</span>
-                    <button id="copy-address-button" class="icon-button">COPY</button>
+                    <span id="modal-payment-address">...</span>
+                    <button id="modal-copy-address-button" class="icon-button">COPY</button>
                 </div>
             </div>
-
-            <div id="payment-status-display" class="status-blink">Waiting for funds...</div>
-            
-            <button id="cancel-button" class="terminal-button danger">CANCEL</button>
-        </div>
-    </div>
-
-    <!-- SUCCESS OVERLAY (Hidden by default) -->
-    <div id="success-overlay" class="overlay" style="display: none;">
-        <div class="overlay-content success-border">
-            <h2 class="overlay-title">Broadcast Confirmed</h2>
-            <p class="overlay-text">Message has been permanently embedded in the blockchain.</p>
-            
-            <div class="tx-details" style="margin: 20px 0;">
-                <p style="color: #888; font-size: 0.8rem;">TRANSACTION ID</p>
-                <p style="word-break: break-all; font-family: monospace; margin-bottom: 10px;"><span id="final-tx-id">...</span></p>
-                <a id="explorer-link" href="#" target="_blank" class="terminal-link">VIEW ON EXPLORER</a>
-            </div>
-
-            <button id="reset-button" class="terminal-button">NEW MESSAGE</button>
         </div>
     </div>
 

@@ -5,14 +5,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const API_BASE_URL = '';
     const MAX_BYTES = 80;
     let statusIntervalId = null;
-    let currentRequestId = null;
     let feedIntervalId = null;
+    
+    // State: Array of active order IDs
+    let activeOrders = JSON.parse(localStorage.getItem('satwire_orders')) || [];
 
     // --- DOM Elements ---
     const messageInput = document.getElementById('message-input');
     const targetAddressInput = document.getElementById('target-address-input');
     const publicFeedCheckbox = document.getElementById('public-feed-checkbox');
     const amountInput = document.getElementById('amount-input');
+    const refundAddressInput = document.getElementById('refund-address-input');
     const feeRateSlider = document.getElementById('fee-rate-slider');
     const feeRateDisplay = document.getElementById('fee-rate-display');
     const costNetworkFee = document.getElementById('cost-network-fee');
@@ -22,23 +25,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const executeButton = document.getElementById('execute-button');
     const systemLog = document.getElementById('system-log');
     const recentMessagesList = document.getElementById('recent-messages-list');
+    const activeOrdersList = document.getElementById('active-orders-list');
     
-    // Overlays
-    const paymentOverlay = document.getElementById('payment-overlay');
-    const successOverlay = document.getElementById('success-overlay');
-    
-    // Payment Elements
-    const requiredAmountEl = document.getElementById('required-amount');
-    const paymentAddressEl = document.getElementById('payment-address');
-    const qrcodeContainer = document.getElementById('qrcode');
-    const paymentStatusDisplay = document.getElementById('payment-status-display');
-    const cancelButton = document.getElementById('cancel-button');
-    const copyAddressButton = document.getElementById('copy-address-button');
-
-    // Success Elements
-    const finalTxIdEl = document.getElementById('final-tx-id');
-    const explorerLink = document.getElementById('explorer-link');
-    const resetButton = document.getElementById('reset-button');
+    // Modal Elements
+    const paymentModal = document.getElementById('payment-modal');
+    const closePaymentModal = document.getElementById('close-payment-modal');
+    const modalRequiredAmount = document.getElementById('modal-required-amount');
+    const modalPaymentAddress = document.getElementById('modal-payment-address');
+    const modalQrcodeContainer = document.getElementById('modal-qrcode');
+    const modalCopyAddressButton = document.getElementById('modal-copy-address-button');
 
     // --- Helper Functions ---
 
@@ -102,43 +97,191 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Resets the UI state.
+     * Saves active orders to LocalStorage.
      */
-    function resetState() {
-        if (statusIntervalId) {
-            clearTimeout(statusIntervalId);
-            statusIntervalId = null;
-        }
-        localStorage.removeItem('activeRequestId');
-        currentRequestId = null;
-
-        messageInput.value = '';
-        if (targetAddressInput) targetAddressInput.value = '';
-        updateByteCounter();
-        
-        paymentOverlay.style.display = 'none';
-        successOverlay.style.display = 'none';
-        
-        logToSystem('System ready for new transmission.');
+    function saveOrders() {
+        localStorage.setItem('satwire_orders', JSON.stringify(activeOrders));
     }
 
     /**
-     * Cancels the current request.
+     * Adds a new order to the list.
      */
-    async function cancelRequest() {
-        if (confirm("Cancel current broadcast sequence?")) {
-            if (currentRequestId) {
-                try {
-                    await fetch(`${API_BASE_URL}/api/request/${currentRequestId}`, {
-                        method: 'DELETE'
-                    });
-                    logToSystem(`Request ${currentRequestId} cancelled.`);
-                } catch (error) {
-                    console.error("Error deleting request:", error);
+    function addOrder(orderData) {
+        // Check if already exists
+        if (!activeOrders.find(o => o.requestId === orderData.requestId)) {
+            activeOrders.unshift({
+                ...orderData,
+                status: 'pending_payment',
+                createdAt: new Date().toISOString()
+            });
+            saveOrders();
+            renderOrders();
+        }
+    }
+
+    /**
+     * Removes an order from the list.
+     */
+    function removeOrder(requestId) {
+        activeOrders = activeOrders.filter(o => o.requestId !== requestId);
+        saveOrders();
+        renderOrders();
+    }
+
+    /**
+     * Updates an order's status.
+     */
+    function updateOrderStatus(requestId, status, txId = null) {
+        const order = activeOrders.find(o => o.requestId === requestId);
+        if (order) {
+            if (order.status !== status) {
+                order.status = status;
+                if (txId) order.txId = txId;
+                saveOrders();
+                renderOrders();
+            }
+        }
+    }
+
+    /**
+     * Renders the list of active orders.
+     */
+    function renderOrders() {
+        activeOrdersList.innerHTML = '';
+
+        if (activeOrders.length === 0) {
+            activeOrdersList.innerHTML = `
+                <div class="order-item-placeholder" style="color: var(--text-dim); font-size: 0.8rem; text-align: center; padding-top: 20px;">
+                    No active transmissions.
+                </div>`;
+            return;
+        }
+
+        activeOrders.forEach(order => {
+            const item = document.createElement('div');
+            item.className = `order-item ${order.status === 'op_return_failed' ? 'failed' : ''}`;
+            
+            let statusText = order.status.replace('_', ' ').toUpperCase();
+            let statusClass = 'order-status';
+            
+            if (order.status === 'payment_confirmed' || order.status === 'op_return_broadcasted') {
+                statusClass += ' confirmed';
+            } else if (order.status === 'op_return_failed') {
+                statusClass += ' failed';
+                statusText = "FAILED - REFUND NEEDED";
+            } else if (order.status === 'payment_detected') {
+                statusClass += ' confirmed'; // Use green/confirmed color for positive progress
+                statusText = 'Payment detected, waiting for one confirmation<span class="loading-dots"></span>';
+            }
+
+            const timeAgo = Math.floor((new Date() - new Date(order.createdAt)) / 60000); // minutes
+
+            // Determine button text and class based on status
+            let deleteBtnText = "CANCEL";
+            let deleteBtnClass = "cancel-btn";
+            
+            if (order.status === 'op_return_broadcasted' || order.status === 'op_return_failed') {
+                deleteBtnText = "DELETE FROM WEBSITE";
+                deleteBtnClass = "delete-local-btn";
+            }
+
+            item.innerHTML = `
+                <div class="order-header">
+                    <span>ID: ${order.requestId.substring(0, 8)}...</span>
+                    <span>${timeAgo} min ago</span>
+                </div>
+                <div class="order-message" style="font-size: 0.9rem; color: var(--text-main); word-break: break-all;">
+                    "${escapeHtml(order.message)}"
+                </div>
+                <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div class="${statusClass}">${statusText}</div>
+                    ${order.txId ? `<a href="https://mempool.space/tx/${order.txId}" target="_blank" class="terminal-link" style="margin: 0;">VIEW TX</a>` : ''}
+                </div>
+                
+                <div class="order-actions">
+                    ${order.status === 'pending_payment' ? `<button class="order-button pay-btn" data-id="${order.requestId}">PAY / QR</button>` : ''}
+                    <button class="order-button ${deleteBtnClass}" data-id="${order.requestId}">${deleteBtnText}</button>
+                </div>
+            `;
+
+            // Event Listeners for buttons
+            const payBtn = item.querySelector('.pay-btn');
+            if (payBtn) {
+                payBtn.addEventListener('click', () => openPaymentModal(order));
+            }
+
+            const cancelBtn = item.querySelector('.cancel-btn');
+            if (cancelBtn) {
+                cancelBtn.addEventListener('click', () => cancelOrder(order.requestId));
+            }
+
+            const deleteLocalBtn = item.querySelector('.delete-local-btn');
+            if (deleteLocalBtn) {
+                deleteLocalBtn.addEventListener('click', () => {
+                    if (confirm("This will only remove the order from your local view. The transaction on the blockchain remains. Continue?")) {
+                        removeOrder(order.requestId);
+                    }
+                });
+            }
+
+            activeOrdersList.appendChild(item);
+        });
+    }
+
+    /**
+     * Cancels an order on the server and removes it locally.
+     */
+    async function cancelOrder(requestId) {
+        if (!confirm("Are you sure you want to cancel this order? It will be permanently removed.")) {
+            return;
+        }
+
+        logToSystem(`Cancelling order ${requestId.substring(0, 8)}...`);
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/request/${requestId}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                logToSystem(`Order ${requestId.substring(0, 8)} cancelled.`);
+                removeOrder(requestId);
+            } else {
+                const data = await response.json();
+                // If 404, it's already gone, so remove locally
+                if (response.status === 404) {
+                    logToSystem(`Order ${requestId.substring(0, 8)} not found on server. Removing locally.`);
+                    removeOrder(requestId);
+                } else {
+                    logToSystem(`Error cancelling: ${data.error || response.statusText}`);
+                    alert(`Failed to cancel: ${data.error}`);
                 }
             }
-            resetState();
+        } catch (error) {
+            logToSystem(`Network error during cancellation.`);
+            console.error("Cancel error:", error);
         }
+    }
+
+    function openPaymentModal(order) {
+        modalPaymentAddress.textContent = order.address;
+        modalRequiredAmount.textContent = `${order.requiredAmountSatoshis} SATS`;
+        
+        modalQrcodeContainer.innerHTML = '';
+        new QRCode(modalQrcodeContainer, {
+            text: `bitcoin:${order.address}?amount=${order.requiredAmountSatoshis / 100000000}`,
+            width: 200,
+            height: 200,
+            colorDark: "#000000",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.M
+        });
+
+        paymentModal.style.display = 'flex';
+    }
+
+    function closePaymentModalFunc() {
+        paymentModal.style.display = 'none';
     }
 
     /**
@@ -150,6 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isPublic = publicFeedCheckbox.checked;
         const feeRate = parseInt(feeRateSlider.value);
         const amountToSend = parseInt(amountInput.value) || 0;
+        const refundAddress = refundAddressInput ? refundAddressInput.value.trim() : null;
         const byteLength = new TextEncoder().encode(message).length;
 
         if (byteLength === 0) {
@@ -169,19 +313,28 @@ document.addEventListener('DOMContentLoaded', () => {
                     targetAddress: targetAddress,
                     isPublic: isPublic,
                     feeRate: feeRate,
-                    amountToSend: amountToSend
+                    amountToSend: amountToSend,
+                    refundAddress: refundAddress
                 }),
             });
 
             const responseData = await response.json();
 
             if (response.ok && response.status === 201) {
-                currentRequestId = responseData.requestId;
-                localStorage.setItem('activeRequestId', currentRequestId);
+                logToSystem(`Order created: ${responseData.requestId}`);
                 
-                logToSystem('Payment gateway initialized.');
-                showPaymentOverlay(responseData);
-                checkStatus(currentRequestId);
+                // Add to active orders list
+                addOrder({
+                    requestId: responseData.requestId,
+                    address: responseData.address,
+                    requiredAmountSatoshis: responseData.requiredAmountSatoshis,
+                    message: message // Store message for display
+                });
+
+                // Clear inputs
+                messageInput.value = '';
+                updateByteCounter();
+                
             } else {
                 logToSystem(`Error: ${responseData.error}`);
                 alert(`Error: ${responseData.error}`);
@@ -192,76 +345,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showPaymentOverlay(data) {
-        paymentAddressEl.textContent = data.address;
-        requiredAmountEl.textContent = `${data.requiredAmountSatoshis} SATS`;
-        
-        qrcodeContainer.innerHTML = '';
-        new QRCode(qrcodeContainer, {
-            text: `bitcoin:${data.address}?amount=${data.requiredAmountSatoshis / 100000000}`,
-            width: 150,
-            height: 150,
-            colorDark: "#000000",
-            colorLight: "#ffffff",
-            correctLevel: QRCode.CorrectLevel.M
-        });
+    /**
+     * Polls status for all active orders.
+     */
+    async function pollActiveOrders() {
+        if (activeOrders.length === 0) return;
 
-        paymentOverlay.style.display = 'flex';
-    }
+        for (const order of activeOrders) {
+            // Skip completed or failed orders to save bandwidth, unless we want to check for confirmations
+            if (order.status === 'op_return_broadcasted' || order.status === 'op_return_failed') continue;
 
-    async function checkStatus(requestId) {
-        if (!requestId) return;
-
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/request-status/${requestId}`);
-            if (!response.ok) return;
-
-            const data = await response.json();
-
-            // Restore payment info if needed
-            if (data.address && data.requiredAmountSatoshis && paymentOverlay.style.display === 'none' && successOverlay.style.display === 'none') {
-                 showPaymentOverlay(data);
-            }
-
-            switch (data.status) {
-                case 'pending_payment':
-                    paymentStatusDisplay.textContent = 'Waiting for funds...';
-                    statusIntervalId = setTimeout(() => checkStatus(requestId), 5000);
-                    break;
-                case 'payment_detected':
-                    paymentStatusDisplay.textContent = 'Payment detected. Awaiting confirmation...';
-                    if (paymentStatusDisplay.textContent !== 'Payment detected. Awaiting confirmation...') {
-                        logToSystem('Payment signal detected. Verifying...');
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/request-status/${order.requestId}`);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        // Order might have been deleted on backend
+                        // updateOrderStatus(order.requestId, 'expired'); 
                     }
-                    statusIntervalId = setTimeout(() => checkStatus(requestId), 5000);
-                    break;
-                case 'payment_confirmed':
-                    paymentStatusDisplay.textContent = 'Payment confirmed. Broadcasting...';
-                    logToSystem('Funds secured. Broadcasting OP_RETURN...');
-                    statusIntervalId = setTimeout(() => checkStatus(requestId), 3000);
-                    break;
-                case 'op_return_broadcasted':
-                    clearTimeout(statusIntervalId);
-                    paymentOverlay.style.display = 'none';
-                    successOverlay.style.display = 'flex';
+                    continue;
+                }
+
+                const data = await response.json();
+                
+                if (data.status !== order.status) {
+                    logToSystem(`Order ${order.requestId.substring(0,8)}: ${data.status}`);
+                    updateOrderStatus(order.requestId, data.status, data.opReturnTxId);
                     
-                    finalTxIdEl.textContent = data.opReturnTxId;
-                    explorerLink.href = `https://mempool.space/tx/${data.opReturnTxId}`;
-                    
-                    logToSystem('Sequence complete. Message immutable.');
-                    logToSystem(`TXID: ${data.opReturnTxId}`);
-                    
-                    // Refresh feed immediately after success
-                    fetchRecentMessages();
-                    break;
-                case 'op_return_failed':
-                    paymentStatusDisplay.textContent = 'Broadcast failed. Contact support.';
-                    logToSystem('Critical Error: Broadcast failed.');
-                    clearTimeout(statusIntervalId);
-                    break;
+                    if (data.status === 'op_return_broadcasted') {
+                        fetchRecentMessages(); // Refresh feed
+                    }
+                }
+            } catch (error) {
+                console.error(`Error polling order ${order.requestId}:`, error);
             }
-        } catch (error) {
-            console.error("Status check error:", error);
         }
     }
 
@@ -331,14 +447,19 @@ document.addEventListener('DOMContentLoaded', () => {
     amountInput.addEventListener('input', updateCostBreakdown);
     feeRateSlider.addEventListener('input', updateCostBreakdown);
     executeButton.addEventListener('click', executeProtocol);
-    cancelButton.addEventListener('click', cancelRequest);
-    resetButton.addEventListener('click', resetState);
     
-    copyAddressButton.addEventListener('click', () => {
-        navigator.clipboard.writeText(paymentAddressEl.textContent);
-        const originalText = copyAddressButton.textContent;
-        copyAddressButton.textContent = 'COPIED';
-        setTimeout(() => copyAddressButton.textContent = originalText, 2000);
+    closePaymentModal.addEventListener('click', closePaymentModalFunc);
+    window.addEventListener('click', (event) => {
+        if (event.target === paymentModal) {
+            closePaymentModalFunc();
+        }
+    });
+    
+    modalCopyAddressButton.addEventListener('click', () => {
+        navigator.clipboard.writeText(modalPaymentAddress.textContent);
+        const originalText = modalCopyAddressButton.textContent;
+        modalCopyAddressButton.textContent = 'COPIED';
+        setTimeout(() => modalCopyAddressButton.textContent = originalText, 2000);
     });
 
     // --- Init ---
@@ -346,15 +467,12 @@ document.addEventListener('DOMContentLoaded', () => {
         logToSystem('WARNING: Running via file protocol. API calls will fail.');
     }
 
-    const savedRequestId = localStorage.getItem('activeRequestId');
-    if (savedRequestId) {
-        currentRequestId = savedRequestId;
-        logToSystem('Resuming previous session...');
-        checkStatus(currentRequestId);
-    }
-
-    // Initial fetch and periodic update for feed
+    // Initial Render
+    renderOrders();
     fetchRecentMessages();
-    updateCostBreakdown(); // Init cost display
-    feedIntervalId = setInterval(fetchRecentMessages, 30000); // Update every 30s
+    updateCostBreakdown();
+
+    // Intervals
+    feedIntervalId = setInterval(fetchRecentMessages, 30000); // Feed every 30s
+    statusIntervalId = setInterval(pollActiveOrders, 5000); // Poll orders every 5s
 });

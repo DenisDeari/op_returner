@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modal = document.getElementById('detail-modal');
     const modalBody = document.getElementById('modal-body');
     const closeButton = document.querySelector('.close-button');
+    const refreshButton = document.getElementById('refresh-button');
     const API_BASE_URL = '/api/admin';
     let adminPassword = null;
     let allRequests = []; // Store requests locally
@@ -13,6 +14,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.onclick = (event) => {
         if (event.target == modal) modal.style.display = "none";
     }
+
+    // Refresh button logic
+    refreshButton.addEventListener('click', () => {
+        refreshButton.disabled = true;
+        refreshButton.textContent = 'Refreshing...';
+        fetchRequests().finally(() => {
+            refreshButton.disabled = false;
+            refreshButton.textContent = 'Refresh';
+        });
+    });
 
     async function fetchRequests() {
         if (!adminPassword) {
@@ -116,6 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <h3>Payment Info</h3>
                     <p><strong>Address:</strong> ${req.address}</p>
                     <p><strong>Required Amount:</strong> ${req.requiredAmountSatoshis} sats</p>
+                    <p><strong>Refund Address:</strong> ${req.refundAddress || 'N/A'}</p>
                 </div>
                 <div class="detail-section">
                     <h3>Transaction History (from Blockchain)</h3>
