@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SatWire | Immutable Bitcoin Messaging & OP_RETURN Protocol</title>
-    <meta name="description" content="SatWire allows you to permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global value transfer terminal.">
-    <meta name="keywords" content="Bitcoin, OP_RETURN, Blockchain Message, Crypto, Immutable, SatWire">
+    <title>SatWire | Simple OP_RETURN Creator & Bitcoin Messenger</title>
+    <meta name="description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
+    <meta name="keywords" content="Bitcoin, OP_RETURN, Blockchain Message, Crypto, Immutable, SatWire, simple op return creator, write on blockchain, bitcoin messenger">
     
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://satwire.app/">
-    <meta property="og:title" content="SatWire | Immutable Bitcoin Messaging">
-    <meta property="og:description" content="Permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global.">
+    <meta property="og:url" content="https://satwire.io/">
+    <meta property="og:title" content="SatWire | Simple OP_RETURN Creator & Bitcoin Messenger">
+    <meta property="og:description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
     
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://satwire.app/">
-    <meta property="twitter:title" content="SatWire | Immutable Bitcoin Messaging">
-    <meta property="twitter:description" content="Permanently embed messages into the Bitcoin blockchain via OP_RETURN. Uncensored, immutable, and global.">
+    <meta property="twitter:url" content="https://satwire.io/">
+    <meta property="twitter:title" content="SatWire | Simple OP_RETURN Creator & Bitcoin Messenger">
+    <meta property="twitter:description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
 
     <link rel="stylesheet" href="css/styles.css"> 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -55,11 +55,6 @@
                     <div class="input-group">
                         <label for="amount-input">AMOUNT TO SEND (SATS)</label>
                         <input type="number" id="amount-input" class="terminal-input" min="0" placeholder="Optional value transfer...">
-                    </div>
-
-                    <div class="input-group">
-                        <label for="refund-address-input">REFUND ADDRESS (Optional)</label>
-                        <input type="text" id="refund-address-input" class="terminal-input" placeholder="bc1q... (For refunds if error)">
                     </div>
 
                     <div class="input-group">
@@ -145,6 +140,22 @@
                     <button id="modal-copy-address-button" class="icon-button">COPY</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- REFUND MODAL -->
+    <div id="refund-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span id="close-refund-modal" class="close-button">&times;</span>
+            <h2 class="modal-title" style="color: #d32f2f;">Transmission Failed</h2>
+            <p class="modal-text" id="refund-reason">Unknown Error</p>
+            
+            <div class="input-group" style="text-align: left; margin-top: 20px;">
+                <label for="modal-refund-address">ENTER REFUND ADDRESS</label>
+                <input type="text" id="modal-refund-address" class="terminal-input" placeholder="bc1q...">
+            </div>
+            
+            <button id="submit-refund-button" class="terminal-button">SUBMIT REFUND REQUEST</button>
         </div>
     </div>
 

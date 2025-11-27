@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetAddressInput = document.getElementById('target-address-input');
     const publicFeedCheckbox = document.getElementById('public-feed-checkbox');
     const amountInput = document.getElementById('amount-input');
-    const refundAddressInput = document.getElementById('refund-address-input');
+    // const refundAddressInput = document.getElementById('refund-address-input'); // Removed
     const feeRateSlider = document.getElementById('fee-rate-slider');
     const feeRateDisplay = document.getElementById('fee-rate-display');
     const costNetworkFee = document.getElementById('cost-network-fee');
@@ -34,6 +34,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalPaymentAddress = document.getElementById('modal-payment-address');
     const modalQrcodeContainer = document.getElementById('modal-qrcode');
     const modalCopyAddressButton = document.getElementById('modal-copy-address-button');
+
+    // Refund Modal Elements
+    const refundModal = document.getElementById('refund-modal');
+    const closeRefundModal = document.getElementById('close-refund-modal');
+    const modalRefundAddressInput = document.getElementById('modal-refund-address');
+    const submitRefundButton = document.getElementById('submit-refund-button');
+    const refundReasonText = document.getElementById('refund-reason');
 
     // --- Helper Functions ---
 
@@ -179,10 +186,15 @@ document.addEventListener('DOMContentLoaded', () => {
             // Determine button text and class based on status
             let deleteBtnText = "CANCEL";
             let deleteBtnClass = "cancel-btn";
+            let showRefundBtn = false;
             
-            if (order.status === 'op_return_broadcasted' || order.status === 'op_return_failed') {
+            if (order.status === 'op_return_broadcasted') {
                 deleteBtnText = "DELETE FROM WEBSITE";
                 deleteBtnClass = "delete-local-btn";
+            } else if (order.status === 'op_return_failed') {
+                deleteBtnText = "DELETE FROM WEBSITE";
+                deleteBtnClass = "delete-local-btn";
+                showRefundBtn = true;
             }
 
             item.innerHTML = `
@@ -200,6 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 <div class="order-actions">
                     ${order.status === 'pending_payment' ? `<button class="order-button pay-btn" data-id="${order.requestId}">PAY / QR</button>` : ''}
+                    ${showRefundBtn ? `<button class="order-button refund-btn" data-id="${order.requestId}" style="border-color: #d32f2f; color: #d32f2f;">CLAIM REFUND</button>` : ''}
                     <button class="order-button ${deleteBtnClass}" data-id="${order.requestId}">${deleteBtnText}</button>
                 </div>
             `;
@@ -208,6 +221,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const payBtn = item.querySelector('.pay-btn');
             if (payBtn) {
                 payBtn.addEventListener('click', () => openPaymentModal(order));
+            }
+
+            const refundBtn = item.querySelector('.refund-btn');
+            if (refundBtn) {
+                refundBtn.addEventListener('click', () => openRefundModal(order));
             }
 
             const cancelBtn = item.querySelector('.cancel-btn');
@@ -293,7 +311,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isPublic = publicFeedCheckbox.checked;
         const feeRate = parseInt(feeRateSlider.value);
         const amountToSend = parseInt(amountInput.value) || 0;
-        const refundAddress = refundAddressInput ? refundAddressInput.value.trim() : null;
+        // const refundAddress = refundAddressInput ? refundAddressInput.value.trim() : null; // Removed
         const byteLength = new TextEncoder().encode(message).length;
 
         if (byteLength === 0) {
@@ -313,8 +331,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     targetAddress: targetAddress,
                     isPublic: isPublic,
                     feeRate: feeRate,
-                    amountToSend: amountToSend,
-                    refundAddress: refundAddress
+                    amountToSend: amountToSend
+                    // refundAddress: refundAddress // Removed
                 }),
             });
 
@@ -441,6 +459,69 @@ document.addEventListener('DOMContentLoaded', () => {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    // --- Refund Logic ---
+    function openRefundModal(order) {
+        refundReasonText.textContent = "The OP_RETURN broadcast failed. Please provide a refund address.";
+        submitRefundButton.dataset.id = order.requestId;
+        modalRefundAddressInput.value = order.refundAddress || ''; 
+        refundModal.style.display = 'flex';
+    }
+
+    submitRefundButton.addEventListener('click', async () => {
+        const requestId = submitRefundButton.dataset.id;
+        const address = modalRefundAddressInput.value.trim();
+        
+        if(!address) {
+            alert("Please enter a valid Bitcoin address.");
+            return;
+        }
+        
+        submitRefundButton.disabled = true;
+        submitRefundButton.textContent = "Submitting...";
+
+        try {
+            await submitRefundAddress(requestId, address);
+            
+            // Update local order with refund address
+            const order = activeOrders.find(o => o.requestId === requestId);
+            if(order) {
+                order.refundAddress = address;
+                saveOrders();
+            }
+            
+            alert("Refund request submitted successfully.");
+            refundModal.style.display = 'none';
+        } catch (error) {
+            alert("Failed to submit refund request: " + error.message);
+        } finally {
+            submitRefundButton.disabled = false;
+            submitRefundButton.textContent = "SUBMIT REFUND REQUEST";
+        }
+    });
+
+    async function submitRefundAddress(requestId, address) {
+        const response = await fetch(`${API_BASE_URL}/api/request/${requestId}/refund`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refundAddress: address })
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Unknown error');
+        }
+    }
+
+    closeRefundModal.addEventListener('click', () => {
+        refundModal.style.display = 'none';
+    });
+
+    window.addEventListener('click', (event) => {
+        if (event.target === refundModal) {
+            refundModal.style.display = 'none';
+        }
+    });
 
     // --- Event Listeners ---
     messageInput.addEventListener('input', updateByteCounter);

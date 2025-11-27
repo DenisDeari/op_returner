@@ -129,6 +129,26 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         }
     });
 
+    router.post('/request/:requestId/refund', async (req, res) => {
+        const { requestId } = req.params;
+        const { refundAddress } = req.body;
+        
+        if (!refundAddress) return res.status(400).json({ error: 'Refund address is required' });
+
+        try {
+            await new Promise((resolve, reject) => {
+                db.run("UPDATE requests SET refundAddress = ? WHERE id = ?", [refundAddress, requestId], function(err) {
+                    if (err) return reject(err);
+                    resolve();
+                });
+            });
+            res.status(200).json({ success: true });
+        } catch (error) {
+            console.error("Error updating refund address:", error);
+            res.status(500).json({ error: "Failed to update refund address" });
+        }
+    });
+
     return router;
 }
 
