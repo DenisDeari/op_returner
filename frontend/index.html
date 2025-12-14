@@ -25,10 +25,34 @@
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;700&display=swap" rel="stylesheet">
 </head>
 <body>
+    <!-- SERVICE HUB OVERLAY -->
+    <div id="service-hub" class="service-hub-overlay">
+        <div class="hub-content">
+            <h1 class="hub-title">SATWIRE SERVICES</h1>
+            <div class="hub-grid">
+                <div class="hub-card" id="btn-open-hof">
+                    <h2>HALL OF FAME</h2>
+                    <p>View the most legendary messages immortalized on-chain.</p>
+                </div>
+                <div class="hub-card" id="btn-open-terminal">
+                    <h2>SATWIRE</h2>
+                    <p>Broadcast OP_RETURN messages to the Bitcoin network.</p>
+                </div>
+                <div class="hub-card disabled">
+                    <h2>COMING SOON</h2>
+                    <p>More Bitcoin tools are under development.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="terminal-container">
         <header class="terminal-header">
             <h1 class="logo">SatWire</h1>
-            <div class="status-indicator">SYSTEM ONLINE</div>
+            <div style="display: flex; align-items: center; gap: 20px;">
+                <button id="menu-button" class="terminal-button small-btn">MENU</button>
+                <div class="status-indicator">SYSTEM ONLINE</div>
+            </div>
         </header>
 
         <main class="dashboard-grid">
@@ -37,9 +61,9 @@
                 <div class="command-content">
                     <h2 class="panel-title">New Transmission</h2>
                     <div class="input-group">
-                        <label for="message-input">DATA PAYLOAD (Max 80 Bytes)</label>
+                        <label for="message-input">DATA PAYLOAD</label>
                         <textarea id="message-input" class="terminal-input" placeholder="Enter message sequence..."></textarea>
-                        <div id="byte-counter" class="byte-counter">0 / 80 BYTES</div>
+                        <div id="byte-counter" class="byte-counter">0 BYTES</div>
                     </div>
                     
                     <div class="input-group">
@@ -160,6 +184,30 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
-    <script src="js/app.js"></script> 
+    <!-- HALL OF FAME MODAL -->
+    <div id="hall-of-fame-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>HALL OF FAME</h2>
+                <button id="close-hof-btn" class="close-modal">X</button>
+            </div>
+            
+            <div style="padding: 0 20px; margin-bottom: 20px; display: flex; gap: 10px;">
+                <button id="hof-add-btn" class="terminal-button small-btn" style="flex: 1; background: #222; border: 1px solid var(--bitcoin-orange); color: var(--bitcoin-orange);">
+                    + ADD BY TXID
+                </button>
+                <button id="hof-scan-btn" class="terminal-button small-btn" style="flex: 1; background: #222; border: 1px solid var(--bitcoin-orange); color: var(--bitcoin-orange);">
+                    + SCAN BLOCK
+                </button>
+            </div>
+
+            <div id="hall-of-fame-list" class="hof-list">
+                <!-- Items go here -->
+                <div class="loading-spinner">Loading legends...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
 </body>
 </html>

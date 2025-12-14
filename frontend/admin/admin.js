@@ -212,4 +212,113 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     fetchRequests();
+
+    // --- Hall of Fame Logic ---
+    const hofBody = document.getElementById('hof-body');
+    const refreshHofButton = document.getElementById('refresh-hof-button');
+    const addHofBtn = document.getElementById('add-hof-btn');
+    const hofMessageInput = document.getElementById('hof-message');
+    const hofTxIdInput = document.getElementById('hof-txid');
+    const hofDescInput = document.getElementById('hof-desc');
+
+    if (refreshHofButton) {
+        refreshHofButton.addEventListener('click', fetchHallOfFame);
+    }
+
+    if (addHofBtn) {
+        addHofBtn.addEventListener('click', async () => {
+            const message = hofMessageInput.value;
+            const txId = hofTxIdInput.value;
+            const description = hofDescInput.value;
+
+            // Allow empty message if TXID is present (auto-fetch)
+            if (!txId && !message) {
+                alert('Either Message or TxID is required');
+                return;
+            }
+            if (txId && !message) {
+                // Optional: Notify user we are fetching
+                addHofBtn.textContent = "Fetching...";
+                addHofBtn.disabled = true;
+            }
+
+            try {
+                const response = await fetch('/api/hall-of-fame', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ message, txId, description })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    alert(data.autoFetched ? `Success! Fetched: "${data.message}"` : 'Added to Hall of Fame!');
+                    hofMessageInput.value = '';
+                    hofTxIdInput.value = '';
+                    hofDescInput.value = '';
+                    fetchHallOfFame();
+                } else {
+                    const err = await response.json();
+                    alert('Error: ' + err.error);
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                addHofBtn.textContent = "Add to Hall of Fame";
+                addHofBtn.disabled = false;
+            }
+        });
+    }
+
+    async function fetchHallOfFame() {
+        try {
+            const response = await fetch('/api/hall-of-fame');
+            const data = await response.json();
+            renderHallOfFame(data);
+        } catch (e) {
+            console.error(e);
+            hofBody.innerHTML = '<tr><td colspan="5">Error loading Hall of Fame</td></tr>';
+        }
+    }
+
+    function renderHallOfFame(items) {
+        if (!items || items.length === 0) {
+            hofBody.innerHTML = '<tr><td colspan="5">No entries found.</td></tr>';
+            return;
+        }
+        hofBody.innerHTML = items.map(item => `
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.id}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.message}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.description || ''}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;"><a href="https://mempool.space/tx/${item.txId}" target="_blank">${item.txId.substring(0, 10)}...</a></td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                    <button class="delete-hof-btn" data-id="${item.id}" style="background-color: #d9534f; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px;">Delete</button>
+                </td>
+            </tr>
+        `).join('');
+
+        document.querySelectorAll('.delete-hof-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                if (!confirm('Are you sure?')) return;
+                const id = e.target.dataset.id;
+                try {
+                    const res = await fetch(`/api/hall-of-fame/${id}`, {
+                        method: 'DELETE'
+                    });
+                    if (res.ok) {
+                        fetchHallOfFame();
+                    } else {
+                        alert('Failed to delete');
+                    }
+                } catch (err) {
+                    alert('Error deleting');
+                }
+            });
+        });
+    }
+
+    // Initial load of HoF
+    fetchHallOfFame();
 });

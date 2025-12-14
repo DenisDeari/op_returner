@@ -9,6 +9,7 @@ const { cleanupOldRequests } = require('./src/cleanup');
 const createApiRouter = require('./src/routes/api');
 const createWebhookRouter = require('./src/routes/webhook');
 const createAdminRouter = require('./src/routes/admin');
+const createHallOfFameRouter = require('./src/routes/halloffame');
 
 // --- Initialization ---
 initializeDatabase();
@@ -29,10 +30,12 @@ app.use('/admin', express.static(path.join(__dirname, '../frontend/admin')));
 const apiRouter = createApiRouter(db, rootNode, config, requestQueue);
 const webhookRouter = createWebhookRouter(db, rootNode, config);
 const adminRouter = createAdminRouter(db, rootNode, config);
+const hallOfFameRouter = createHallOfFameRouter(db);
 
 app.use('/api', apiRouter);
 app.use('/api/webhook', webhookRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/hall-of-fame', hallOfFameRouter);
 
 // --- Root Route ---
 app.get('/', (req, res) => {

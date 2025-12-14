@@ -29,6 +29,39 @@
                     </tbody>
             </table>
         </div>
+
+        <!-- Hall of Fame Section -->
+        <div id="hof-container" style="margin-top: 50px; border-top: 2px solid #eee; padding-top: 20px;">
+            <div class="header-actions">
+                <h2>Hall of Fame Management</h2>
+                <button id="refresh-hof-button" class="button-refresh">Refresh HoF</button>
+            </div>
+            
+            <!-- Add New Entry Form -->
+            <div class="hof-form" style="background: #f9f9f9; padding: 20px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #ddd;">
+                <h3 style="margin-top: 0;">Add New Legend</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                    <input type="text" id="hof-message" placeholder="Message" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <input type="text" id="hof-txid" placeholder="Transaction ID" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                </div>
+                <textarea id="hof-desc" placeholder="Description (Optional)" style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;"></textarea>
+                <button id="add-hof-btn" style="background: #5cb85c; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px;">Add to Hall of Fame</button>
+            </div>
+
+            <table id="hof-table" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #f2f2f2; text-align: left;">
+                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">ID</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Message</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Description</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">TxID</th>
+                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="hof-body">
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <!-- Detail Modal -->
