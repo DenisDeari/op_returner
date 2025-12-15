@@ -99,7 +99,8 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         const opReturnBuffer = Buffer.from(message, 'utf8');
 
         const opReturnScriptLength = bitcoin.payments.embed({ data: [opReturnBuffer] }).output.length;
-        let estimatedVBytes = 68 + opReturnScriptLength + 31 + 10;
+        // Fix: Add 9 bytes buffer to account for OP_RETURN output overhead (8 bytes amount + varint)
+        let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10;
         
         // If target address is present, add weight for its output
         if (targetAddress) {
