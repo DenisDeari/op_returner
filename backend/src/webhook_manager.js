@@ -13,7 +13,15 @@ async function registerWebhook(btcAddress, config) {
 
     console.log(`Registering webhooks for ${btcAddress}...`);
 
-    for (const eventType of events) {
+    for (let i = 0; i < events.length; i++) {
+        const eventType = events[i];
+
+        // Add 5s delay for subsequent requests to avoid rate limits
+        if (i > 0) {
+            console.log("Waiting 5 seconds before registering next webhook...");
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+
         const payload = { event: eventType, address: btcAddress, url: webhookUrl };
         try {
             const response = await axios.post(apiUrl, payload);
