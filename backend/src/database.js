@@ -91,6 +91,34 @@ function initializeDatabase() {
             }
         });
     });
+
+    // Create wallet_state table for persistent index tracking
+    const createWalletStateTableSql = `
+        CREATE TABLE IF NOT EXISTS wallet_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_derived_index INTEGER NOT NULL DEFAULT 0
+        );
+    `;
+    db.run(createWalletStateTableSql, (err) => {
+        if (err) {
+            console.error("FATAL ERROR: Error creating wallet_state table:", err.message);
+        } else {
+            console.log("Table 'wallet_state' created or already exists.");
+            // Initialize if empty
+            db.get("SELECT count(*) as count FROM wallet_state", (err, row) => {
+                if (row && row.count === 0) {
+                    // Initialize with current max index from requests to ensure continuity
+                    db.get('SELECT MAX("index") as maxIndex FROM requests', (err, result) => {
+                        const startIdx = (result && result.maxIndex !== null) ? result.maxIndex : 0;
+                        db.run("INSERT INTO wallet_state (id, last_derived_index) VALUES (1, ?)", [startIdx], (err) => {
+                            if (err) console.error("Error initializing wallet_state:", err);
+                            else console.log(`Initialized wallet_state with index ${startIdx}`);
+                        });
+                    });
+                }
+            });
+        }
+    });
 }
 
 module.exports = { db, initializeDatabase };

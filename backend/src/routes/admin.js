@@ -2,6 +2,7 @@
 const express = require('express');
 const axios = require('axios'); // Import axios
 const opReturnCreator = require('../op_return_creator');
+const webhookManager = require('../webhook_manager');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -88,6 +89,18 @@ function createAdminRouter(db, rootNode, config) {
         const { requestId } = req.params;
         console.log(`Admin deleting request: ${requestId}`);
         try {
+            // Get hook ID before deleting
+            const row = await new Promise((resolve, reject) => {
+                db.get("SELECT blockcypherHookId FROM requests WHERE id = ?", [requestId], (err, row) => {
+                    if (err) return reject(err);
+                    resolve(row);
+                });
+            });
+
+            if (row && row.blockcypherHookId) {
+                webhookManager.deleteWebhook(row.blockcypherHookId, config);
+            }
+
             await new Promise((resolve, reject) => {
                 db.run("DELETE FROM requests WHERE id = ?", [requestId], function(err) {
                     if (err) return reject(err);

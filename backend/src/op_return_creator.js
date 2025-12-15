@@ -75,11 +75,11 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
     const { BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN } = config;
     const coinType = network === bitcoin.networks.bitcoin ? 0 : 1;
 
-    if (!message || Buffer.byteLength(message, 'utf8') > 80) {
+    if (!message || Buffer.byteLength(message, 'utf8') > 8000) {
         console.error(`[OpReturnCreator] Invalid message for request ${id}. Aborting.`);
         return null;
     }
-    if (!paymentTxId || paymentReceivedSatoshis === undefined || !derivationPath || !inputAddress) {
+    if (!paymentTxId || !derivationPath || !inputAddress) {
         console.error(`[OpReturnCreator] Missing payment details in request ${id}. Aborting.`);
         return null;
     }

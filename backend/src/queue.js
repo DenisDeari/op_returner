@@ -13,10 +13,19 @@ async function processNextInQueue(db, rootNode, config) {
     const { message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, resolve, reject } = requestProcessingQueue.shift();
 
     try {
-        const lastIdxRow = await new Promise((res, rej) => {
-            db.get('SELECT MAX("index") as lastIndex FROM requests', [], (err, row) => err ? rej(err) : res(row));
+        // FIX: Use persistent wallet_state to generate next index, preventing address reuse
+        const nextIndex = await new Promise((resolve, reject) => {
+            db.serialize(() => {
+                db.run("UPDATE wallet_state SET last_derived_index = last_derived_index + 1 WHERE id = 1", function(err) {
+                    if (err) reject(err);
+                });
+                db.get("SELECT last_derived_index FROM wallet_state WHERE id = 1", (err, row) => {
+                    if (err) return reject(err);
+                    if (!row) return reject(new Error("Wallet state not initialized"));
+                    resolve(row.last_derived_index);
+                });
+            });
         });
-        const nextIndex = (lastIdxRow && lastIdxRow.lastIndex !== null ? lastIdxRow.lastIndex : -1) + 1;
 
         const coinType = config.NETWORK === bitcoin.networks.bitcoin ? 0 : 1;
         const derivationPath = `m/84'/${coinType}'/0'/0/${nextIndex}`;
@@ -29,7 +38,16 @@ async function processNextInQueue(db, rootNode, config) {
         // --- END OF FIX ---
 
         // Calculate required amount
-        const estimatedVBytes = 200;
+        // Dynamic vByte calculation based on message size
+        const messageBytes = Buffer.byteLength(message, 'utf8');
+        let estimatedVBytes = 10.5 + 68 + (11 + messageBytes) + 31;
+        
+        if (targetAddress) {
+            estimatedVBytes += 31;
+        }
+        
+        estimatedVBytes = Math.ceil(estimatedVBytes);
+
         const serviceFee = 2000;
         const networkFee = estimatedVBytes * (feeRate || 2);
         const requiredAmountSatoshis = networkFee + serviceFee + (amountToSend || 0);

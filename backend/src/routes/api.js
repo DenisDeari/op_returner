@@ -1,40 +1,15 @@
 // backend/src/routes/api.js
 const express = require('express');
 const axios = require('axios');
+const opReturnCreator = require('../op_return_creator');
+const webhookManager = require('../webhook_manager');
+
+// Cache for self-heal checks to prevent API spam
+const selfHealCache = {};
 
 // This function creates a router and injects dependencies (db, wallet, etc.)
 function createApiRouter(db, rootNode, config, requestQueue) {
     const router = express.Router();
-
-    // --- Helper for Webhook Registration ---
-    async function registerWebhook(btcAddress) {
-        if (!config.BLOCKCYPHER_TOKEN) {
-            console.warn("BLOCKCYPHER_TOKEN not found. Skipping webhook registration.");
-            return null;
-        }
-        const webhookUrl = `${config.WEBHOOK_RECEIVER_BASE_URL}/api/webhook/payment-notification`;
-        const apiUrl = `${config.BLOCKCYPHER_API_BASE}/hooks?token=${config.BLOCKCYPHER_TOKEN}`;
-        
-        const events = ["unconfirmed-tx", "confirmed-tx"];
-        const hookIds = [];
-
-        console.log(`Registering webhooks for ${btcAddress}...`);
-
-        for (const eventType of events) {
-            const payload = { event: eventType, address: btcAddress, url: webhookUrl };
-            try {
-                const response = await axios.post(apiUrl, payload);
-                console.log(`Successfully registered ${eventType} webhook. ID: ${response.data.id}`);
-                hookIds.push(response.data.id);
-            } catch (error) {
-                console.error(`Error registering ${eventType} webhook:`, error.message);
-                if (error.response) {
-                    console.error('API Error Status:', error.response.status, 'Data:', error.response.data);
-                }
-            }
-        }
-        return hookIds.length > 0 ? hookIds.join(',') : null;
-    }
 
     // --- API Endpoints ---
     router.get('/health', (req, res) => {
@@ -43,7 +18,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
     router.get('/request-status/:requestId', async (req, res) => {
         const { requestId } = req.params;
-        console.log(`GET /api/request-status for ID: ${requestId}`);
+        // console.log(`GET /api/request-status for ID: ${requestId}`);
         try {
             const row = await new Promise((resolve, reject) => {
                 db.get("SELECT * FROM requests WHERE id = ?", [requestId], (err, row) => {
@@ -51,11 +26,94 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                     resolve(row);
                 });
             });
-            if (row) {
-                res.status(200).json(row);
-            } else {
-                res.status(404).json({ error: 'Request not found' });
+
+            if (!row) {
+                return res.status(404).json({ error: 'Request not found' });
             }
+
+            // Self-Healing: Check blockchain if pending and older than 15s
+            const ageInSeconds = (new Date() - new Date(row.createdAt)) / 1000;
+            const now = Date.now();
+            const lastCheck = selfHealCache[requestId] || 0;
+            const shouldCheck = (now - lastCheck) > 30000; // Check max every 30 seconds
+
+            if ((row.status === 'pending_payment' || row.status === 'payment_detected') && ageInSeconds > 15 && shouldCheck) {
+                selfHealCache[requestId] = now; // Update cache timestamp
+                try {
+                    const apiUrl = `${config.BLOCKCYPHER_API_BASE}/addrs/${row.address}/full?token=${config.BLOCKCYPHER_TOKEN}&limit=5`;
+                    const response = await axios.get(apiUrl);
+                    const data = response.data;
+
+                    let foundTx = null;
+                    if (data.txs) {
+                        for (const tx of data.txs) {
+                            for (const output of tx.outputs) {
+                                if (output.addresses && output.addresses.includes(row.address)) {
+                                    if (output.value >= row.requiredAmountSatoshis) {
+                                        foundTx = tx;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (foundTx) break;
+                        }
+                    }
+
+                    if (foundTx) {
+                        const confirmations = foundTx.confirmations || 0;
+                        const txHash = foundTx.hash;
+
+                        if (confirmations >= 1 && row.status !== 'payment_confirmed') {
+                            console.log(`[Self-Heal] Confirmed payment found for ${requestId}: ${txHash}`);
+                            
+                            await new Promise((resolve, reject) => {
+                                db.run("UPDATE requests SET status = 'payment_confirmed', paymentTxId = ? WHERE id = ?", [txHash, requestId], (err) => err ? reject(err) : resolve());
+                            });
+
+                            const updatedRow = { ...row, status: 'payment_confirmed', paymentTxId: txHash };
+                            
+                            const lockAcquired = await new Promise((resolve, reject) => {
+                                db.run("UPDATE requests SET status = 'processing_op_return' WHERE id = ? AND status = 'payment_confirmed'", [requestId], function(err) {
+                                    if (err) return reject(err);
+                                    resolve(this.changes > 0);
+                                });
+                            });
+
+                            if (lockAcquired) {
+                                console.log(`[Self-Heal] Triggering OP_RETURN for ${requestId}`);
+                                opReturnCreator.createOpReturnTransaction(updatedRow, rootNode, config.NETWORK, { BLOCKCYPHER_API_BASE: config.BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN: config.BLOCKCYPHER_TOKEN })
+                                    .then(result => {
+                                        const finalStatus = result && result.opReturnTxId ? 'op_return_broadcasted' : 'op_return_failed';
+                                        db.run("UPDATE requests SET status = ?, opReturnTxId = ?, opReturnTxHex = ? WHERE id = ?", 
+                                            [finalStatus, result?.opReturnTxId, result?.signedTxHex, requestId]);
+                                        
+                                        // Cleanup webhook after completion
+                                        if (row.blockcypherHookId) {
+                                            webhookManager.deleteWebhook(row.blockcypherHookId, config);
+                                        }
+                                    })
+                                    .catch(err => console.error(`[Self-Heal] OP_RETURN error:`, err));
+                                
+                                row.status = 'processing_op_return'; 
+                            }
+                        } else if (confirmations === 0 && row.status === 'pending_payment') {
+                            console.log(`[Self-Heal] Unconfirmed payment detected for ${requestId}: ${txHash}`);
+                            await new Promise((resolve, reject) => {
+                                db.run("UPDATE requests SET status = 'payment_detected', paymentTxId = ? WHERE id = ?", [txHash, requestId], (err) => err ? reject(err) : resolve());
+                            });
+                            row.status = 'payment_detected';
+                        }
+                    }
+                } catch (apiError) {
+                    // Silently fail on API errors
+                    if (apiError.response && apiError.response.status === 429) {
+                        console.warn(`[Self-Heal] Rate limit hit for ${requestId}. Backing off.`);
+                        selfHealCache[requestId] = now + 60000; // Add extra minute backoff
+                    }
+                }
+            }
+
+            res.status(200).json(row);
         } catch (error) { // <-- THIS LINE IS NOW CORRECTED
             console.error(`Error in /api/request-status/${requestId}:`, error);
             res.status(500).json({ error: 'Failed to retrieve request status' });
@@ -66,6 +124,18 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         const { requestId } = req.params;
         console.log(`DELETE /api/request/${requestId}`);
         try {
+            // Get hook ID before deleting
+            const row = await new Promise((resolve, reject) => {
+                db.get("SELECT blockcypherHookId FROM requests WHERE id = ?", [requestId], (err, row) => {
+                    if (err) return reject(err);
+                    resolve(row);
+                });
+            });
+
+            if (row && row.blockcypherHookId) {
+                webhookManager.deleteWebhook(row.blockcypherHookId, config);
+            }
+
             await new Promise((resolve, reject) => {
                 db.run("DELETE FROM requests WHERE id = ?", [requestId], function(err) {
                     if (err) return reject(err);
@@ -81,14 +151,15 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
     router.post('/message-request', async (req, res) => {
         const { message, targetAddress, isPublic, feeRate, amountToSend, refundAddress } = req.body;
-        if (!message || Buffer.byteLength(message, 'utf8') > 80) {
-            return res.status(400).json({ error: "Message is required and must be under 80 bytes." });
+        // Increased limit to 8000 bytes to match frontend
+        if (!message || Buffer.byteLength(message, 'utf8') > 8000) {
+            return res.status(400).json({ error: "Message is required and must be under 8000 bytes." });
         }
 
         try {
             const result = await requestQueue.add(message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, db, rootNode, config);
             
-            const hookId = await registerWebhook(result.address);
+            const hookId = await webhookManager.registerWebhook(result.address, config);
             if (hookId) {
                 db.run('UPDATE requests SET blockcypherHookId = ? WHERE id = ?', [hookId, result.newRequestId]);
                 console.log(`Successfully updated hook ID ${hookId} for request ${result.newRequestId}`);

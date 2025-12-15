@@ -64,11 +64,33 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateCostBreakdown() {
         const feeRate = parseInt(feeRateSlider.value);
         const amountToSend = parseInt(amountInput.value) || 0;
+        const message = messageInput.value || "";
+        const recipient = targetAddressInput.value;
         
         feeRateDisplay.textContent = feeRate;
 
-        const estimatedVBytes = 200;
-        const networkFee = estimatedVBytes * feeRate;
+        // 1. Calculate Transaction Size (vBytes)
+        // Base transaction overhead (approx 10.5 vbytes) + Input (approx 68 vbytes)
+        let vBytes = 10.5 + 68; 
+
+        // Add Output 1: OP_RETURN
+        // 8 bytes amount + 1 byte script len + script (1 byte OP_RETURN + 1 byte push + data len)
+        const messageBytes = new TextEncoder().encode(message).length;
+        // Overhead for OP_RETURN output is roughly 9-11 bytes + data length
+        vBytes += (11 + messageBytes);
+
+        // Add Output 2: Change (approx 31 vbytes)
+        vBytes += 31;
+
+        // Add Output 3: Optional Recipient (P2WPKH is approx 31 vbytes)
+        if (recipient) {
+            vBytes += 31;
+        }
+
+        // Round up vBytes
+        vBytes = Math.ceil(vBytes);
+
+        const networkFee = vBytes * feeRate;
         const serviceFee = 2000;
         const total = networkFee + serviceFee + amountToSend;
 
@@ -524,7 +546,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Event Listeners ---
-    messageInput.addEventListener('input', updateByteCounter);
+    messageInput.addEventListener('input', () => {
+        updateByteCounter();
+        updateCostBreakdown();
+    });
+    targetAddressInput.addEventListener('input', updateCostBreakdown);
     amountInput.addEventListener('input', updateCostBreakdown);
     feeRateSlider.addEventListener('input', updateCostBreakdown);
     executeButton.addEventListener('click', executeProtocol);

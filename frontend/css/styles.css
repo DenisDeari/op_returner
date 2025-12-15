@@ -119,6 +119,7 @@ body {
     overflow-y: auto; /* Allow content to scroll */
     padding-right: 5px; /* Space for scrollbar */
     margin-bottom: 10px; /* Space before button */
+    min-height: 0; /* Critical for flexbox scrolling */
 }
 
 /* Custom scrollbar for command content */

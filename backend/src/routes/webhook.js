@@ -1,6 +1,7 @@
 // backend/src/routes/webhook.js
 const express = require('express');
 const opReturnCreator = require('../op_return_creator');
+const webhookManager = require('../webhook_manager');
 
 function createWebhookRouter(db, rootNode, config) {
     const router = express.Router();
@@ -79,6 +80,11 @@ function createWebhookRouter(db, rootNode, config) {
                         db.run("UPDATE requests SET status = ?, opReturnTxId = ?, opReturnTxHex = ? WHERE id = ?", [finalOpStatus, opReturnResult?.opReturnTxId, opReturnResult?.signedTxHex, paymentProcessedForRequestObject.id], (err) => err ? reject(err) : resolve());
                     });
                     console.log(`[Webhook] DB updated: Request ${paymentProcessedForRequestObject.id} status changed to ${finalOpStatus}.`);
+
+                    // Cleanup webhook after completion
+                    if (paymentProcessedForRequestObject.blockcypherHookId) {
+                        webhookManager.deleteWebhook(paymentProcessedForRequestObject.blockcypherHookId, config);
+                    }
                 } else {
                     console.log(`[Webhook] Lock for ${paymentProcessedForRequestObject.id} was already taken.`);
                 }
