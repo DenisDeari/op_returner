@@ -4,6 +4,7 @@ const axios = require('axios');
 const bitcoin = require('bitcoinjs-lib');
 const { BIP32Factory } = require('bip32');
 const ecc = require('tiny-secp256k1');
+const appConfig = require('./config');
 
 const bip32 = BIP32Factory(ecc);
 
@@ -107,10 +108,10 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
             estimatedVBytes += 31; 
         }
 
-        const feeRateSatPerVByte = feeRate || 2; 
+        const feeRateSatPerVByte = feeRate || appConfig.DEFAULT_FEE_RATE; 
         const fee = estimatedVBytes * feeRateSatPerVByte;
         
-        const DUST_LIMIT = 546;
+        const DUST_LIMIT = appConfig.DUST_LIMIT_SATS;
         let targetValue = 0;
 
         // Add OP_RETURN output

@@ -3,10 +3,21 @@
 document.addEventListener('DOMContentLoaded', () => {
     // --- Constants & State ---
     const API_BASE_URL = '';
-    const MAX_BYTES = 8000; // Increased limit
+    let MAX_BYTES = 1000; // Default limit, will be updated from server
     let statusIntervalId = null;
     let feedIntervalId = null;
     
+    // Fetch dynamic limits
+    fetch('/api/config/limits')
+        .then(res => res.json())
+        .then(data => {
+            if (data.maxPayloadSize) {
+                MAX_BYTES = data.maxPayloadSize;
+                updateByteCounter(); // Update UI with new limit
+            }
+        })
+        .catch(err => console.error('Failed to fetch config:', err));
+
     // State: Array of active order IDs
     let activeOrders = JSON.parse(localStorage.getItem('satwire_orders')) || [];
 
@@ -224,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span>ID: ${order.requestId.substring(0, 8)}...</span>
                     <span>${timeAgo} min ago</span>
                 </div>
-                <div class="order-message" style="font-size: 0.9rem; color: var(--text-main); word-break: break-all;">
+                <div class="message-preview" style="font-size: 0.9rem; color: var(--text-main);">
                     "${escapeHtml(order.message)}"
                 </div>
                 <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 15px;">

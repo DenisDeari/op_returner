@@ -48,8 +48,8 @@ async function processNextInQueue(db, rootNode, config) {
         
         estimatedVBytes = Math.ceil(estimatedVBytes);
 
-        const serviceFee = 2000;
-        const networkFee = estimatedVBytes * (feeRate || 2);
+        const serviceFee = config.SERVICE_FEE_SATS;
+        const networkFee = estimatedVBytes * (feeRate || config.DEFAULT_FEE_RATE);
         const requiredAmountSatoshis = networkFee + serviceFee + (amountToSend || 0);
 
         const newRequestId = uuidv4();

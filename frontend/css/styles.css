@@ -427,6 +427,30 @@ textarea.terminal-input {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    /* Fix for long content breaking layout */
+    max-width: 100%;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Ensure message content wraps and doesn't overflow */
+.order-item .message-preview {
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    max-height: 150px;
+    overflow-y: auto;
+    padding-right: 5px;
+    border: 1px solid #222;
+    padding: 5px;
+    background: #0a0a0a;
+}
+
+/* Custom scrollbar for message preview */
+.order-item .message-preview::-webkit-scrollbar {
+    width: 4px;
+}
+.order-item .message-preview::-webkit-scrollbar-thumb {
+    background: #333;
 }
 
 .order-item.failed {
@@ -457,6 +481,10 @@ textarea.terminal-input {
     display: flex;
     gap: 10px;
     margin-top: 5px;
+    /* Ensure buttons stay visible and wrap if needed */
+    flex-wrap: wrap;
+    z-index: 2;
+    background: #111; /* Ensure background covers content if sticky */
 }
 
 .order-button {
@@ -568,6 +596,15 @@ textarea.terminal-input {
 }
 
 @media (max-width: 768px) {
+    /* Fix header on mobile */
+    .terminal-header {
+        position: sticky;
+        top: 0;
+        z-index: 1000;
+        background: #222;
+        border-bottom: 1px solid var(--border-color);
+    }
+
     .dashboard-grid {
         display: flex;
         flex-direction: column;
@@ -580,11 +617,14 @@ textarea.terminal-input {
     }
 
     .log-panel {
-        display: none;
+        display: flex;
+        order: 2;
+        height: auto;
+        min-height: 300px;
     }
 
     .recent-panel {
-        order: 2;
+        order: 3;
         grid-column: auto;
         height: auto;
         max-height: 500px;
@@ -611,15 +651,18 @@ textarea.terminal-input {
     background-color: var(--bg-color);
     z-index: 2000;
     display: flex;
-    justify-content: center;
-    align-items: center;
+    /* justify-content: center;  <-- Removed to allow scrolling */
+    /* align-items: center;      <-- Removed to allow scrolling */
     flex-direction: column;
+    overflow-y: auto; /* Allow scrolling on small screens */
+    padding: 20px 0; /* Add padding to prevent content touching edges when scrolling */
 }
 
 .hub-content {
     text-align: center;
     max-width: 1000px;
     width: 90%;
+    margin: auto; /* Centers vertically and horizontally, safe for scrolling */
 }
 
 .hub-title {

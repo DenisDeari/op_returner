@@ -1,7 +1,7 @@
 // backend/src/routes/webhook.js
 const express = require('express');
-const opReturnCreator = require('../op_return_creator');
-const webhookManager = require('../webhook_manager');
+const { dbGet, dbRun } = require('../db_utils');
+const { fulfillRequest } = require('../request_service');
 
 function createWebhookRouter(db, rootNode, config) {
     const router = express.Router();
@@ -23,9 +23,11 @@ function createWebhookRouter(db, rootNode, config) {
                 if (!output.addresses || !Array.isArray(output.addresses)) continue;
 
                 for (const targetAddress of output.addresses) {
-                    const req = await new Promise((resolve, reject) => {
-                        db.get("SELECT * FROM requests WHERE address = ? AND (status = 'pending_payment' OR status = 'payment_detected')", [targetAddress], (err, row) => err ? reject(err) : resolve(row));
-                    });
+                    const req = await dbGet(
+                        db,
+                        "SELECT * FROM requests WHERE address = ? AND (status = 'pending_payment' OR status = 'payment_detected')",
+                        [targetAddress]
+                    );
 
                     if (req) {
                         console.log(`[Webhook] Found matching request ID ${req.id} for address ${targetAddress}`);
@@ -34,19 +36,21 @@ function createWebhookRouter(db, rootNode, config) {
 
                         if (confirmations >= 1 && isSufficientAmount) {
                             console.log(`[Webhook] Payment VALID for request ${req.id}`);
-                            await new Promise((resolve, reject) => {
-                                db.run('UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ? AND (status = ? OR status = ?)',
-                                    ['payment_confirmed', txHash, req.id, 'pending_payment', 'payment_detected'], (err) => err ? reject(err) : resolve());
-                            });
+                            await dbRun(
+                                db,
+                                'UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ? AND (status = ? OR status = ?)',
+                                ['payment_confirmed', txHash, req.id, 'pending_payment', 'payment_detected']
+                            );
                             paymentProcessedForRequestObject = { ...req, paymentTxId: txHash };
                             break; // Address processed, break inner loop
                         } else if (confirmations === 0 && isSufficientAmount) {
                             console.log(`[Webhook] Unconfirmed payment detected for request ${req.id}`);
                             if (req.status === 'pending_payment') {
-                                await new Promise((resolve, reject) => {
-                                    db.run('UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ?', 
-                                    ['payment_detected', txHash, req.id], (err) => err ? reject(err) : resolve());
-                                });
+                                await dbRun(
+                                    db,
+                                    'UPDATE requests SET status = ?, paymentTxId = ? WHERE id = ?',
+                                    ['payment_detected', txHash, req.id]
+                                );
                                 console.log(`[Webhook] Request ${req.id} status updated to payment_detected.`);
                             }
                         }
@@ -56,37 +60,15 @@ function createWebhookRouter(db, rootNode, config) {
             }
 
             if (paymentProcessedForRequestObject) {
-                const lockAcquired = await new Promise((resolve, reject) => {
-                    db.run("UPDATE requests SET status = 'processing_op_return' WHERE id = ? AND status = 'payment_confirmed'", [paymentProcessedForRequestObject.id], function(err) {
-                        if (err) return reject(err);
-                        resolve(this.changes > 0);
-                    });
-                });
-
-                if (lockAcquired) {
-                    console.log(`[Webhook] Lock ACQUIRED for ${paymentProcessedForRequestObject.id}. Triggering OP_RETURN.`);
-                    let finalOpStatus = 'op_return_failed';
-                    let opReturnResult = null;
-                    try {
-                        opReturnResult = await opReturnCreator.createOpReturnTransaction(paymentProcessedForRequestObject, rootNode, config.NETWORK, { BLOCKCYPHER_API_BASE: config.BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN: config.BLOCKCYPHER_TOKEN });
-                        if (opReturnResult && opReturnResult.opReturnTxId) {
-                            finalOpStatus = 'op_return_broadcasted';
-                        }
-                    } catch (opReturnError) {
-                        console.error(`[Webhook] CATCH during OP_RETURN for ${paymentProcessedForRequestObject.id}:`, opReturnError);
-                    }
-                    
-                    await new Promise((resolve, reject) => {
-                        db.run("UPDATE requests SET status = ?, opReturnTxId = ?, opReturnTxHex = ? WHERE id = ?", [finalOpStatus, opReturnResult?.opReturnTxId, opReturnResult?.signedTxHex, paymentProcessedForRequestObject.id], (err) => err ? reject(err) : resolve());
-                    });
-                    console.log(`[Webhook] DB updated: Request ${paymentProcessedForRequestObject.id} status changed to ${finalOpStatus}.`);
-
-                    // Cleanup webhook after completion
-                    if (paymentProcessedForRequestObject.blockcypherHookId) {
-                        webhookManager.deleteWebhook(paymentProcessedForRequestObject.blockcypherHookId, config);
-                    }
-                } else {
+                // Use shared fulfillRequest service
+                const result = await fulfillRequest(paymentProcessedForRequestObject, db, rootNode, config);
+                
+                if (result.success) {
+                    console.log(`[Webhook] OP_RETURN successful for ${paymentProcessedForRequestObject.id}: ${result.opReturnTxId}`);
+                } else if (result.error === 'Lock not acquired') {
                     console.log(`[Webhook] Lock for ${paymentProcessedForRequestObject.id} was already taken.`);
+                } else {
+                    console.log(`[Webhook] OP_RETURN failed for ${paymentProcessedForRequestObject.id}: ${result.error}`);
                 }
             } else {
                 console.log("[Webhook] No new, actionable request identified in this event.");

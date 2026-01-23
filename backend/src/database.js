@@ -119,6 +119,23 @@ function initializeDatabase() {
             });
         }
     });
+
+    // Create system_settings table
+    const createSystemSettingsTableSql = `
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    `;
+    db.run(createSystemSettingsTableSql, (err) => {
+        if (err) {
+            console.error("Error creating system_settings table:", err.message);
+        } else {
+            console.log("Table 'system_settings' created or already exists.");
+            // Set default max_payload_size to 1000 if not exists
+            db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')");
+        }
+    });
 }
 
 module.exports = { db, initializeDatabase };

@@ -5,9 +5,65 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalBody = document.getElementById('modal-body');
     const closeButton = document.querySelector('.close-button');
     const refreshButton = document.getElementById('refresh-button');
+    
+    // Config Elements
+    const maxPayloadInput = document.getElementById('max-payload-input');
+    const saveConfigBtn = document.getElementById('save-config-btn');
+
     const API_BASE_URL = '/api/admin';
     let adminPassword = null;
     let allRequests = []; // Store requests locally
+
+    // Load initial config (public)
+    fetch('/api/config/limits')
+        .then(res => res.json())
+        .then(data => {
+            if (data.maxPayloadSize) {
+                maxPayloadInput.value = data.maxPayloadSize;
+            }
+        })
+        .catch(err => console.error('Failed to load config:', err));
+
+    // Save Config Logic
+    saveConfigBtn.addEventListener('click', async () => {
+        if (!adminPassword) {
+            const input = prompt("Please enter the admin password to save settings:");
+            if (input) adminPassword = input.trim();
+            else return;
+        }
+
+        const newLimit = parseInt(maxPayloadInput.value, 10);
+        if (!newLimit || newLimit <= 0) {
+            alert("Please enter a valid positive number.");
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/config/limits`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${adminPassword}`
+                },
+                body: JSON.stringify({ maxPayloadSize: newLimit })
+            });
+
+            if (response.status === 401) {
+                adminPassword = null;
+                alert("Unauthorized! Incorrect password.");
+                return;
+            }
+
+            if (!response.ok) throw new Error('Failed to save');
+
+            const result = await response.json();
+            if (result.success) {
+                alert(`Limit updated to ${result.maxPayloadSize} bytes.`);
+            }
+        } catch (error) {
+            alert("Error saving config: " + error.message);
+        }
+    });
 
     // Close modal logic
     closeButton.onclick = () => modal.style.display = "none";

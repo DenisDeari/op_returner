@@ -2,7 +2,8 @@
 const express = require('express');
 const axios = require('axios'); // Import axios
 const opReturnCreator = require('../op_return_creator');
-const webhookManager = require('../webhook_manager');
+const { dbGet, dbAll, dbRun } = require('../db_utils');
+const { deleteRequest } = require('../request_service');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -24,16 +25,27 @@ function createAdminRouter(db, rootNode, config) {
 
     router.get('/requests', protect, async (req, res) => { // Apply the corrected middleware
         try {
-            const rows = await new Promise((resolve, reject) => {
-                db.all("SELECT * FROM requests ORDER BY createdAt DESC", [], (err, rows) => {
-                    if (err) return reject(err);
-                    resolve(rows);
-                });
-            });
+            const rows = await dbAll(db, "SELECT * FROM requests ORDER BY createdAt DESC");
             res.status(200).json(rows);
         } catch (error) {
             res.status(500).json({ error: 'Failed to retrieve requests' });
         }
+    });
+
+    // Update system limits
+    router.post('/config/limits', protect, (req, res) => {
+        const { maxPayloadSize } = req.body;
+        if (!maxPayloadSize || isNaN(maxPayloadSize)) {
+            return res.status(400).json({ error: 'Invalid maxPayloadSize' });
+        }
+
+        db.run("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('max_payload_size', ?)", [maxPayloadSize.toString()], (err) => {
+            if (err) {
+                console.error("Error updating max_payload_size:", err);
+                return res.status(500).json({ error: 'Failed to update limit' });
+            }
+            res.json({ success: true, maxPayloadSize });
+        });
     });
 
     router.get('/address-transactions/:address', protect, async (req, res) => {
@@ -56,12 +68,7 @@ function createAdminRouter(db, rootNode, config) {
     router.post('/fulfill/:requestId', protect, async (req, res) => {
         const { requestId } = req.params;
         try {
-            const request = await new Promise((resolve, reject) => {
-                db.get("SELECT * FROM requests WHERE id = ?", [requestId], (err, row) => {
-                    if (err) return reject(err);
-                    resolve(row);
-                });
-            });
+            const request = await dbGet(db, "SELECT * FROM requests WHERE id = ?", [requestId]);
 
             if (!request) {
                 return res.status(404).json({ error: 'Request not found.' });
@@ -73,10 +80,10 @@ function createAdminRouter(db, rootNode, config) {
             });
 
             if (result && result.opReturnTxId) {
-                db.run("UPDATE requests SET status = 'op_return_broadcasted', opReturnTxId = ? WHERE id = ?", [result.opReturnTxId, requestId]);
+                await dbRun(db, "UPDATE requests SET status = 'op_return_broadcasted', opReturnTxId = ? WHERE id = ?", [result.opReturnTxId, requestId]);
                 res.status(200).json({ success: true, txId: result.opReturnTxId });
             } else {
-                db.run("UPDATE requests SET status = 'op_return_failed' WHERE id = ?", [requestId]);
+                await dbRun(db, "UPDATE requests SET status = 'op_return_failed' WHERE id = ?", [requestId]);
                 res.status(500).json({ error: 'Failed to create OP_RETURN transaction.' });
             }
         } catch (error) {
@@ -89,24 +96,12 @@ function createAdminRouter(db, rootNode, config) {
         const { requestId } = req.params;
         console.log(`Admin deleting request: ${requestId}`);
         try {
-            // Get hook ID before deleting
-            const row = await new Promise((resolve, reject) => {
-                db.get("SELECT blockcypherHookId FROM requests WHERE id = ?", [requestId], (err, row) => {
-                    if (err) return reject(err);
-                    resolve(row);
-                });
-            });
-
-            if (row && row.blockcypherHookId) {
-                webhookManager.deleteWebhook(row.blockcypherHookId, config);
+            const result = await deleteRequest(requestId, db, config);
+            
+            if (!result.success) {
+                return res.status(404).json({ error: result.error || 'Request not found' });
             }
-
-            await new Promise((resolve, reject) => {
-                db.run("DELETE FROM requests WHERE id = ?", [requestId], function(err) {
-                    if (err) return reject(err);
-                    resolve();
-                });
-            });
+            
             res.status(200).json({ success: true, message: 'Request deleted successfully' });
         } catch (error) {
             console.error(`Error deleting request ${requestId}:`, error);

@@ -9,6 +9,19 @@
 <body>
     <div class="container">
         <h1>SatWire - Admin Panel</h1>
+
+        <!-- System Configuration Section -->
+        <div id="config-container" style="margin-bottom: 30px; border-bottom: 2px solid #eee; padding-bottom: 20px;">
+            <h2>System Configuration</h2>
+            <div style="background: #f9f9f9; padding: 20px; border-radius: 5px; border: 1px solid #ddd; display: flex; align-items: center; gap: 20px;">
+                <div>
+                    <label for="max-payload-input" style="font-weight: bold; display: block; margin-bottom: 5px;">Max Payload Size (Bytes):</label>
+                    <input type="number" id="max-payload-input" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 150px;">
+                </div>
+                <button id="save-config-btn" style="background: #007bff; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px; height: fit-content; align-self: flex-end;">Save Settings</button>
+            </div>
+        </div>
+
         <div id="requests-container">
             <div class="header-actions">
                 <h2>Recent Requests</h2>

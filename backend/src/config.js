@@ -20,6 +20,11 @@ if (!WEBHOOK_RECEIVER_BASE_URL) {
 const NETWORK = bitcoin.networks.bitcoin; // Or bitcoin.networks.testnet
 const NETWORK_NAME = NETWORK === bitcoin.networks.bitcoin ? 'main' : 'test3';
 
+// Fee and transaction constants
+const SERVICE_FEE_SATS = 2000;
+const DUST_LIMIT_SATS = 546;
+const DEFAULT_FEE_RATE = 2; // sats per vByte
+
 module.exports = {
     PORT: PORT || 3000,
     ADMIN_PASSWORD,
@@ -29,4 +34,8 @@ module.exports = {
     NETWORK,
     NETWORK_NAME,
     BLOCKCYPHER_API_BASE: `https://api.blockcypher.com/v1/btc/${NETWORK_NAME}`,
+    // Fee and transaction constants
+    SERVICE_FEE_SATS,
+    DUST_LIMIT_SATS,
+    DEFAULT_FEE_RATE,
 };
