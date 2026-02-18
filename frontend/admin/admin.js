@@ -5,7 +5,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalBody = document.getElementById('modal-body');
     const closeButton = document.querySelector('.close-button');
     const refreshButton = document.getElementById('refresh-button');
-    
+    const refreshBalancesBtn = document.getElementById('refresh-balances-btn');
+
     // Config Elements
     const maxPayloadInput = document.getElementById('max-payload-input');
     const saveConfigBtn = document.getElementById('save-config-btn');
@@ -108,8 +109,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const requests = await response.json();
-            allRequests = requests; // Store for detail view
-            renderRequests(requests); // Call the function to display the data
+            allRequests = requests;
+            renderRequests(requests);
+            fetchWalletBalances(); // load balances once we have a valid password
         } catch (error) {
             requestsBody.innerHTML = `<tr><td colspan="6">Error loading requests: ${error.message}</td></tr>`;
         }
@@ -183,7 +185,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     <h3>Payment Info</h3>
                     <p><strong>Address:</strong> ${req.address}</p>
                     <p><strong>Required Amount:</strong> ${req.requiredAmountSatoshis} sats</p>
-                    <p><strong>Refund Address:</strong> ${req.refundAddress || 'N/A'}</p>
                 </div>
                 <div class="detail-section">
                     <h3>Transaction History (from Blockchain)</h3>
@@ -269,112 +270,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fetchRequests();
 
-    // --- Hall of Fame Logic ---
-    const hofBody = document.getElementById('hof-body');
-    const refreshHofButton = document.getElementById('refresh-hof-button');
-    const addHofBtn = document.getElementById('add-hof-btn');
-    const hofMessageInput = document.getElementById('hof-message');
-    const hofTxIdInput = document.getElementById('hof-txid');
-    const hofDescInput = document.getElementById('hof-desc');
+    // --- Wallet Balances ---
+    async function fetchWalletBalances() {
+        if (!adminPassword) return;
 
-    if (refreshHofButton) {
-        refreshHofButton.addEventListener('click', fetchHallOfFame);
-    }
+        refreshBalancesBtn.disabled = true;
+        refreshBalancesBtn.textContent = 'Loading...';
 
-    if (addHofBtn) {
-        addHofBtn.addEventListener('click', async () => {
-            const message = hofMessageInput.value;
-            const txId = hofTxIdInput.value;
-            const description = hofDescInput.value;
-
-            // Allow empty message if TXID is present (auto-fetch)
-            if (!txId && !message) {
-                alert('Either Message or TxID is required');
-                return;
-            }
-            if (txId && !message) {
-                // Optional: Notify user we are fetching
-                addHofBtn.textContent = "Fetching...";
-                addHofBtn.disabled = true;
-            }
-
-            try {
-                const response = await fetch('/api/hall-of-fame', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ message, txId, description })
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    alert(data.autoFetched ? `Success! Fetched: "${data.message}"` : 'Added to Hall of Fame!');
-                    hofMessageInput.value = '';
-                    hofTxIdInput.value = '';
-                    hofDescInput.value = '';
-                    fetchHallOfFame();
-                } else {
-                    const err = await response.json();
-                    alert('Error: ' + err.error);
-                }
-            } catch (e) {
-                alert('Error: ' + e.message);
-            } finally {
-                addHofBtn.textContent = "Add to Hall of Fame";
-                addHofBtn.disabled = false;
-            }
-        });
-    }
-
-    async function fetchHallOfFame() {
         try {
-            const response = await fetch('/api/hall-of-fame');
-            const data = await response.json();
-            renderHallOfFame(data);
-        } catch (e) {
-            console.error(e);
-            hofBody.innerHTML = '<tr><td colspan="5">Error loading Hall of Fame</td></tr>';
-        }
-    }
-
-    function renderHallOfFame(items) {
-        if (!items || items.length === 0) {
-            hofBody.innerHTML = '<tr><td colspan="5">No entries found.</td></tr>';
-            return;
-        }
-        hofBody.innerHTML = items.map(item => `
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.id}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.message}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.description || ''}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;"><a href="https://mempool.space/tx/${item.txId}" target="_blank">${item.txId.substring(0, 10)}...</a></td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">
-                    <button class="delete-hof-btn" data-id="${item.id}" style="background-color: #d9534f; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px;">Delete</button>
-                </td>
-            </tr>
-        `).join('');
-
-        document.querySelectorAll('.delete-hof-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                if (!confirm('Are you sure?')) return;
-                const id = e.target.dataset.id;
-                try {
-                    const res = await fetch(`/api/hall-of-fame/${id}`, {
-                        method: 'DELETE'
-                    });
-                    if (res.ok) {
-                        fetchHallOfFame();
-                    } else {
-                        alert('Failed to delete');
-                    }
-                } catch (err) {
-                    alert('Error deleting');
-                }
+            const res = await fetch(`${API_BASE_URL}/wallet-balances`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
             });
-        });
+            if (!res.ok) { refreshBalancesBtn.disabled = false; refreshBalancesBtn.textContent = 'Refresh'; return; }
+            const data = await res.json();
+
+            const fmt = (sats) => sats.toLocaleString() + ' sats';
+            const mempoolLink = (addr) => `<a href="https://mempool.space/address/${addr}" target="_blank">${addr}</a>`;
+
+            document.getElementById('treasury-address').innerHTML = mempoolLink(data.treasury.address);
+            document.getElementById('treasury-confirmed').textContent = fmt(data.treasury.confirmed);
+            document.getElementById('treasury-unconfirmed').textContent =
+                data.treasury.unconfirmed !== 0 ? `${data.treasury.unconfirmed > 0 ? '+' : ''}${fmt(data.treasury.unconfirmed)} unconfirmed` : '';
+
+            document.getElementById('user-address').innerHTML = mempoolLink(data.userWallet.address);
+            document.getElementById('user-confirmed').textContent = fmt(data.userWallet.confirmed);
+            document.getElementById('user-unconfirmed').textContent =
+                data.userWallet.unconfirmed !== 0 ? `${data.userWallet.unconfirmed > 0 ? '+' : ''}${fmt(data.userWallet.unconfirmed)} unconfirmed` : '';
+        } catch (e) {
+            console.error('Failed to fetch wallet balances:', e);
+        } finally {
+            refreshBalancesBtn.disabled = false;
+            refreshBalancesBtn.textContent = 'Refresh';
+        }
     }
 
-    // Initial load of HoF
-    fetchHallOfFame();
+    refreshBalancesBtn.addEventListener('click', fetchWalletBalances);
 });

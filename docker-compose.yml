@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  webapp:
+    build: .
+    container_name: op_returner
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - API_KEY=${API_KEY}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - MNEMONIC=${MNEMONIC}
+      - BLOCKCYPHER_TOKEN=${BLOCKCYPHER_TOKEN}
+      - WEBHOOK_RECEIVER_BASE_URL=${WEBHOOK_RECEIVER_BASE_URL}
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - op-returner-data:/app/backend/data
+    networks:
+      default:
+        aliases:
+          - webapp
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared_tunnel
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - default
+
+volumes:
+  op-returner-data:
+    external: true
+    name: op-returner_op_returner_data
+
+networks:
+  default:
+    name: op-returner_default
+    external: true

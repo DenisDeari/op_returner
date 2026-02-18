@@ -2,7 +2,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const bitcoin = require('bitcoinjs-lib');
 
-const { PORT, MNEMONIC, BLOCKCYPHER_TOKEN, WEBHOOK_RECEIVER_BASE_URL, ADMIN_PASSWORD } = process.env;
+const { PORT, MNEMONIC, BLOCKCYPHER_TOKEN, WEBHOOK_RECEIVER_BASE_URL, ADMIN_PASSWORD, API_KEY } = process.env;
 
 // Basic validation
 if (!MNEMONIC || MNEMONIC.split(' ').length < 12) {
@@ -16,6 +16,9 @@ if (!WEBHOOK_RECEIVER_BASE_URL) {
     console.error("FATAL ERROR: WEBHOOK_RECEIVER_BASE_URL environment variable not found.");
     process.exit(1);
 }
+if (!API_KEY) {
+    console.warn("WARNING: API_KEY environment variable not set. API endpoints will reject all requests.");
+}
 
 const NETWORK = bitcoin.networks.bitcoin; // Or bitcoin.networks.testnet
 const NETWORK_NAME = NETWORK === bitcoin.networks.bitcoin ? 'main' : 'test3';
@@ -28,6 +31,7 @@ const DEFAULT_FEE_RATE = 2; // sats per vByte
 module.exports = {
     PORT: PORT || 3000,
     ADMIN_PASSWORD,
+    API_KEY,
     MNEMONIC,
     BLOCKCYPHER_TOKEN,
     WEBHOOK_RECEIVER_BASE_URL,

@@ -45,22 +45,11 @@ function initializeDatabase() {
             process.exit(1);
         }
         console.log("Table 'requests' created or already exists.");
-        
+
         // Add targetAddress column if it doesn't exist
         db.run("ALTER TABLE requests ADD COLUMN targetAddress TEXT", (err) => {
             if (err && !err.message.includes("duplicate column name")) {
                 console.error("Error adding targetAddress column:", err.message);
-            } else {
-                console.log("Column 'targetAddress' checked/added.");
-            }
-        });
-
-        // Add isPublic column if it doesn't exist
-        db.run("ALTER TABLE requests ADD COLUMN isPublic INTEGER DEFAULT 1", (err) => {
-            if (err && !err.message.includes("duplicate column name")) {
-                console.error("Error adding isPublic column:", err.message);
-            } else {
-                console.log("Column 'isPublic' checked/added.");
             }
         });
 
@@ -68,8 +57,6 @@ function initializeDatabase() {
         db.run("ALTER TABLE requests ADD COLUMN feeRate INTEGER DEFAULT 2", (err) => {
             if (err && !err.message.includes("duplicate column name")) {
                 console.error("Error adding feeRate column:", err.message);
-            } else {
-                console.log("Column 'feeRate' checked/added.");
             }
         });
 
@@ -77,17 +64,6 @@ function initializeDatabase() {
         db.run("ALTER TABLE requests ADD COLUMN amountToSend INTEGER DEFAULT 0", (err) => {
             if (err && !err.message.includes("duplicate column name")) {
                 console.error("Error adding amountToSend column:", err.message);
-            } else {
-                console.log("Column 'amountToSend' checked/added.");
-            }
-        });
-
-        // Add refundAddress column if it doesn't exist
-        db.run("ALTER TABLE requests ADD COLUMN refundAddress TEXT", (err) => {
-            if (err && !err.message.includes("duplicate column name")) {
-                console.error("Error adding refundAddress column:", err.message);
-            } else {
-                console.log("Column 'refundAddress' checked/added.");
             }
         });
     });
@@ -104,10 +80,8 @@ function initializeDatabase() {
             console.error("FATAL ERROR: Error creating wallet_state table:", err.message);
         } else {
             console.log("Table 'wallet_state' created or already exists.");
-            // Initialize if empty
             db.get("SELECT count(*) as count FROM wallet_state", (err, row) => {
                 if (row && row.count === 0) {
-                    // Initialize with current max index from requests to ensure continuity
                     db.get('SELECT MAX("index") as maxIndex FROM requests', (err, result) => {
                         const startIdx = (result && result.maxIndex !== null) ? result.maxIndex : 0;
                         db.run("INSERT INTO wallet_state (id, last_derived_index) VALUES (1, ?)", [startIdx], (err) => {
@@ -132,7 +106,6 @@ function initializeDatabase() {
             console.error("Error creating system_settings table:", err.message);
         } else {
             console.log("Table 'system_settings' created or already exists.");
-            // Set default max_payload_size to 1000 if not exists
             db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')");
         }
     });

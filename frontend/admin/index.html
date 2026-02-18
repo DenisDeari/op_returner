@@ -3,29 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel</title>
+    <title>SatWire Admin</title>
     <link rel="stylesheet" href="admin.css">
 </head>
 <body>
     <div class="container">
-        <h1>SatWire - Admin Panel</h1>
+        <h1>SatWire &mdash; Admin</h1>
 
-        <!-- System Configuration Section -->
-        <div id="config-container" style="margin-bottom: 30px; border-bottom: 2px solid #eee; padding-bottom: 20px;">
-            <h2>System Configuration</h2>
-            <div style="background: #f9f9f9; padding: 20px; border-radius: 5px; border: 1px solid #ddd; display: flex; align-items: center; gap: 20px;">
-                <div>
-                    <label for="max-payload-input" style="font-weight: bold; display: block; margin-bottom: 5px;">Max Payload Size (Bytes):</label>
-                    <input type="number" id="max-payload-input" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 150px;">
+        <!-- Wallet Balances -->
+        <div id="wallet-balances-container" class="section">
+            <div class="header-actions">
+                <h2>Wallet Balances</h2>
+                <button id="refresh-balances-btn" class="btn btn-refresh">Refresh</button>
+            </div>
+            <div class="balance-grid">
+                <div class="balance-card">
+                    <div class="balance-label">Treasury Wallet</div>
+                    <div class="balance-path" id="treasury-path">m/84'/0'/0'/2/0</div>
+                    <div class="balance-address" id="treasury-address">loading...</div>
+                    <div class="balance-amount" id="treasury-confirmed">— sats</div>
+                    <div class="balance-unconfirmed" id="treasury-unconfirmed"></div>
                 </div>
-                <button id="save-config-btn" style="background: #007bff; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px; height: fit-content; align-self: flex-end;">Save Settings</button>
+                <div class="balance-card">
+                    <div class="balance-label">User Wallet (first address)</div>
+                    <div class="balance-path" id="user-path">m/84'/0'/0'/0/0</div>
+                    <div class="balance-address" id="user-address">loading...</div>
+                    <div class="balance-amount" id="user-confirmed">— sats</div>
+                    <div class="balance-unconfirmed" id="user-unconfirmed"></div>
+                </div>
             </div>
         </div>
 
+        <!-- System Configuration -->
+        <div id="config-container" class="section">
+            <h2>System Configuration</h2>
+            <div class="config-row">
+                <div>
+                    <label for="max-payload-input">Max Payload Size (Bytes):</label>
+                    <input type="number" id="max-payload-input">
+                </div>
+                <button id="save-config-btn" class="btn btn-primary">Save</button>
+            </div>
+        </div>
+
+        <!-- Requests -->
         <div id="requests-container">
             <div class="header-actions">
-                <h2>Recent Requests</h2>
-                <button id="refresh-button" class="button-refresh">Refresh</button>
+                <h2>Requests</h2>
+                <button id="refresh-button" class="btn btn-refresh">Refresh</button>
             </div>
             <table id="requests-table">
                 <thead>
@@ -34,45 +59,11 @@
                         <th>Date</th>
                         <th>Message</th>
                         <th>Status</th>
-                        <th>Transaction ID</th>
+                        <th>TX ID</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody id="requests-body">
-                    </tbody>
-            </table>
-        </div>
-
-        <!-- Hall of Fame Section -->
-        <div id="hof-container" style="margin-top: 50px; border-top: 2px solid #eee; padding-top: 20px;">
-            <div class="header-actions">
-                <h2>Hall of Fame Management</h2>
-                <button id="refresh-hof-button" class="button-refresh">Refresh HoF</button>
-            </div>
-            
-            <!-- Add New Entry Form -->
-            <div class="hof-form" style="background: #f9f9f9; padding: 20px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #ddd;">
-                <h3 style="margin-top: 0;">Add New Legend</h3>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                    <input type="text" id="hof-message" placeholder="Message" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
-                    <input type="text" id="hof-txid" placeholder="Transaction ID" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
-                </div>
-                <textarea id="hof-desc" placeholder="Description (Optional)" style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;"></textarea>
-                <button id="add-hof-btn" style="background: #5cb85c; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px;">Add to Hall of Fame</button>
-            </div>
-
-            <table id="hof-table" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr style="background: #f2f2f2; text-align: left;">
-                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">ID</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Message</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Description</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">TxID</th>
-                        <th style="padding: 10px; border-bottom: 1px solid #ddd;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="hof-body">
-                </tbody>
+                <tbody id="requests-body"></tbody>
             </table>
         </div>
     </div>
@@ -82,9 +73,7 @@
         <div class="modal-content">
             <span class="close-button">&times;</span>
             <h2>Request Details</h2>
-            <div id="modal-body">
-                <!-- Details will be injected here -->
-            </div>
+            <div id="modal-body"></div>
         </div>
     </div>
 

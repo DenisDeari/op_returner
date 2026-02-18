@@ -10,10 +10,9 @@ async function processNextInQueue(db, rootNode, config) {
         return;
     }
     isProcessing = true;
-    const { message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, resolve, reject } = requestProcessingQueue.shift();
+    const { message, targetAddress, feeRate, amountToSend, resolve, reject } = requestProcessingQueue.shift();
 
     try {
-        // FIX: Use persistent wallet_state to generate next index, preventing address reuse
         const nextIndex = await new Promise((resolve, reject) => {
             db.serialize(() => {
                 db.run("UPDATE wallet_state SET last_derived_index = last_derived_index + 1 WHERE id = 1", function(err) {
@@ -30,22 +29,15 @@ async function processNextInQueue(db, rootNode, config) {
         const coinType = config.NETWORK === bitcoin.networks.bitcoin ? 0 : 1;
         const derivationPath = `m/84'/${coinType}'/0'/0/${nextIndex}`;
         const childNode = rootNode.derivePath(derivationPath);
-        
-        // --- THIS IS THE FIX ---
-        // We must convert the public key from a Uint8Array to a Buffer.
         const pubkeyBuffer = Buffer.from(childNode.publicKey);
         const address = bitcoin.payments.p2wpkh({ pubkey: pubkeyBuffer, network: config.NETWORK }).address;
-        // --- END OF FIX ---
 
         // Calculate required amount
-        // Dynamic vByte calculation based on message size
         const messageBytes = Buffer.byteLength(message, 'utf8');
         let estimatedVBytes = 10.5 + 68 + (11 + messageBytes) + 31;
-        
         if (targetAddress) {
             estimatedVBytes += 31;
         }
-        
         estimatedVBytes = Math.ceil(estimatedVBytes);
 
         const serviceFee = config.SERVICE_FEE_SATS;
@@ -54,11 +46,11 @@ async function processNextInQueue(db, rootNode, config) {
 
         const newRequestId = uuidv4();
 
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, isPublic ? 1 : 0, feeRate || 2, amountToSend || 0, refundAddress || null];
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, feeRate || 2, amountToSend || 0];
         await new Promise((res, rej) => {
-            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, isPublic, feeRate, amountToSend, refundAddress) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
+            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, feeRate, amountToSend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });
-        
+
         console.log(`[Queue] New request processed: ID ${newRequestId}`);
         resolve({ newRequestId, address, requiredAmountSatoshis });
 
@@ -73,9 +65,9 @@ async function processNextInQueue(db, rootNode, config) {
     }
 }
 
-function add(message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, db, rootNode, config) {
+function add(message, targetAddress, feeRate, amountToSend, db, rootNode, config) {
     return new Promise((resolve, reject) => {
-        requestProcessingQueue.push({ message, targetAddress, isPublic, feeRate, amountToSend, refundAddress, resolve, reject });
+        requestProcessingQueue.push({ message, targetAddress, feeRate, amountToSend, resolve, reject });
         console.log(`[Queue] Added to queue. Length: ${requestProcessingQueue.length}`);
         processNextInQueue(db, rootNode, config);
     });

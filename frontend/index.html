@@ -3,211 +3,136 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SatWire | Simple OP_RETURN Creator & Bitcoin Messenger</title>
-    <meta name="description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
-    <meta name="keywords" content="Bitcoin, OP_RETURN, Blockchain Message, Crypto, Immutable, SatWire, simple op return creator, write on blockchain, bitcoin messenger">
-    
-    <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://satwire.io/">
-    <meta property="og:title" content="SatWire | Simple OP_RETURN Creator & Bitcoin Messenger">
-    <meta property="og:description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
-    
-    <!-- Twitter -->
-    <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://satwire.io/">
-    <meta property="twitter:title" content="SatWire | Simple OP_RETURN Creator & Bitcoin Messenger">
-    <meta property="twitter:description" content="Immortalize text or send messages via the Bitcoin Network with SatWire. The simple, fast, and easy OP_RETURN creator for global value transfer.">
-
-    <link rel="stylesheet" href="css/styles.css"> 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <title>SatWire</title>
+    <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-    <!-- SERVICE HUB OVERLAY -->
-    <div id="service-hub" class="service-hub-overlay">
-        <div class="hub-content">
-            <h1 class="hub-title">SATWIRE SERVICES</h1>
-            <div class="hub-grid">
-                <div class="hub-card" id="btn-open-hof">
-                    <h2>HALL OF FAME</h2>
-                    <p>View the most legendary messages immortalized on-chain.</p>
-                </div>
-                <div class="hub-card" id="btn-open-terminal">
-                    <h2>SATWIRE</h2>
-                    <p>Broadcast OP_RETURN messages to the Bitcoin network.</p>
-                </div>
-                <div class="hub-card disabled">
-                    <h2>COMING SOON</h2>
-                    <p>More Bitcoin tools are under development.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="terminal-container">
-        <header class="terminal-header">
-            <h1 class="logo">SatWire</h1>
-            <div style="display: flex; align-items: center; gap: 20px;">
-                <button id="menu-button" class="terminal-button small-btn">MENU</button>
-                <div class="status-indicator">SYSTEM ONLINE</div>
-            </div>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>SatWire</h1>
+            <span class="subtitle">Bitcoin Message Embedder</span>
         </header>
 
-        <main class="dashboard-grid">
-            <!-- PANEL A: COMMAND INPUT -->
-            <section class="panel command-panel">
-                <div class="command-content">
-                    <h2 class="panel-title">New Transmission</h2>
-                    <div class="input-group">
-                        <label for="message-input">DATA PAYLOAD</label>
-                        <textarea id="message-input" class="terminal-input" placeholder="Enter message sequence..."></textarea>
-                        <div id="byte-counter" class="byte-counter">0 BYTES</div>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label for="target-address-input">RECIPIENT ADDRESS (Optional)</label>
-                        <input type="text" id="target-address-input" class="terminal-input" placeholder="bc1q...">
-                    </div>
+        <main class="app-main">
+            <!-- Left: New Message -->
+            <section class="card">
+                <h2>Embed Message</h2>
 
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="public-feed-checkbox" checked>
-                        <label for="public-feed-checkbox">Publish to Website-Feed</label>
-                    </div>
+                <div class="field">
+                    <label for="message-input">MESSAGE</label>
+                    <textarea id="message-input" placeholder="Text to embed on-chain..."></textarea>
+                    <span id="byte-counter" class="hint">0 / 1000 bytes</span>
+                </div>
 
-                    <div class="input-group">
-                        <label for="amount-input">AMOUNT TO SEND (SATS)</label>
-                        <input type="number" id="amount-input" class="terminal-input" min="0" placeholder="Optional value transfer...">
-                    </div>
+                <div class="field">
+                    <label for="target-address-input">RECIPIENT ADDRESS <span class="hint">(optional)</span></label>
+                    <input type="text" id="target-address-input" placeholder="bc1q...">
+                </div>
 
-                    <div class="input-group">
-                        <label for="fee-rate-slider">NETWORK FEE RATE: <span id="fee-rate-display" style="color: var(--bitcoin-orange);">2</span> sats/vByte</label>
-                        <input type="range" id="fee-rate-slider" min="1" max="10" value="2" style="width: 100%; accent-color: var(--bitcoin-orange);">
+                <div class="field-row">
+                    <div class="field">
+                        <label for="amount-input">SATS TO SEND <span class="hint">(optional)</span></label>
+                        <input type="number" id="amount-input" min="0" placeholder="0">
                     </div>
-
-                    <div class="cost-breakdown" style="background: #111; border: 1px solid var(--border-color); padding: 15px; margin-bottom: 20px; font-size: 0.85rem; color: var(--text-dim);">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                            <span>Network Fee:</span>
-                            <span id="cost-network-fee">~400 sats</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                            <span>Service Fee:</span>
-                            <span>2000 sats</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                            <span>Recipient Amount:</span>
-                            <span id="cost-recipient-amount">0 sats</span>
-                        </div>
-                        <div style="border-top: 1px solid #333; margin-top: 10px; padding-top: 10px; display: flex; justify-content: space-between; color: var(--bitcoin-orange); font-weight: bold;">
-                            <span>TOTAL:</span>
-                            <span id="cost-total">~2400 sats</span>
-                        </div>
+                    <div class="field">
+                        <label for="fee-rate-slider">FEE RATE: <strong id="fee-rate-display">2</strong> sat/vB</label>
+                        <input type="range" id="fee-rate-slider" min="1" max="10" value="2">
                     </div>
                 </div>
 
-                <button id="execute-button" class="terminal-button">BROADCAST</button>
+                <div class="cost-box">
+                    <div class="cost-row"><span>Network fee</span><span id="cost-network-fee">~220 sats</span></div>
+                    <div class="cost-row"><span>Service fee</span><span>2,000 sats</span></div>
+                    <div class="cost-row"><span>Recipient</span><span id="cost-recipient-amount">0 sats</span></div>
+                    <div class="cost-row total"><span>Total</span><span id="cost-total">~2,220 sats</span></div>
+                </div>
+
+                <button id="execute-button" class="btn-primary">BROADCAST</button>
             </section>
 
-            <!-- PANEL B: ACTIVE TRANSMISSIONS & LOG -->
-            <section class="panel log-panel">
-                <!-- Top: Active Transmissions -->
-                <div class="active-transmissions-panel">
-                    <h2 class="panel-title">Active Transmissions</h2>
-                    <div id="active-orders-list" class="orders-list">
-                        <!-- Orders will be populated here via JS -->
-                        <div class="order-item-placeholder" style="color: var(--text-dim); font-size: 0.8rem; text-align: center; padding-top: 20px;">
-                            No active transmissions.
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Bottom: System Log -->
-                <div class="system-log-panel">
-                    <h2 class="panel-title">System Log</h2>
-                    <div id="system-log" class="log-content">
-                        <div class="log-entry">> Initializing connection to node...</div>
-                        <div class="log-entry">> Connected. Waiting for input...</div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- PANEL C: RECENT MESSAGES -->
-            <section class="panel recent-panel">
-                <h2 class="panel-title">Messages by other Users</h2>
-                <div id="recent-messages-list" class="recent-message-list">
-                    <!-- Messages will be populated here via JS -->
-                    <div class="recent-message-item">
-                        <div class="recent-message-text">Loading feed...</div>
-                    </div>
+            <!-- Right: Active Requests -->
+            <section class="card">
+                <h2>Active Requests</h2>
+                <div id="active-orders-list" class="orders-list">
+                    <p class="placeholder">No active requests.</p>
                 </div>
             </section>
         </main>
 
-        <footer class="terminal-footer">
-            <p>SatWire | BITCOIN MESSAGING & VALUE TRANSFER | support@op-return.app</p>
+        <!-- API Docs -->
+        <section class="card docs-card">
+            <h2>API Reference</h2>
+
+            <h3 class="docs-section-title">Public API</h3>
+            <p class="hint">No authentication required. User funds the returned address to trigger the transaction.</p>
+
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <code>/api/message-request</code>
+                <p>Create an OP_RETURN request. Returns a payment address and required amount.</p>
+                <pre>{
+  "message": "Hello Bitcoin!",
+  "targetAddress": "bc1q...",   // optional
+  "feeRate": 2,                 // optional, default 2
+  "amountToSend": 0             // optional, sats to recipient
+}</pre>
+            </div>
+
+            <div class="endpoint">
+                <span class="method get">GET</span>
+                <code>/api/request-status/:requestId</code>
+                <p>Poll status of a request.</p>
+            </div>
+
+            <div class="endpoint">
+                <span class="method delete">DELETE</span>
+                <code>/api/request/:requestId</code>
+                <p>Cancel a pending request.</p>
+            </div>
+
+            <h3 class="docs-section-title">Internal API</h3>
+            <p class="hint">Requires <code>X-API-Key</code> header. Funded from the SatWire treasury — no user payment needed.</p>
+
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <code>/api/internal/embed</code>
+                <p>Immediately broadcasts an OP_RETURN tx from the treasury wallet.</p>
+                <pre>{
+  "message": "Hello Bitcoin!",
+  "targetAddress": "bc1q...",   // optional
+  "feeRate": 2,                 // optional
+  "amountToSend": 0             // optional
+}</pre>
+            </div>
+
+            <div class="endpoint">
+                <span class="method get">GET</span>
+                <code>/api/internal/treasury</code>
+                <p>Returns treasury address and current confirmed balance.</p>
+            </div>
+        </section>
+
+        <footer class="app-footer">
+            SatWire &middot; Bitcoin Blockchain Messaging
         </footer>
     </div>
 
-    <!-- PAYMENT MODAL (Non-blocking) -->
+    <!-- Payment Modal -->
     <div id="payment-modal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <span id="close-payment-modal" class="close-button">&times;</span>
-            <h2 class="modal-title">Payment Required</h2>
-            <p class="modal-text">Transfer exact amount to initiate broadcast.</p>
-            
-            <div class="payment-details">
-                <div class="amount-display">TOTAL: <span id="modal-required-amount" class="highlight">...</span></div>
-                <div id="modal-qrcode" class="qr-display"></div>
-                <div class="address-display">
-                    <span id="modal-payment-address">...</span>
-                    <button id="modal-copy-address-button" class="icon-button">COPY</button>
+        <div class="modal-box">
+            <button id="close-payment-modal" class="modal-close">&times;</button>
+            <h2>Payment Required</h2>
+            <p>Send the exact amount to this address:</p>
+            <div class="payment-info">
+                <div class="amount-label">TOTAL: <strong id="modal-required-amount">...</strong></div>
+                <div class="address-row">
+                    <code id="modal-payment-address">...</code>
+                    <button id="modal-copy-address-button" class="btn-small">COPY</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- REFUND MODAL -->
-    <div id="refund-modal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <span id="close-refund-modal" class="close-button">&times;</span>
-            <h2 class="modal-title" style="color: #d32f2f;">Transmission Failed</h2>
-            <p class="modal-text" id="refund-reason">Unknown Error</p>
-            
-            <div class="input-group" style="text-align: left; margin-top: 20px;">
-                <label for="modal-refund-address">ENTER REFUND ADDRESS</label>
-                <input type="text" id="modal-refund-address" class="terminal-input" placeholder="bc1q...">
-            </div>
-            
-            <button id="submit-refund-button" class="terminal-button">SUBMIT REFUND REQUEST</button>
-        </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js"></script>
-    <!-- HALL OF FAME MODAL -->
-    <div id="hall-of-fame-modal" class="modal-overlay hidden">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>HALL OF FAME</h2>
-                <button id="close-hof-btn" class="close-modal">X</button>
-            </div>
-            
-            <div style="padding: 0 20px; margin-bottom: 20px; display: flex; gap: 10px;">
-                <button id="hof-add-btn" class="terminal-button small-btn" style="flex: 1; background: #222; border: 1px solid var(--bitcoin-orange); color: var(--bitcoin-orange);">
-                    + ADD BY TXID
-                </button>
-                <button id="hof-scan-btn" class="terminal-button small-btn" style="flex: 1; background: #222; border: 1px solid var(--bitcoin-orange); color: var(--bitcoin-orange);">
-                    + SCAN BLOCK
-                </button>
-            </div>
-
-            <div id="hall-of-fame-list" class="hof-list">
-                <!-- Items go here -->
-                <div class="loading-spinner">Loading legends...</div>
-            </div>
-        </div>
-    </div>
-
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=2"></script>
 </body>
 </html>

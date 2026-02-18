@@ -9,7 +9,7 @@ const { cleanupOldRequests } = require('./src/cleanup');
 const createApiRouter = require('./src/routes/api');
 const createWebhookRouter = require('./src/routes/webhook');
 const createAdminRouter = require('./src/routes/admin');
-const createHallOfFameRouter = require('./src/routes/halloffame');
+const createInternalRouter = require('./src/routes/internal');
 
 // --- Initialization ---
 initializeDatabase();
@@ -20,22 +20,19 @@ const app = express();
 app.use(express.json());
 
 // --- Serve Frontend ---
-// This serves your main app (index.html, etc.)
 app.use(express.static(path.join(__dirname, '../frontend')));
-// ✅ THIS IS THE MISSING LINE: It serves your admin panel
 app.use('/admin', express.static(path.join(__dirname, '../frontend/admin')));
-
 
 // --- API Routes ---
 const apiRouter = createApiRouter(db, rootNode, config, requestQueue);
 const webhookRouter = createWebhookRouter(db, rootNode, config);
 const adminRouter = createAdminRouter(db, rootNode, config);
-const hallOfFameRouter = createHallOfFameRouter(db);
+const internalRouter = createInternalRouter(db, rootNode, config);
 
 app.use('/api', apiRouter);
 app.use('/api/webhook', webhookRouter);
 app.use('/api/admin', adminRouter);
-app.use('/api/hall-of-fame', hallOfFameRouter);
+app.use('/api/internal', internalRouter);
 
 // --- Root Route ---
 app.get('/', (req, res) => {
@@ -45,8 +42,8 @@ app.get('/', (req, res) => {
 // --- Start Server ---
 app.listen(config.PORT, () => {
     console.log(`Server listening on port ${config.PORT}`);
-    console.log(`View App: http://localhost:${config.PORT}/`);
-    console.log(`View Admin Panel: http://localhost:${config.PORT}/admin`);
+    console.log(`API: http://localhost:${config.PORT}/api`);
+    console.log(`Admin: http://localhost:${config.PORT}/admin`);
 });
 
 // --- Scheduled Jobs ---
