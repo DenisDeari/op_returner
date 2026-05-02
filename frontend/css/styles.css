@@ -270,6 +270,17 @@ input[type="range"] {
 .order-status.confirmed { color: var(--green); }
 .order-status.failed { color: var(--red); }
 
+.order-support {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+.order-support a {
+    color: var(--red);
+    text-decoration: none;
+}
+.order-support a:hover { text-decoration: underline; }
+
 .order-footer {
     display: flex;
     align-items: center;

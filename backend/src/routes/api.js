@@ -159,7 +159,11 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 }
             }
 
-            res.status(200).json(row);
+            const responseBody = { ...row };
+            if (row.status === 'op_return_failed' && config.SUPPORT_EMAIL) {
+                responseBody.supportEmail = config.SUPPORT_EMAIL;
+            }
+            res.status(200).json(responseBody);
         } catch (error) {
             console.error(`Error in /api/request-status/${requestId}:`, error);
             res.status(500).json({ error: 'Failed to retrieve request status' });

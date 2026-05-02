@@ -108,11 +108,12 @@ document.addEventListener('DOMContentLoaded', () => {
         renderOrders();
     }
 
-    function updateOrderStatus(requestId, status, txId = null) {
+    function updateOrderStatus(requestId, status, txId = null, supportEmail = null) {
         const order = activeOrders.find(o => o.requestId === requestId);
         if (order && order.status !== status) {
             order.status = status;
             if (txId) order.txId = txId;
+            if (supportEmail) order.supportEmail = supportEmail;
             saveOrders();
             renderOrders();
         }
@@ -160,6 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="${statusClass}">${statusText}</div>
                     ${order.txId ? `<a href="https://mempool.space/tx/${order.txId}" target="_blank" class="order-link">VIEW TX</a>` : ''}
                 </div>
+                ${order.status === 'op_return_failed' && order.supportEmail ? `<div class="order-support">Need help? Contact <a href="mailto:${escapeHtml(order.supportEmail)}?subject=OP_RETURN%20failed%20request%20${order.requestId}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
                 <div class="order-actions">
                     ${order.status === 'pending_payment' ? `<button class="order-btn pay" data-id="${order.requestId}">PAY</button>` : ''}
                     <button class="order-btn ${isTerminal ? 'remove' : 'cancel'}" data-id="${order.requestId}">${btnLabel}</button>
@@ -257,7 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const data = await res.json();
                 if (data.status !== order.status) {
-                    updateOrderStatus(order.requestId, data.status, data.opReturnTxId);
+                    updateOrderStatus(order.requestId, data.status, data.opReturnTxId, data.supportEmail);
                 }
             } catch {
                 // silent

@@ -15,6 +15,7 @@ services:
       - MNEMONIC=${MNEMONIC}
       - BLOCKCYPHER_TOKEN=${BLOCKCYPHER_TOKEN}
       - WEBHOOK_RECEIVER_BASE_URL=${WEBHOOK_RECEIVER_BASE_URL}
+      - SUPPORT_EMAIL=${SUPPORT_EMAIL}
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
