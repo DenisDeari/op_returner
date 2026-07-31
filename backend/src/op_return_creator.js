@@ -126,6 +126,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         }
 
         const psbt = new bitcoin.Psbt({ network });
+        let usedChangePath = null;
 
         // Derive the scriptPubKey locally instead of trusting the provider to return it.
         let inputScript;
@@ -167,6 +168,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
                     address: derivedChangeAddress,
                     value: changeValue,
                 });
+                usedChangePath = changePath;
             } catch (deriveError) {
                 return failure('change_derivation_failed', `path ${changePath}: ${deriveError.message}`);
             }
@@ -240,7 +242,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
             } else {
                 console.log(`[OpReturnCreator] Successfully broadcasted OP_RETURN TX: ${txId} (via ${broadcast.provider})`);
             }
-            return { ok: true, opReturnTxId: txId, signedTxHex };
+            return { ok: true, opReturnTxId: txId, signedTxHex, changePath: usedChangePath };
         }
 
         // Inputs already spent almost always means a previous attempt for this request

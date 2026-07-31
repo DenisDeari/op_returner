@@ -16,8 +16,22 @@ const bitcoin = require('bitcoinjs-lib');
 const chainProviders = require('./chain_providers');
 const { dbGet, dbRun } = require('./db_utils');
 
-// Statuses from which a refund may legitimately begin.
+// Statuses from which an AUTOMATIC refund may begin.
+//
+// Deliberately excludes pending_payment/payment_detected: an underpaid request is still
+// waiting, and the customer may yet top it up. Auto-refunding it would race that top-up.
+// An operator can still refund those explicitly via the admin route, which passes
+// options.allowStatuses.
 const REFUNDABLE_STATUSES = ['op_return_failed', 'refund_failed'];
+
+// Statuses an operator may refund from by hand. Covers underpayments, which hold real
+// customer money but never reach a failed state on their own.
+const OPERATOR_REFUNDABLE_STATUSES = [
+    ...REFUNDABLE_STATUSES,
+    'pending_payment',
+    'payment_detected',
+    'payment_confirmed',
+];
 
 /**
  * Estimates the vbyte size of a P2WPKH sweep: overhead + n inputs + 1 output.
@@ -43,10 +57,13 @@ async function markRefundFailed(db, requestId, reason) {
  *
  * @returns {Promise<{ok: true, refundTxId: string, amount: number} | {ok: false, reason: string}>}
  */
-async function attemptRefund(request, db, rootNode, config) {
+async function attemptRefund(request, db, rootNode, config, options = {}) {
     const requestId = request.id;
+    // Operator-initiated refunds may start from a wider set of statuses (see
+    // OPERATOR_REFUNDABLE_STATUSES) because a human has decided the request is dead.
+    const allowedStatuses = options.allowStatuses || REFUNDABLE_STATUSES;
 
-    if (!config.REFUND_ENABLED) {
+    if (!config.REFUND_ENABLED && !options.force) {
         return { ok: false, reason: 'refunds_disabled' };
     }
 
@@ -57,7 +74,7 @@ async function attemptRefund(request, db, rootNode, config) {
     if (request.refundTxId) {
         return { ok: false, reason: 'already_refunded' };
     }
-    if (!REFUNDABLE_STATUSES.includes(request.status)) {
+    if (!allowedStatuses.includes(request.status)) {
         return { ok: false, reason: `not_refundable_from_status_${request.status}` };
     }
     if (!request.refundAddress) {
@@ -71,11 +88,14 @@ async function attemptRefund(request, db, rootNode, config) {
 
     // --- Acquire the lock -------------------------------------------------
     // Conditional on refundTxId still being NULL, so only one caller proceeds.
+    // lastAttemptAt is stamped so reconcile.js can distinguish a genuinely abandoned
+    // refund lock from one taken moments ago.
     const lock = await dbRun(
         db,
-        `UPDATE requests SET status = 'refund_processing'
-         WHERE id = ? AND refundTxId IS NULL AND status IN (${REFUNDABLE_STATUSES.map(() => '?').join(',')})`,
-        [requestId, ...REFUNDABLE_STATUSES]
+        `UPDATE requests SET status = 'refund_processing', lastAttemptAt = ?
+         WHERE id = ? AND refundTxId IS NULL AND opReturnTxId IS NULL
+           AND status IN (${allowedStatuses.map(() => '?').join(',')})`,
+        [new Date().toISOString(), requestId, ...allowedStatuses]
     );
     if (lock.changes === 0) {
         return { ok: false, reason: 'refund_lock_not_acquired' };
@@ -95,8 +115,10 @@ async function attemptRefund(request, db, rootNode, config) {
         // --- Gather the funds still sitting at the payment address ---------
         const unspent = await chainProviders.getUnspent(request.address, config);
         if (!unspent.ok) {
-            // Provider trouble is transient: put it back so a later pass retries.
-            await dbRun(db, "UPDATE requests SET status = 'op_return_failed' WHERE id = ?", [requestId]);
+            // Provider trouble is transient: restore the status we found it in so a later
+            // pass can retry. Forcing 'op_return_failed' here would mislabel an
+            // operator-initiated refund of a still-pending or underpaid request.
+            await dbRun(db, 'UPDATE requests SET status = ? WHERE id = ? AND refundTxId IS NULL', [request.status, requestId]);
             return { ok: false, reason: `utxo_lookup_failed: ${unspent.reason}` };
         }
 
@@ -164,8 +186,9 @@ async function attemptRefund(request, db, rootNode, config) {
             if (broadcast.permanent) {
                 return markRefundFailed(db, requestId, `refund_broadcast_rejected: ${broadcast.reason}`);
             }
-            // Transient: revert so a later pass can try again. No funds moved.
-            await dbRun(db, "UPDATE requests SET status = 'op_return_failed' WHERE id = ?", [requestId]);
+            // Transient: revert to the status we found it in so a later pass can try
+            // again. No funds moved.
+            await dbRun(db, 'UPDATE requests SET status = ? WHERE id = ? AND refundTxId IS NULL', [request.status, requestId]);
             return { ok: false, reason: `refund_broadcast_unavailable: ${broadcast.reason}` };
         }
 
@@ -191,10 +214,16 @@ async function attemptRefund(request, db, rootNode, config) {
 }
 
 /** Reloads the request row and refunds it. Convenience for callers holding only an id. */
-async function refundById(requestId, db, rootNode, config) {
+async function refundById(requestId, db, rootNode, config, options = {}) {
     const request = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
     if (!request) return { ok: false, reason: 'request_not_found' };
-    return attemptRefund(request, db, rootNode, config);
+    return attemptRefund(request, db, rootNode, config, options);
 }
 
-module.exports = { attemptRefund, refundById, REFUNDABLE_STATUSES, estimateRefundVBytes };
+module.exports = {
+    attemptRefund,
+    refundById,
+    REFUNDABLE_STATUSES,
+    OPERATOR_REFUNDABLE_STATUSES,
+    estimateRefundVBytes,
+};

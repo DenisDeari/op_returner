@@ -4,7 +4,7 @@ const axios = require('axios');
 const bitcoin = require('bitcoinjs-lib');
 const { dbGet, dbAll, dbRun } = require('../db_utils');
 const { deleteRequest, fulfillRequest } = require('../request_service');
-const { attemptRefund } = require('../refund');
+const { attemptRefund, OPERATOR_REFUNDABLE_STATUSES } = require('../refund');
 const { getTreasuryAddress } = require('../treasury');
 
 function createAdminRouter(db, rootNode, config) {
@@ -161,7 +161,12 @@ function createAdminRouter(db, rootNode, config) {
                 return res.status(404).json({ error: 'Request not found.' });
             }
 
-            const result = await attemptRefund(request, db, rootNode, config);
+            // An operator may refund from a wider set of statuses than the automatic
+            // path allows — in particular an underpaid request, which holds real money
+            // but never reaches a failed state by itself.
+            const result = await attemptRefund(request, db, rootNode, config, {
+                allowStatuses: OPERATOR_REFUNDABLE_STATUSES,
+            });
             if (result.ok) {
                 res.status(200).json({ success: true, refundTxId: result.refundTxId, amount: result.amount });
             } else {

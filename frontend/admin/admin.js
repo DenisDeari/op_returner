@@ -142,10 +142,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         requestsBody.innerHTML = requests.map(req => {
-            const canFulfill = !req.opReturnTxId && !req.refundTxId &&
+            const settled = req.opReturnTxId || req.refundTxId;
+            const inFlight = req.status === 'refund_processing' || req.status === 'processing_op_return';
+            const canFulfill = !settled && !inFlight &&
                 (req.status === 'payment_confirmed' || req.status === 'op_return_failed');
-            const canRefund = !req.opReturnTxId && !req.refundTxId &&
-                (req.status === 'op_return_failed' || req.status === 'refund_failed');
+            // Refundable whenever money actually arrived and nothing has been delivered.
+            // This deliberately includes underpaid requests still sitting in
+            // pending_payment: they hold real funds but never reach a failed state, so
+            // without this they would have no refund path at all.
+            const holdsFunds = !!(req.paymentTxId || req.paymentReceivedSatoshis);
+            const canRefund = !settled && !inFlight && holdsFunds;
+            const underpaid = holdsFunds && req.paymentReceivedSatoshis
+                && req.paymentReceivedSatoshis < req.requiredAmountSatoshis;
 
             const note = req.userFeedback
                 ? `<span class="customer-note" title="${escapeHtml(req.userFeedback)}">${escapeHtml(truncate(req.userFeedback, 60))}</span>`
@@ -156,7 +164,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${escapeHtml(req.id.substring(0, 8))}...</td>
                 <td>${escapeHtml(new Date(req.createdAt).toLocaleString())}</td>
                 <td>${escapeHtml(truncate(req.message, 80))}</td>
-                <td><span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span></td>
+                <td>
+                    <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
+                    ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
+                </td>
                 <td>${note}</td>
                 <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.opReturnTxId)}" target="_blank">${escapeHtml(req.opReturnTxId.substring(0, 10))}...</a>` : 'N/A'}</td>
                 <td>

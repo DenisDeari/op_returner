@@ -301,3 +301,16 @@ tr.has-note .customer-note {
     border-left: 3px solid #f0ad4e;
     padding-left: 10px;
 }
+
+/* Underpaid requests hold customer funds but never fail on their own */
+.underpaid-flag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #d9534f;
+    color: #fff;
+    font-size: 0.7em;
+    font-weight: 700;
+    cursor: help;
+}

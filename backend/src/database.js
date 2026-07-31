@@ -28,6 +28,19 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
  *   otherwise race the CREATE TABLE and fail with "no such table".
  */
 function initializeDatabase(onReady) {
+    // Three independent async chains run below (requests, wallet_state, system_settings).
+    // onReady fires only once ALL of them have finished. The server must not begin
+    // accepting traffic before that: an early request would otherwise reach a database
+    // with no wallet_state row and fail with "Wallet state not initialized".
+    const pendingSteps = new Set(['requests', 'wallet_state', 'system_settings']);
+    function markStepDone(step) {
+        pendingSteps.delete(step);
+        if (pendingSteps.size === 0) {
+            console.log('Database initialization complete.');
+            if (typeof onReady === 'function') onReady();
+        }
+    }
+
     const createTableSql = `
         CREATE TABLE IF NOT EXISTS requests (
             id TEXT PRIMARY KEY,
@@ -62,6 +75,10 @@ function initializeDatabase(onReady) {
             'ADD COLUMN feeRate INTEGER DEFAULT 2',
             'ADD COLUMN amountToSend INTEGER DEFAULT 0',
             // Failure diagnostics: why a fulfilment failed and how often it has been retried.
+            // The BIP32 path of the change output, recorded so operator revenue is
+            // recoverable from the seed directly rather than relying on a wallet's
+            // gap-limit scan finding a sparsely-used change index.
+            'ADD COLUMN changePath TEXT',
             'ADD COLUMN failureReason TEXT',
             'ADD COLUMN attemptCount INTEGER DEFAULT 0',
             'ADD COLUMN lastAttemptAt TEXT',
@@ -85,7 +102,7 @@ function initializeDatabase(onReady) {
                 }
                 if (--remaining === 0) {
                     console.log('Schema migrations applied.');
-                    if (typeof onReady === 'function') onReady();
+                    markStepDone('requests');
                 }
             });
         }
@@ -101,20 +118,24 @@ function initializeDatabase(onReady) {
     db.run(createWalletStateTableSql, (err) => {
         if (err) {
             console.error("FATAL ERROR: Error creating wallet_state table:", err.message);
-        } else {
-            console.log("Table 'wallet_state' created or already exists.");
-            db.get("SELECT count(*) as count FROM wallet_state", (err, row) => {
-                if (row && row.count === 0) {
-                    db.get('SELECT MAX("index") as maxIndex FROM requests', (err, result) => {
-                        const startIdx = (result && result.maxIndex !== null) ? result.maxIndex : 0;
-                        db.run("INSERT INTO wallet_state (id, last_derived_index) VALUES (1, ?)", [startIdx], (err) => {
-                            if (err) console.error("Error initializing wallet_state:", err);
-                            else console.log(`Initialized wallet_state with index ${startIdx}`);
-                        });
-                    });
-                }
-            });
+            return markStepDone('wallet_state');
         }
+        console.log("Table 'wallet_state' created or already exists.");
+        db.get("SELECT count(*) as count FROM wallet_state", (err, row) => {
+            if (!row || row.count !== 0) {
+                return markStepDone('wallet_state');
+            }
+            // Seed from the highest index already used, so a rebuilt wallet_state never
+            // re-issues an address that a previous request was quoted.
+            db.get('SELECT MAX("index") as maxIndex FROM requests', (err, result) => {
+                const startIdx = (result && result.maxIndex !== null) ? result.maxIndex : 0;
+                db.run("INSERT INTO wallet_state (id, last_derived_index) VALUES (1, ?)", [startIdx], (err) => {
+                    if (err) console.error("Error initializing wallet_state:", err);
+                    else console.log(`Initialized wallet_state with index ${startIdx}`);
+                    markStepDone('wallet_state');
+                });
+            });
+        });
     });
 
     // Create system_settings table
@@ -127,10 +148,12 @@ function initializeDatabase(onReady) {
     db.run(createSystemSettingsTableSql, (err) => {
         if (err) {
             console.error("Error creating system_settings table:", err.message);
-        } else {
-            console.log("Table 'system_settings' created or already exists.");
-            db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')");
+            return markStepDone('system_settings');
         }
+        console.log("Table 'system_settings' created or already exists.");
+        db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')", () => {
+            markStepDone('system_settings');
+        });
     });
 }
 

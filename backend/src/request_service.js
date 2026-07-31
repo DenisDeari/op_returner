@@ -63,9 +63,10 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
                 db,
                 `UPDATE requests
                  SET status = 'op_return_broadcasted', opReturnTxId = ?, opReturnTxHex = ?,
-                     failureReason = NULL, attemptCount = ?, lastAttemptAt = ?
+                     changePath = ?, failureReason = NULL,
+                     attemptCount = COALESCE(attemptCount, 0) + 1, lastAttemptAt = ?
                  WHERE id = ?`,
-                [result.opReturnTxId, result.signedTxHex, attemptNumber, new Date().toISOString(), requestId]
+                [result.opReturnTxId, result.signedTxHex, result.changePath || null, new Date().toISOString(), requestId]
             );
             console.log(`[RequestService] Request ${requestId} status updated to op_return_broadcasted`);
 

@@ -13,8 +13,13 @@ const createAdminRouter = require('./src/routes/admin');
 const createInternalRouter = require('./src/routes/internal');
 
 // --- Initialization ---
-// Scheduled jobs are started from this callback, once the schema is guaranteed to exist.
-initializeDatabase(() => startScheduledJobs());
+// The HTTP listener and the scheduled jobs both start from this callback, once the
+// schema and wallet_state are guaranteed to exist. Binding the port earlier would let a
+// request arrive before wallet_state is seeded, which fails address derivation.
+initializeDatabase(() => {
+    startServer();
+    startScheduledJobs();
+});
 const rootNode = initializeWallet();
 const app = express();
 
@@ -42,11 +47,16 @@ app.get('/', (req, res) => {
 });
 
 // --- Start Server ---
-app.listen(config.PORT, () => {
-    console.log(`Server listening on port ${config.PORT}`);
-    console.log(`API: http://localhost:${config.PORT}/api`);
-    console.log(`Admin: http://localhost:${config.PORT}/admin`);
-});
+let serverStarted = false;
+function startServer() {
+    if (serverStarted) return;
+    serverStarted = true;
+    app.listen(config.PORT, () => {
+        console.log(`Server listening on port ${config.PORT}`);
+        console.log(`API: http://localhost:${config.PORT}/api`);
+        console.log(`Admin: http://localhost:${config.PORT}/admin`);
+    });
+}
 
 // --- Scheduled Jobs ---
 // Called from the initializeDatabase ready callback so no job ever queries a table or
