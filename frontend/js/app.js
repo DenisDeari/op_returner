@@ -41,10 +41,12 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('opr_orders', JSON.stringify(activeOrders));
     }
 
+    // Escapes quotes as well as angle brackets: these values are interpolated into
+    // attribute values (href, title), where a bare quote would break out of the attribute.
+    const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        if (text === null || text === undefined) return '';
+        return String(text).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
     }
 
     function updateByteCounter() {
@@ -108,18 +110,55 @@ document.addEventListener('DOMContentLoaded', () => {
         renderOrders();
     }
 
-    function updateOrderStatus(requestId, status, txId = null, supportEmail = null) {
+    // Statuses that mean the request did not succeed. The customer can leave a message
+    // for the operator from any of these.
+    const FAILURE_STATUSES = ['op_return_failed', 'refund_failed', 'refund_processing', 'refunded'];
+    const isFailure = (status) => FAILURE_STATUSES.includes(status);
+
+    // Statuses where nothing further will change, so polling can stop.
+    const TERMINAL_STATUSES = ['op_return_broadcasted', 'refunded', 'refund_failed'];
+
+    function updateOrderStatus(requestId, data) {
         const order = activeOrders.find(o => o.requestId === requestId);
-        if (order && order.status !== status) {
-            order.status = status;
-            if (txId) order.txId = txId;
-            if (supportEmail) order.supportEmail = supportEmail;
+        if (!order) return;
+
+        let changed = false;
+        const apply = (key, value) => {
+            if (value !== undefined && value !== null && order[key] !== value) {
+                order[key] = value;
+                changed = true;
+            }
+        };
+
+        apply('status', data.status);
+        apply('txId', data.opReturnTxId);
+        apply('supportEmail', data.supportEmail);
+        apply('refundTxId', data.refundTxId);
+        apply('failureReason', data.failureReason);
+        // Feedback may have been submitted from another device/session.
+        if (data.userFeedback && !order.feedbackSent) {
+            order.feedbackSent = true;
+            changed = true;
+        }
+
+        if (changed) {
             saveOrders();
             renderOrders();
         }
     }
 
+    // In-progress feedback text, kept outside the DOM so a re-render (which happens on
+    // every status poll) does not discard what the customer is part-way through typing.
+    const feedbackDrafts = {};
+
     function renderOrders() {
+        // Remember which feedback box had focus so it can be restored after the rebuild.
+        const active = document.activeElement;
+        const focusedFeedbackId = active && active.classList && active.classList.contains('feedback-input')
+            ? active.dataset.id
+            : null;
+        const selectionStart = focusedFeedbackId ? active.selectionStart : null;
+
         activeOrdersList.innerHTML = '';
 
         if (activeOrders.length === 0) {
@@ -128,8 +167,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         activeOrders.forEach(order => {
+            const failed = isFailure(order.status);
             const el = document.createElement('div');
-            el.className = `order-item${order.status === 'op_return_failed' ? ' failed' : ''}`;
+            el.className = `order-item${failed ? ' failed' : ''}`;
 
             let statusText = order.status.replace(/_/g, ' ').toUpperCase();
             let statusClass = 'order-status';
@@ -141,6 +181,15 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (order.status === 'op_return_failed') {
                 statusClass += ' failed';
                 statusText = 'FAILED';
+            } else if (order.status === 'refunded') {
+                statusClass += ' confirmed';
+                statusText = 'REFUNDED';
+            } else if (order.status === 'refund_processing') {
+                statusClass += ' failed';
+                statusText = 'FAILED — refunding<span class="loading-dots"></span>';
+            } else if (order.status === 'refund_failed') {
+                statusClass += ' failed';
+                statusText = 'FAILED — refund needs manual review';
             } else if (order.status === 'payment_detected') {
                 statusClass += ' confirmed';
                 statusText = 'Payment detected, awaiting confirmation<span class="loading-dots"></span>';
@@ -148,8 +197,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const mins = Math.floor((new Date() - new Date(order.createdAt)) / 60000);
 
-            const isTerminal = order.status === 'op_return_broadcasted' || order.status === 'op_return_failed';
+            const isTerminal = order.status === 'op_return_broadcasted' || failed;
             const btnLabel = isTerminal ? 'REMOVE' : 'CANCEL';
+
+            // Feedback box: only once the request has actually failed, and only until sent.
+            let feedbackHtml = '';
+            if (failed) {
+                feedbackHtml = order.feedbackSent
+                    ? `<div class="order-feedback-sent">Your message was sent to the operator. Thank you.</div>`
+                    : `
+                <div class="order-feedback">
+                    <label for="fb-${order.requestId}">Something went wrong with this request. Leave a message for the operator:</label>
+                    <textarea id="fb-${order.requestId}" class="feedback-input" data-id="${order.requestId}" maxlength="1000" placeholder="What happened, and how can we reach you?">${escapeHtml(feedbackDrafts[order.requestId] || '')}</textarea>
+                    <div class="feedback-row">
+                        <button class="order-btn feedback" data-id="${order.requestId}">SEND MESSAGE</button>
+                        <span class="feedback-counter">0 / 1000</span>
+                    </div>
+                </div>`;
+            }
 
             el.innerHTML = `
                 <div class="order-header">
@@ -161,7 +226,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="${statusClass}">${statusText}</div>
                     ${order.txId ? `<a href="https://mempool.space/tx/${order.txId}" target="_blank" class="order-link">VIEW TX</a>` : ''}
                 </div>
-                ${order.status === 'op_return_failed' && order.supportEmail ? `<div class="order-support">Need help? Contact <a href="mailto:${escapeHtml(order.supportEmail)}?subject=OP_RETURN%20failed%20request%20${order.requestId}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
+                ${order.refundTxId ? `<div class="order-refund">Your payment was refunded — <a href="https://mempool.space/tx/${escapeHtml(order.refundTxId)}" target="_blank">view refund transaction</a></div>` : ''}
+                ${failed && order.supportEmail ? `<div class="order-support">Need help? Contact <a href="mailto:${escapeHtml(order.supportEmail)}?subject=OP_RETURN%20failed%20request%20${order.requestId}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
+                ${feedbackHtml}
                 <div class="order-actions">
                     ${order.status === 'pending_payment' ? `<button class="order-btn pay" data-id="${order.requestId}">PAY</button>` : ''}
                     <button class="order-btn ${isTerminal ? 'remove' : 'cancel'}" data-id="${order.requestId}">${btnLabel}</button>
@@ -177,8 +244,37 @@ document.addEventListener('DOMContentLoaded', () => {
             const removeBtn = el.querySelector('.order-btn.remove');
             if (removeBtn) removeBtn.addEventListener('click', () => removeOrder(order.requestId));
 
+            const feedbackBtn = el.querySelector('.order-btn.feedback');
+            const feedbackInput = el.querySelector('.feedback-input');
+            const feedbackCounter = el.querySelector('.feedback-counter');
+            if (feedbackInput && feedbackCounter) {
+                const syncCounter = () => {
+                    const used = new TextEncoder().encode(feedbackInput.value).length;
+                    feedbackCounter.textContent = `${used} / 1000`;
+                };
+                syncCounter();
+                feedbackInput.addEventListener('input', () => {
+                    feedbackDrafts[order.requestId] = feedbackInput.value;
+                    syncCounter();
+                });
+            }
+            if (feedbackBtn && feedbackInput) {
+                feedbackBtn.addEventListener('click', () => submitFeedback(order.requestId, feedbackInput, feedbackBtn));
+            }
+
             activeOrdersList.appendChild(el);
         });
+
+        // Put the cursor back where the customer left it.
+        if (focusedFeedbackId) {
+            const restored = activeOrdersList.querySelector(`.feedback-input[data-id="${focusedFeedbackId}"]`);
+            if (restored) {
+                restored.focus();
+                if (selectionStart !== null) {
+                    try { restored.setSelectionRange(selectionStart, selectionStart); } catch { /* ignore */ }
+                }
+            }
+        }
     }
 
     // --- API Calls ---
@@ -247,20 +343,59 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function submitFeedback(requestId, inputEl, buttonEl) {
+        const text = inputEl.value.trim();
+        if (!text) {
+            alert('Please write a message first.');
+            return;
+        }
+
+        buttonEl.disabled = true;
+        const originalLabel = buttonEl.textContent;
+        buttonEl.textContent = 'SENDING...';
+
+        try {
+            const res = await fetch(`/api/request/${encodeURIComponent(requestId)}/feedback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            });
+            const data = await res.json();
+
+            if (res.ok) {
+                const order = activeOrders.find(o => o.requestId === requestId);
+                if (order) {
+                    order.feedbackSent = true;
+                    delete feedbackDrafts[requestId];
+                    saveOrders();
+                    renderOrders();
+                }
+            } else {
+                alert(`Could not send message: ${data.error}`);
+                buttonEl.disabled = false;
+                buttonEl.textContent = originalLabel;
+            }
+        } catch {
+            alert('Network error. Please try again.');
+            buttonEl.disabled = false;
+            buttonEl.textContent = originalLabel;
+        }
+    }
+
     async function pollActiveOrders() {
         if (activeOrders.length === 0) return;
 
-        for (const order of activeOrders) {
-            if (order.status === 'op_return_broadcasted' || order.status === 'op_return_failed') continue;
+        // Iterate a snapshot: updateOrderStatus re-renders and can mutate order objects.
+        for (const order of [...activeOrders]) {
+            // Keep polling failed orders — an automatic refund may still land.
+            if (TERMINAL_STATUSES.includes(order.status)) continue;
 
             try {
                 const res = await fetch(`/api/request-status/${order.requestId}`);
                 if (!res.ok) continue;
 
                 const data = await res.json();
-                if (data.status !== order.status) {
-                    updateOrderStatus(order.requestId, data.status, data.opReturnTxId, data.supportEmail);
-                }
+                updateOrderStatus(order.requestId, data);
             } catch {
                 // silent
             }

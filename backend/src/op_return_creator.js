@@ -1,185 +1,184 @@
 // backend/src/op_return_creator.js
 
-const axios = require('axios');
 const bitcoin = require('bitcoinjs-lib');
 const { BIP32Factory } = require('bip32');
 const ecc = require('tiny-secp256k1');
 const appConfig = require('./config');
+const chainProviders = require('./chain_providers');
 
 const bip32 = BIP32Factory(ecc);
 
-async function findUtxoForAddress(txId, targetAddress, apiBase, token) {
-    const apiUrl = `${apiBase}/txs/${txId}?token=${token}&includeScript=true`;
-    console.log(`[OpReturnCreator] Fetching TX details from: ${apiUrl.split('?')[0]}...`); // Hide token
+/**
+ * Failure reasons that are inherent to the request itself. Retrying them unchanged
+ * can never succeed, so the caller should stop retrying and move straight to a refund.
+ */
+const PERMANENT_FAILURES = new Set([
+    'invalid_message',
+    'missing_payment_details',
+    'insufficient_payment',
+    'invalid_target_address',
+    'change_derivation_failed',
+    'key_derivation_failed',
+    'signature_validation_failed',
+    'broadcast_rejected',
+    'fee_below_relay_minimum',
+    // The payment UTXO is gone, so neither a retry nor a refund can do anything.
+    // Requires a human to confirm what actually happened on-chain.
+    'inputs_already_spent',
+]);
 
-    try {
-        const response = await axios.get(apiUrl);
-        const txData = response.data;
+/**
+ * Failures where the customer's money is NOT sitting in the payment address any more,
+ * so an automatic refund must never be attempted.
+ */
+const NO_REFUND_FAILURES = new Set(['inputs_already_spent']);
 
-        if (!txData || !txData.outputs || !Array.isArray(txData.outputs)) {
-            console.error(`[OpReturnCreator] Invalid transaction data for txId ${txId}`);
-            return null;
-        }
-
-        for (let i = 0; i < txData.outputs.length; i++) {
-            const output = txData.outputs[i];
-            if (output.addresses && output.addresses.includes(targetAddress)) {
-                console.log(`[OpReturnCreator] Found UTXO for ${targetAddress} in tx ${txId}, vout ${i}, value ${output.value}`);
-                return {
-                    vout: i,
-                    value: output.value,
-                    script: output.script
-                };
-            }
-        }
-        console.error(`[OpReturnCreator] No output found for address ${targetAddress} in tx ${txId}`);
-        return null;
-    } catch (error) {
-        console.error(`[OpReturnCreator] Error fetching transaction details for ${txId}:`, error.message);
-        if (error.response) {
-            console.error('API Error Status:', error.response.status);
-            console.error('API Error Data:', error.response.data);
-        }
-        return null;
+function failure(reason, detail) {
+    const permanent = PERMANENT_FAILURES.has(reason);
+    if (detail) {
+        console.error(`[OpReturnCreator] FAILED (${reason}, permanent=${permanent}): ${detail}`);
     }
-}
-
-async function broadcastTransaction(signedTxHex, apiBase, token) {
-    const apiUrl = `${apiBase}/txs/push?token=${token}`;
-    console.log(`[OpReturnCreator] Pushing TX to: ${apiUrl.split('?')[0]}...`); // Hide token
-    try {
-        const response = await axios.post(apiUrl, { tx: signedTxHex });
-        if (response.data && response.data.tx && response.data.tx.hash) {
-            console.log("[OpReturnCreator] Broadcast successful. TX Hash:", response.data.tx.hash);
-            return true;
-        } else {
-            console.warn("[OpReturnCreator] Broadcast response structure unexpected, but received 2xx status:", response.data);
-            return true;
-        }
-    } catch (error) {
-        console.error(`[OpReturnCreator] Error pushing transaction:`, error.message);
-        if (error.response) {
-            console.error('API Error Status:', error.response.status);
-            console.error('API Error Data:', error.response.data);
-        }
-        return false;
-    }
+    return { ok: false, reason, detail: detail || null, permanent };
 }
 
 async function createOpReturnTransaction(request, rootNode, network, config) {
     console.log(`[OpReturnCreator] Starting OP_RETURN creation for request ID: ${request?.id}`);
     if (!request || !config) {
-        console.error("[OpReturnCreator] FATAL: Request or Config object is missing!");
-        return null;
+        return failure('internal_error', 'Request or Config object is missing');
     }
-    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress, targetAddress, feeRate, amountToSend } = request;
-    const { BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN } = config;
+    const { id, message, paymentTxId, paymentReceivedSatoshis, derivationPath, address: inputAddress, targetAddress, feeRate, amountToSend, index: requestIndex } = request;
     const coinType = network === bitcoin.networks.bitcoin ? 0 : 1;
 
     if (!message || Buffer.byteLength(message, 'utf8') > 8000) {
-        console.error(`[OpReturnCreator] Invalid message for request ${id}. Aborting.`);
-        return null;
+        return failure('invalid_message', `message missing or over 8000 bytes for request ${id}`);
     }
     if (!paymentTxId || !derivationPath || !inputAddress) {
-        console.error(`[OpReturnCreator] Missing payment details in request ${id}. Aborting.`);
-        return null;
+        return failure('missing_payment_details', `request ${id} lacks paymentTxId/derivationPath/address`);
     }
 
     try {
-        const utxo = await findUtxoForAddress(paymentTxId, inputAddress, BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN);
-        if (!utxo) {
-            console.error(`[OpReturnCreator] Could not find suitable UTXO for ${inputAddress} in tx ${paymentTxId}.`);
-            return null;
+        const utxoResult = await chainProviders.findUtxoForAddress(paymentTxId, inputAddress, config);
+        if (!utxoResult.ok) {
+            // Every provider failed, or the payment output genuinely is not there.
+            // Transient by default so the retry loop can pick it up again later.
+            return failure('utxo_lookup_failed', utxoResult.reason);
         }
+        const utxo = utxoResult;
         const inputValue = utxo.value;
-        if (inputValue !== paymentReceivedSatoshis) {
-            console.warn(`[OpReturnCreator] WARNING: Expected amount (${paymentReceivedSatoshis}) differs from found UTXO value (${inputValue}). Using actual.`);
+        console.log(`[OpReturnCreator] Found UTXO for ${inputAddress} in tx ${paymentTxId}, vout ${utxo.vout}, value ${inputValue} (via ${utxo.provider})`);
+        if (paymentReceivedSatoshis != null && inputValue !== paymentReceivedSatoshis) {
+            console.warn(`[OpReturnCreator] Recorded payment (${paymentReceivedSatoshis}) differs from on-chain UTXO value (${inputValue}). Using actual.`);
         }
 
-        const psbt = new bitcoin.Psbt({ network });
         const opReturnBuffer = Buffer.from(message, 'utf8');
-
-        const opReturnScriptLength = bitcoin.payments.embed({ data: [opReturnBuffer] }).output.length;
-        // Fix: Add 9 bytes buffer to account for OP_RETURN output overhead (8 bytes amount + varint)
-        let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10;
-        
-        // If target address is present, add weight for its output
-        if (targetAddress) {
-            estimatedVBytes += 31; 
-        }
-
-        const feeRateSatPerVByte = feeRate || appConfig.DEFAULT_FEE_RATE; 
-        const fee = estimatedVBytes * feeRateSatPerVByte;
-        
-        const DUST_LIMIT = appConfig.DUST_LIMIT_SATS;
-        let targetValue = 0;
-
-        // Add OP_RETURN output
         const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
-        psbt.addOutput({
-            script: opReturnOutput.output,
-            value: 0,
-        });
+        const opReturnScriptLength = opReturnOutput.output.length;
 
-        // Add Target Address output if present
+        // Fee estimation: input (68) + OP_RETURN output (script + 9 overhead)
+        // + change output (31) + tx overhead (10), plus the recipient output if present.
+        // FEE_SAFETY_VBYTES covers the varint growth of the OP_RETURN push prefix and
+        // the 1-vbyte rounding in this estimate. Underestimating here puts the whole
+        // transaction below the minimum relay fee at feeRate=1, where there is no
+        // headroom at all, and the network silently refuses to propagate it.
+        const FEE_SAFETY_VBYTES = 4;
+        let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10 + FEE_SAFETY_VBYTES;
         if (targetAddress) {
-            // Use amountToSend if specified (>0), otherwise default to DUST_LIMIT (subsidized by service fee)
-            targetValue = (amountToSend && amountToSend > 0) ? amountToSend : DUST_LIMIT;
-            
-            console.log(`[OpReturnCreator] Adding target output: ${targetValue} sats to ${targetAddress}`);
+            estimatedVBytes += 31;
+        }
+        estimatedVBytes = Math.ceil(estimatedVBytes);
+
+        const feeRateSatPerVByte = feeRate || appConfig.DEFAULT_FEE_RATE;
+        const fee = estimatedVBytes * feeRateSatPerVByte;
+
+        const DUST_LIMIT = appConfig.DUST_LIMIT_SATS;
+
+        // A recipient output below the dust limit makes the whole transaction
+        // non-standard, so relays reject it outright. Intake validation now refuses
+        // sub-dust amountToSend values, but clamp here too: this function is also
+        // reachable from the admin "Manually Fulfill" button and from historic rows
+        // written before that validation existed.
+        let targetValue = 0;
+        if (targetAddress) {
+            const requested = amountToSend && amountToSend > 0 ? amountToSend : DUST_LIMIT;
+            targetValue = Math.max(requested, DUST_LIMIT);
+            if (targetValue !== requested) {
+                console.warn(`[OpReturnCreator] Raised sub-dust recipient amount ${requested} to dust limit ${DUST_LIMIT} for request ${id}.`);
+            }
+            // Validate the address before signing rather than discovering it at broadcast.
             try {
-                psbt.addOutput({
-                    address: targetAddress,
-                    value: targetValue,
-                });
+                bitcoin.address.toOutputScript(targetAddress, network);
             } catch (e) {
-                console.error(`[OpReturnCreator] Invalid target address ${targetAddress}:`, e);
-                // If invalid, we abort or continue without it? 
-                // Aborting is safer to avoid user confusion.
-                return null;
+                return failure('invalid_target_address', `${targetAddress}: ${e.message}`);
             }
         }
 
         const changeValue = inputValue - fee - targetValue;
 
-        console.log(`[OpReturnCreator] Calculated fee: ${fee} sats. Target: ${targetValue}. Change: ${changeValue}`);
+        console.log(`[OpReturnCreator] Input: ${inputValue} | Fee: ${fee} | Target: ${targetValue} | Change: ${changeValue}`);
+
+        // Outputs must never exceed inputs. Previously this was unchecked, so an
+        // underpayment produced an invalid transaction that only failed at broadcast.
+        if (changeValue < 0) {
+            return failure(
+                'insufficient_payment',
+                `request ${id}: received ${inputValue} sats but needs at least ${fee + targetValue} (fee ${fee} + recipient ${targetValue})`
+            );
+        }
+
+        const psbt = new bitcoin.Psbt({ network });
+
+        // Derive the scriptPubKey locally instead of trusting the provider to return it.
+        let inputScript;
+        try {
+            inputScript = bitcoin.address.toOutputScript(inputAddress, network);
+        } catch (e) {
+            return failure('internal_error', `cannot derive scriptPubKey for our own address ${inputAddress}: ${e.message}`);
+        }
 
         psbt.addInput({
             hash: paymentTxId,
             index: utxo.vout,
             witnessUtxo: {
-                script: Buffer.from(utxo.script, 'hex'),
+                script: inputScript,
                 value: inputValue,
             },
         });
 
+        psbt.addOutput({ script: opReturnOutput.output, value: 0 });
+
+        if (targetAddress) {
+            console.log(`[OpReturnCreator] Adding target output: ${targetValue} sats to ${targetAddress}`);
+            psbt.addOutput({ address: targetAddress, value: targetValue });
+        }
+
         if (changeValue >= DUST_LIMIT) {
-            const changePath = `m/84'/${coinType}'/0'/1/0`; // TODO: Increment change index
-            let changeAddressNode;
+            // One change address per request instead of a single reused address.
+            // Deriving from the request's own index keeps this deterministic and
+            // recoverable from the seed alone, with no extra persisted state.
+            const changeIndex = Number.isInteger(requestIndex) ? requestIndex : 0;
+            const changePath = `m/84'/${coinType}'/0'/1/${changeIndex}`;
             try {
-                changeAddressNode = rootNode.derivePath(changePath);
+                const changeAddressNode = rootNode.derivePath(changePath);
                 const changePubkeyBuffer = Buffer.from(changeAddressNode.publicKey);
                 const { address: derivedChangeAddress } = bitcoin.payments.p2wpkh({ pubkey: changePubkeyBuffer, network: network });
-                if (!derivedChangeAddress) throw new Error("Failed to derive change address string.");
-                console.log(`[OpReturnCreator] Adding change output: ${changeValue} sats to ${derivedChangeAddress}`);
+                if (!derivedChangeAddress) throw new Error('Failed to derive change address string.');
+                console.log(`[OpReturnCreator] Adding change output: ${changeValue} sats to ${derivedChangeAddress} (${changePath})`);
                 psbt.addOutput({
                     address: derivedChangeAddress,
                     value: changeValue,
                 });
             } catch (deriveError) {
-                console.error(`[OpReturnCreator] FAILED to derive change address at ${changePath}:`, deriveError);
-                return null;
+                return failure('change_derivation_failed', `path ${changePath}: ${deriveError.message}`);
             }
         } else {
-            console.log(`[OpReturnCreator] Change ${changeValue} below dust limit. Not adding change output.`);
+            console.log(`[OpReturnCreator] Change ${changeValue} below dust limit. Absorbed into fee.`);
         }
 
         let inputKeyPair;
         try {
             inputKeyPair = rootNode.derivePath(derivationPath);
         } catch (deriveError) {
-            console.error(`[OpReturnCreator] FAILED to derive input keypair at path ${derivationPath}:`, deriveError);
-            return null;
+            return failure('key_derivation_failed', `path ${derivationPath}: ${deriveError.message}`);
         }
 
         const customSigner = {
@@ -206,35 +205,63 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
             return inputKeyPair.verify(msghash, signature);
         };
 
+        // Previously this only logged and carried on, so an unsigned or wrongly
+        // signed transaction would still be pushed and rejected by the network.
         if (!psbt.validateSignaturesOfInput(0, validator)) {
-            console.error("[OpReturnCreator] ERROR: Signature validation failed for input 0!");
-            // return null; // Or handle as a critical error
-        } else {
-            console.log("[OpReturnCreator] Signatures validated successfully.");
+            return failure('signature_validation_failed', `signature check failed for input 0 of request ${id}`);
         }
+        console.log('[OpReturnCreator] Signatures validated successfully.');
 
         psbt.finalizeAllInputs();
         const transaction = psbt.extractTransaction();
         const signedTxHex = transaction.toHex();
         const newTxId = transaction.getId();
-        console.log(`[OpReturnCreator] Transaction signed and finalized. New TXID: ${newTxId}`);
 
-        const broadcastSuccess = await broadcastTransaction(signedTxHex, BLOCKCYPHER_API_BASE, BLOCKCYPHER_TOKEN);
+        // Verify against the real signed size rather than the estimate. If the fee we
+        // actually deducted is below the minimum relay fee the transaction will not
+        // propagate, and it is far better to fail here than to broadcast something that
+        // silently never confirms.
+        const actualVBytes = transaction.virtualSize();
+        const minRelayFee = actualVBytes; // 1 sat/vByte floor
+        if (fee < minRelayFee) {
+            return failure(
+                'fee_below_relay_minimum',
+                `computed fee ${fee} sats is below the ${minRelayFee} sat minimum for a ${actualVBytes} vByte transaction`
+            );
+        }
+        console.log(`[OpReturnCreator] Transaction signed and finalized. New TXID: ${newTxId} (${actualVBytes} vBytes, fee ${fee} sats)`);
 
-        if (broadcastSuccess && newTxId) {
-            console.log(`[OpReturnCreator] Successfully broadcasted OP_RETURN TX: ${newTxId}`);
-            return { opReturnTxId: newTxId, signedTxHex: signedTxHex }; // Return object
-        } else {
-            console.error(`[OpReturnCreator] Failed to broadcast transaction (TXID preview: ${newTxId}).`);
-            return null;
+        const broadcast = await chainProviders.broadcastTransaction(signedTxHex, config, newTxId);
+
+        if (broadcast.ok) {
+            const txId = broadcast.txId || newTxId;
+            if (broadcast.alreadyBroadcast) {
+                console.log(`[OpReturnCreator] TX ${txId} was already in the mempool/chain — treating as delivered.`);
+            } else {
+                console.log(`[OpReturnCreator] Successfully broadcasted OP_RETURN TX: ${txId} (via ${broadcast.provider})`);
+            }
+            return { ok: true, opReturnTxId: txId, signedTxHex };
         }
 
+        // Inputs already spent almost always means a previous attempt for this request
+        // confirmed. Flag it distinctly so the caller never "refunds" money that is gone.
+        if (broadcast.inputsSpent) {
+            return failure('inputs_already_spent', `${broadcast.reason} (this request's payment UTXO is already spent — verify on-chain before refunding)`);
+        }
+
+        // A network-rejected transaction is permanently bad; an unreachable provider is not.
+        return failure(
+            broadcast.permanent ? 'broadcast_rejected' : 'broadcast_unavailable',
+            `${broadcast.reason} (txid would have been ${newTxId})`
+        );
+
     } catch (error) {
-        console.error(`[OpReturnCreator] CATCH BLOCK Error during OP_RETURN creation for request ${id}:`, error);
-        return null;
+        return failure('internal_error', `request ${id}: ${error.message}`);
     }
 }
 
 module.exports = {
-    createOpReturnTransaction
+    createOpReturnTransaction,
+    PERMANENT_FAILURES,
+    NO_REFUND_FAILURES,
 };

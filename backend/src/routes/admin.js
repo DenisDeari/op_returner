@@ -2,9 +2,9 @@
 const express = require('express');
 const axios = require('axios');
 const bitcoin = require('bitcoinjs-lib');
-const opReturnCreator = require('../op_return_creator');
 const { dbGet, dbAll, dbRun } = require('../db_utils');
-const { deleteRequest } = require('../request_service');
+const { deleteRequest, fulfillRequest } = require('../request_service');
+const { attemptRefund } = require('../refund');
 const { getTreasuryAddress } = require('../treasury');
 
 function createAdminRouter(db, rootNode, config) {
@@ -107,22 +107,69 @@ function createAdminRouter(db, rootNode, config) {
             if (!request) {
                 return res.status(404).json({ error: 'Request not found.' });
             }
+            if (request.opReturnTxId) {
+                return res.status(409).json({ error: 'Request has already been broadcast.' });
+            }
+            if (request.refundTxId) {
+                return res.status(409).json({ error: 'Request has already been refunded — cannot fulfil it now.' });
+            }
+            // A refund in flight is spending the same UTXO. Forcing a fulfilment now
+            // would race it, and both would try to spend the customer's payment.
+            if (request.status === 'refund_processing') {
+                return res.status(409).json({ error: 'A refund is currently in progress for this request. Try again once it settles.' });
+            }
 
-            const result = await opReturnCreator.createOpReturnTransaction(request, rootNode, config.NETWORK, {
-                BLOCKCYPHER_API_BASE: config.BLOCKCYPHER_API_BASE,
-                BLOCKCYPHER_TOKEN: config.BLOCKCYPHER_TOKEN
+            // Claim the request so the automatic path cannot pick it up concurrently.
+            // The operator is deliberately forcing this, so any non-final status is
+            // allowed, but the claim itself is still conditional.
+            const claim = await dbRun(
+                db,
+                `UPDATE requests SET status = 'processing_op_return', lastAttemptAt = ?
+                 WHERE id = ? AND opReturnTxId IS NULL AND refundTxId IS NULL
+                   AND status NOT IN ('refund_processing', 'refunded')`,
+                [new Date().toISOString(), requestId]
+            );
+            if (claim.changes === 0) {
+                return res.status(409).json({ error: 'Could not claim the request — its state changed. Refresh and retry.' });
+            }
+
+            // Route through the shared service so status, failureReason and attempt
+            // accounting are recorded identically to the automatic path. The lock is
+            // skipped because we just claimed it above, and auto-refund is off so a
+            // manual attempt never silently moves the customer's money.
+            const result = await fulfillRequest({ ...request, status: 'processing_op_return' }, db, rootNode, config, {
+                acquireLock: false,
+                autoRefund: false,
             });
 
-            if (result && result.opReturnTxId) {
-                await dbRun(db, "UPDATE requests SET status = 'op_return_broadcasted', opReturnTxId = ? WHERE id = ?", [result.opReturnTxId, requestId]);
+            if (result.success) {
                 res.status(200).json({ success: true, txId: result.opReturnTxId });
             } else {
-                await dbRun(db, "UPDATE requests SET status = 'op_return_failed' WHERE id = ?", [requestId]);
-                res.status(500).json({ error: 'Failed to create OP_RETURN transaction.' });
+                res.status(500).json({ error: result.error || 'Failed to create OP_RETURN transaction.' });
             }
         } catch (error) {
             console.error(`Manual fulfillment failed for ${requestId}:`, error);
             res.status(500).json({ error: 'An error occurred during manual fulfillment.' });
+        }
+    });
+
+    router.post('/refund/:requestId', protect, async (req, res) => {
+        const { requestId } = req.params;
+        try {
+            const request = await dbGet(db, "SELECT * FROM requests WHERE id = ?", [requestId]);
+            if (!request) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+
+            const result = await attemptRefund(request, db, rootNode, config);
+            if (result.ok) {
+                res.status(200).json({ success: true, refundTxId: result.refundTxId, amount: result.amount });
+            } else {
+                res.status(400).json({ error: result.reason });
+            }
+        } catch (error) {
+            console.error(`Manual refund failed for ${requestId}:`, error);
+            res.status(500).json({ error: 'An error occurred during the refund.' });
         }
     });
 

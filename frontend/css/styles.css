@@ -281,6 +281,70 @@ input[type="range"] {
 }
 .order-support a:hover { text-decoration: underline; }
 
+/* Customer feedback on a failed request */
+.order-feedback {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.order-feedback label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+}
+
+.order-feedback textarea {
+    width: 100%;
+    min-height: 60px;
+    resize: vertical;
+    box-sizing: border-box;
+    background: var(--bg, #0d1117);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 0.8rem;
+    padding: 8px;
+}
+
+.order-feedback textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.order-feedback .feedback-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.order-feedback .feedback-counter {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.order-feedback-sent {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--green);
+}
+
+.order-refund {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--green);
+}
+.order-refund a {
+    color: var(--green);
+    text-decoration: none;
+}
+.order-refund a:hover { text-decoration: underline; }
+
 .order-footer {
     display: flex;
     align-items: center;

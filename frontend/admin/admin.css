@@ -277,3 +277,27 @@ h1 { font-size: 1.4rem; }
     border-left: 3px solid var(--accent);
     border-radius: 0 4px 4px 0;
 }
+/* Customer note left on a failed request */
+.customer-note {
+    display: inline-block;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+    cursor: help;
+}
+
+tr.has-note .customer-note {
+    color: #f0ad4e;
+    font-weight: 600;
+}
+
+.muted {
+    color: #888;
+}
+
+.customer-note-section {
+    border-left: 3px solid #f0ad4e;
+    padding-left: 10px;
+}

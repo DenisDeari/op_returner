@@ -84,7 +84,23 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
 
     const effectiveFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
     const fee = estimatedVBytes * effectiveFeeRate;
-    const targetValue = (amountToSend && amountToSend > 0) ? amountToSend : 0;
+
+    // A recipient output below the dust limit makes the transaction non-standard and it
+    // is rejected at broadcast. Same failure mode as the public path — clamp it here too,
+    // and validate the address before signing rather than discovering it at push time.
+    let targetValue = 0;
+    if (targetAddress && amountToSend && amountToSend > 0) {
+        targetValue = Math.max(amountToSend, appConfig.DUST_LIMIT_SATS);
+        if (targetValue !== amountToSend) {
+            console.warn(`[Treasury] Raised sub-dust recipient amount ${amountToSend} to dust limit ${appConfig.DUST_LIMIT_SATS}.`);
+        }
+        try {
+            bitcoin.address.toOutputScript(targetAddress, network);
+        } catch (e) {
+            throw new Error(`Invalid targetAddress for this network: ${e.message}`);
+        }
+    }
+
     const changeValue = inputValue - fee - targetValue;
 
     console.log(`[Treasury] Input: ${inputValue} | Fee: ${fee} | To recipient: ${targetValue} | Change: ${changeValue}`);

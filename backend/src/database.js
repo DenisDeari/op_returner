@@ -19,7 +19,15 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
     console.log(`Connected to the SQLite database: ${DB_FILE}`);
 });
 
-function initializeDatabase() {
+/**
+ * Creates tables and applies additive column migrations.
+ *
+ * @param {function} [onReady] - Invoked once the requests table and all of its column
+ *   migrations have been applied. Scheduled jobs must wait for this: they query columns
+ *   that only exist after the migrations run, and on a fresh database they would
+ *   otherwise race the CREATE TABLE and fail with "no such table".
+ */
+function initializeDatabase(onReady) {
     const createTableSql = `
         CREATE TABLE IF NOT EXISTS requests (
             id TEXT PRIMARY KEY,
@@ -46,26 +54,41 @@ function initializeDatabase() {
         }
         console.log("Table 'requests' created or already exists.");
 
-        // Add targetAddress column if it doesn't exist
-        db.run("ALTER TABLE requests ADD COLUMN targetAddress TEXT", (err) => {
-            if (err && !err.message.includes("duplicate column name")) {
-                console.error("Error adding targetAddress column:", err.message);
-            }
-        });
+        // Additive, idempotent column migrations.
+        // ALTER TABLE ADD COLUMN never rewrites or drops existing rows, and the
+        // "duplicate column name" error is the expected no-op on an already-migrated DB.
+        const columnMigrations = [
+            'ADD COLUMN targetAddress TEXT',
+            'ADD COLUMN feeRate INTEGER DEFAULT 2',
+            'ADD COLUMN amountToSend INTEGER DEFAULT 0',
+            // Failure diagnostics: why a fulfilment failed and how often it has been retried.
+            'ADD COLUMN failureReason TEXT',
+            'ADD COLUMN attemptCount INTEGER DEFAULT 0',
+            'ADD COLUMN lastAttemptAt TEXT',
+            // Refunds: refundAddress is the payer's address, captured from the payment tx.
+            'ADD COLUMN refundAddress TEXT',
+            'ADD COLUMN refundTxId TEXT',
+            'ADD COLUMN refundedAt TEXT',
+            // Kept separate from failureReason so a refund error never overwrites the
+            // fulfilment diagnostic that the retry logic classifies against.
+            'ADD COLUMN refundFailureReason TEXT',
+            // Customer message left on a failed request, shown in the admin panel.
+            'ADD COLUMN userFeedback TEXT',
+            'ADD COLUMN userFeedbackAt TEXT',
+        ];
 
-        // Add feeRate column if it doesn't exist
-        db.run("ALTER TABLE requests ADD COLUMN feeRate INTEGER DEFAULT 2", (err) => {
-            if (err && !err.message.includes("duplicate column name")) {
-                console.error("Error adding feeRate column:", err.message);
-            }
-        });
-
-        // Add amountToSend column if it doesn't exist
-        db.run("ALTER TABLE requests ADD COLUMN amountToSend INTEGER DEFAULT 0", (err) => {
-            if (err && !err.message.includes("duplicate column name")) {
-                console.error("Error adding amountToSend column:", err.message);
-            }
-        });
+        let remaining = columnMigrations.length;
+        for (const migration of columnMigrations) {
+            db.run(`ALTER TABLE requests ${migration}`, (err) => {
+                if (err && !err.message.includes('duplicate column name')) {
+                    console.error(`Error applying migration "${migration}":`, err.message);
+                }
+                if (--remaining === 0) {
+                    console.log('Schema migrations applied.');
+                    if (typeof onReady === 'function') onReady();
+                }
+            });
+        }
     });
 
     // Create wallet_state table for persistent index tracking

@@ -6,13 +6,15 @@ const { db, initializeDatabase } = require('./src/database');
 const { initializeWallet } = require('./src/wallet');
 const requestQueue = require('./src/queue');
 const { cleanupOldRequests } = require('./src/cleanup');
+const { runReconciliation } = require('./src/reconcile');
 const createApiRouter = require('./src/routes/api');
 const createWebhookRouter = require('./src/routes/webhook');
 const createAdminRouter = require('./src/routes/admin');
 const createInternalRouter = require('./src/routes/internal');
 
 // --- Initialization ---
-initializeDatabase();
+// Scheduled jobs are started from this callback, once the schema is guaranteed to exist.
+initializeDatabase(() => startScheduledJobs());
 const rootNode = initializeWallet();
 const app = express();
 
@@ -47,7 +49,23 @@ app.listen(config.PORT, () => {
 });
 
 // --- Scheduled Jobs ---
-const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
-cleanupOldRequests(db); // Run once on startup
-setInterval(() => cleanupOldRequests(db), CLEANUP_INTERVAL_MS);
-console.log(`[Server] Cleanup job scheduled to run every ${CLEANUP_INTERVAL_MS / (1000 * 60 * 60)} hours.`);
+// Called from the initializeDatabase ready callback so no job ever queries a table or
+// column that has not been created yet.
+let scheduledJobsStarted = false;
+function startScheduledJobs() {
+    if (scheduledJobsStarted) return;
+    scheduledJobsStarted = true;
+
+    const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+    cleanupOldRequests(db); // Run once on startup
+    setInterval(() => cleanupOldRequests(db), CLEANUP_INTERVAL_MS);
+    console.log(`[Server] Cleanup job scheduled to run every ${CLEANUP_INTERVAL_MS / (1000 * 60 * 60)} hours.`);
+
+    // Reconciliation retries dropped fulfilments, refunds terminal failures, and reports
+    // any request still holding customer funds. Runs on startup so a restart immediately
+    // picks up whatever was in flight when the process last stopped.
+    const RECONCILE_INTERVAL_MS = config.RECONCILE_INTERVAL_MS;
+    runReconciliation(db, rootNode, config);
+    setInterval(() => runReconciliation(db, rootNode, config), RECONCILE_INTERVAL_MS);
+    console.log(`[Server] Reconciliation job scheduled to run every ${RECONCILE_INTERVAL_MS / (1000 * 60)} minutes.`);
+}

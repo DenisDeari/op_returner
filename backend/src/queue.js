@@ -40,13 +40,21 @@ async function processNextInQueue(db, rootNode, config) {
         }
         estimatedVBytes = Math.ceil(estimatedVBytes);
 
+        const effectiveFeeRate = feeRate || config.DEFAULT_FEE_RATE;
         const serviceFee = config.SERVICE_FEE_SATS;
-        const networkFee = estimatedVBytes * (feeRate || config.DEFAULT_FEE_RATE);
-        const requiredAmountSatoshis = networkFee + serviceFee + (amountToSend || 0);
+        const networkFee = estimatedVBytes * effectiveFeeRate;
+
+        // Only charge for a recipient payout when there is actually somewhere to send it.
+        // Without this guard, amountToSend with no targetAddress was billed to the customer
+        // but never paid out — it silently ended up in the service change output.
+        const effectiveAmountToSend = targetAddress ? (amountToSend || 0) : 0;
+        const requiredAmountSatoshis = networkFee + serviceFee + effectiveAmountToSend;
 
         const newRequestId = uuidv4();
 
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, feeRate || 2, amountToSend || 0];
+        // Persist the same fee rate that was quoted, rather than a separate hardcoded
+        // default, so the quote and the later fulfilment can never drift apart.
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, effectiveFeeRate, effectiveAmountToSend];
         await new Promise((res, rej) => {
             db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, feeRate, amountToSend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });

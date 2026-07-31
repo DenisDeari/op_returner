@@ -28,6 +28,22 @@ const SERVICE_FEE_SATS = 2000;
 const DUST_LIMIT_SATS = 546;
 const DEFAULT_FEE_RATE = 2; // sats per vByte
 
+// Intake validation bounds.
+// amountToSend must be either 0 (no recipient output) or at least DUST_LIMIT_SATS.
+// Anything in between produces a non-standard "dust" output that relays reject —
+// which previously happened *after* the customer had already paid.
+const MIN_FEE_RATE = 1;   // sats/vByte
+const MAX_FEE_RATE = 500; // sats/vByte
+const MAX_AMOUNT_TO_SEND_SATS = 100_000_000; // 1 BTC sanity ceiling
+
+// Failure handling
+const MAX_FULFILL_ATTEMPTS = 3;
+const RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const REFUND_ENABLED = process.env.REFUND_ENABLED !== 'false'; // opt-out, on by default
+
+// Customer feedback on failed requests
+const USER_FEEDBACK_MAX_BYTES = 1000;
+
 module.exports = {
     PORT: PORT || 3000,
     ADMIN_PASSWORD,
@@ -43,4 +59,14 @@ module.exports = {
     SERVICE_FEE_SATS,
     DUST_LIMIT_SATS,
     DEFAULT_FEE_RATE,
+    // Intake validation bounds
+    MIN_FEE_RATE,
+    MAX_FEE_RATE,
+    MAX_AMOUNT_TO_SEND_SATS,
+    // Failure handling
+    MAX_FULFILL_ATTEMPTS,
+    RECONCILE_INTERVAL_MS,
+    REFUND_ENABLED,
+    // Customer feedback
+    USER_FEEDBACK_MAX_BYTES,
 };

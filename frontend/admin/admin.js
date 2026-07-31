@@ -88,7 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (input) {
                 adminPassword = input.trim(); // Trim whitespace/newlines
             } else {
-                requestsBody.innerHTML = `<tr><td colspan="6">Password is required to view requests.</td></tr>`;
+                requestsBody.innerHTML = `<tr><td colspan="7">Password is required to view requests.</td></tr>`;
                 return;
             }
         }
@@ -113,31 +113,61 @@ document.addEventListener('DOMContentLoaded', () => {
             renderRequests(requests);
             fetchWalletBalances(); // load balances once we have a valid password
         } catch (error) {
-            requestsBody.innerHTML = `<tr><td colspan="6">Error loading requests: ${error.message}</td></tr>`;
+            requestsBody.innerHTML = `<tr><td colspan="7">Error loading requests: ${error.message}</td></tr>`;
         }
+    }
+
+    // Request messages and customer notes are attacker-controlled text. They were
+    // previously interpolated into innerHTML raw, which is a stored XSS in this panel.
+    //
+    // Quotes MUST be escaped: the assignment-to-textContent trick escapes only & < >,
+    // which is not sufficient here because these values are also interpolated into
+    // attribute values such as title="...". A bare " would close the attribute and let
+    // an event handler be injected.
+    const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    function escapeHtml(value) {
+        if (value === null || value === undefined) return '';
+        return String(value).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+    }
+
+    function truncate(value, max) {
+        const s = String(value ?? '');
+        return s.length > max ? `${s.slice(0, max)}…` : s;
     }
 
     function renderRequests(requests) {
         if (!requests || requests.length === 0) {
-            requestsBody.innerHTML = '<tr><td colspan="6">No requests found in the database.</td></tr>';
+            requestsBody.innerHTML = '<tr><td colspan="7">No requests found in the database.</td></tr>';
             return;
         }
 
-        requestsBody.innerHTML = requests.map(req => `
-            <tr>
-                <td>${req.id.substring(0, 8)}...</td>
-                <td>${new Date(req.createdAt).toLocaleString()}</td>
-                <td>${req.message}</td>
-                <td><span class="status status-${req.status}">${req.status.replace(/_/g, ' ')}</span></td>
-                <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${req.opReturnTxId}" target="_blank">${req.opReturnTxId.substring(0, 10)}...</a>` : 'N/A'}</td>
+        requestsBody.innerHTML = requests.map(req => {
+            const canFulfill = !req.opReturnTxId && !req.refundTxId &&
+                (req.status === 'payment_confirmed' || req.status === 'op_return_failed');
+            const canRefund = !req.opReturnTxId && !req.refundTxId &&
+                (req.status === 'op_return_failed' || req.status === 'refund_failed');
+
+            const note = req.userFeedback
+                ? `<span class="customer-note" title="${escapeHtml(req.userFeedback)}">${escapeHtml(truncate(req.userFeedback, 60))}</span>`
+                : '<span class="muted">—</span>';
+
+            return `
+            <tr${req.userFeedback ? ' class="has-note"' : ''}>
+                <td>${escapeHtml(req.id.substring(0, 8))}...</td>
+                <td>${escapeHtml(new Date(req.createdAt).toLocaleString())}</td>
+                <td>${escapeHtml(truncate(req.message, 80))}</td>
+                <td><span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span></td>
+                <td>${note}</td>
+                <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.opReturnTxId)}" target="_blank">${escapeHtml(req.opReturnTxId.substring(0, 10))}...</a>` : 'N/A'}</td>
                 <td>
-                    <button class="button-details" data-id="${req.id}" style="background-color: #5bc0de; margin-right: 5px;">Details</button>
-                    ${(req.status === 'payment_confirmed' || req.status === 'op_return_failed') ? 
-                    `<button class="button-fulfill" data-id="${req.id}">Manually Fulfill</button>` : ''}
-                    <button class="button-delete" data-id="${req.id}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
+                    <button class="button-details" data-id="${escapeHtml(req.id)}" style="background-color: #5bc0de; margin-right: 5px;">Details</button>
+                    ${canFulfill ? `<button class="button-fulfill" data-id="${escapeHtml(req.id)}">Manually Fulfill</button>` : ''}
+                    ${canRefund ? `<button class="button-refund" data-id="${escapeHtml(req.id)}" style="background-color: #f0ad4e; margin-left: 5px;">Refund</button>` : ''}
+                    <button class="button-delete" data-id="${escapeHtml(req.id)}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
                 </td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
     }
 
     async function showDetails(requestId) {
@@ -159,10 +189,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     txHistoryHtml = `<ul class="tx-list">
                         ${data.txs.map(tx => `
                             <li class="tx-item">
-                                <strong>TXID:</strong> <a href="https://mempool.space/tx/${tx.hash}" target="_blank">${tx.hash.substring(0, 20)}...</a><br>
-                                <strong>Amount:</strong> ${tx.total} sats<br>
-                                <strong>Confirmations:</strong> ${tx.confirmations}<br>
-                                <strong>Time:</strong> ${tx.confirmed ? new Date(tx.confirmed).toLocaleString() : 'Unconfirmed'}
+                                <strong>TXID:</strong> <a href="https://mempool.space/tx/${encodeURIComponent(tx.hash)}" target="_blank">${escapeHtml(String(tx.hash).substring(0, 20))}...</a><br>
+                                <strong>Amount:</strong> ${escapeHtml(tx.total)} sats<br>
+                                <strong>Confirmations:</strong> ${escapeHtml(tx.confirmations)}<br>
+                                <strong>Time:</strong> ${tx.confirmed ? escapeHtml(new Date(tx.confirmed).toLocaleString()) : 'Unconfirmed'}
                             </li>
                         `).join('')}
                     </ul>`;
@@ -173,19 +203,50 @@ document.addEventListener('DOMContentLoaded', () => {
                 txHistoryHtml = `<p style="color: red;">Error fetching transactions: ${response.statusText}</p>`;
             }
 
+            const feedbackSection = req.userFeedback ? `
+                <div class="detail-section customer-note-section">
+                    <h3>Customer note</h3>
+                    <p style="white-space: pre-wrap;">${escapeHtml(req.userFeedback)}</p>
+                    <p class="muted"><small>Left at ${escapeHtml(req.userFeedbackAt ? new Date(req.userFeedbackAt).toLocaleString() : 'unknown time')}</small></p>
+                </div>` : '';
+
+            const failureSection = (req.failureReason || req.attemptCount) ? `
+                <div class="detail-section">
+                    <h3>Failure diagnostics</h3>
+                    <p><strong>Reason:</strong> ${escapeHtml(req.failureReason || 'n/a')}</p>
+                    <p><strong>Attempts:</strong> ${escapeHtml(req.attemptCount ?? 0)}</p>
+                    <p><strong>Last attempt:</strong> ${escapeHtml(req.lastAttemptAt ? new Date(req.lastAttemptAt).toLocaleString() : 'n/a')}</p>
+                </div>` : '';
+
+            const refundSection = (req.refundAddress || req.refundTxId) ? `
+                <div class="detail-section">
+                    <h3>Refund</h3>
+                    <p><strong>Refund to:</strong> ${escapeHtml(req.refundAddress || 'unknown')}</p>
+                    <p><strong>Refund TX:</strong> ${req.refundTxId
+                        ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.refundTxId)}" target="_blank">${escapeHtml(req.refundTxId)}</a>`
+                        : 'not refunded'}</p>
+                    <p><strong>Refunded at:</strong> ${escapeHtml(req.refundedAt ? new Date(req.refundedAt).toLocaleString() : 'n/a')}</p>
+                </div>` : '';
+
             modalBody.innerHTML = `
                 <div class="detail-section">
                     <h3>General Info</h3>
-                    <p><strong>ID:</strong> ${req.id}</p>
-                    <p><strong>Status:</strong> ${req.status}</p>
-                    <p><strong>Created At:</strong> ${new Date(req.createdAt).toLocaleString()}</p>
-                    <p><strong>Message:</strong> ${req.message}</p>
+                    <p><strong>ID:</strong> ${escapeHtml(req.id)}</p>
+                    <p><strong>Status:</strong> ${escapeHtml(req.status)}</p>
+                    <p><strong>Created At:</strong> ${escapeHtml(new Date(req.createdAt).toLocaleString())}</p>
+                    <p><strong>Message:</strong> <span style="white-space: pre-wrap;">${escapeHtml(req.message)}</span></p>
                 </div>
+                ${feedbackSection}
                 <div class="detail-section">
                     <h3>Payment Info</h3>
-                    <p><strong>Address:</strong> ${req.address}</p>
-                    <p><strong>Required Amount:</strong> ${req.requiredAmountSatoshis} sats</p>
+                    <p><strong>Address:</strong> ${escapeHtml(req.address)}</p>
+                    <p><strong>Required Amount:</strong> ${escapeHtml(req.requiredAmountSatoshis)} sats</p>
+                    <p><strong>Received:</strong> ${escapeHtml(req.paymentReceivedSatoshis ?? 'not recorded')} sats</p>
+                    <p><strong>Confirmed at:</strong> ${escapeHtml(req.paymentConfirmedAt ? new Date(req.paymentConfirmedAt).toLocaleString() : 'n/a')}</p>
+                    <p><strong>Recipient:</strong> ${escapeHtml(req.targetAddress || 'none')} ${req.targetAddress ? `(${escapeHtml(req.amountToSend ?? 0)} sats)` : ''}</p>
                 </div>
+                ${failureSection}
+                ${refundSection}
                 <div class="detail-section">
                     <h3>Transaction History (from Blockchain)</h3>
                     ${txHistoryHtml}
@@ -200,10 +261,36 @@ document.addEventListener('DOMContentLoaded', () => {
     requestsBody.addEventListener('click', async (event) => {
         const detailsButton = event.target.closest('.button-details');
         const fulfillButton = event.target.closest('.button-fulfill');
+        const refundButton = event.target.closest('.button-refund');
         const deleteButton = event.target.closest('.button-delete');
 
         if (detailsButton) {
             showDetails(detailsButton.dataset.id);
+        }
+
+        if (refundButton) {
+            const requestId = refundButton.dataset.id;
+            if (confirm(`Refund the payer for request ${requestId}? This sends a real Bitcoin transaction and cannot be undone.`)) {
+                refundButton.disabled = true;
+                refundButton.textContent = 'Refunding...';
+                try {
+                    const response = await fetch(`${API_BASE_URL}/refund/${encodeURIComponent(requestId)}`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${adminPassword}` }
+                    });
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        alert(`Refunded ${result.amount} sats. TXID: ${result.refundTxId}`);
+                        fetchRequests();
+                    } else {
+                        throw new Error(result.error || 'Refund failed.');
+                    }
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                    refundButton.disabled = false;
+                    refundButton.textContent = 'Refund';
+                }
+            }
         }
 
         if (fulfillButton) {
