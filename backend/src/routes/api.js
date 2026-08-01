@@ -4,6 +4,7 @@ const axios = require('axios');
 const bitcoin = require('bitcoinjs-lib');
 const { dbGet, dbRun } = require('../db_utils');
 const { fulfillRequest, deleteRequest } = require('../request_service');
+const notifier = require('../notifier');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -141,6 +142,14 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 db.run('UPDATE requests SET blockcypherHookId = ? WHERE id = ?', [hookId, result.newRequestId]);
                 console.log(`Successfully updated hook ID ${hookId} for request ${result.newRequestId}`);
             }
+
+            // Fire-and-forget: a notification problem must never affect the order.
+            notifier.notifyNewOrder({
+                requestId: result.newRequestId,
+                message,
+                requiredAmountSatoshis: result.requiredAmountSatoshis,
+                targetAddress,
+            }, config);
 
             res.status(201).json({
                 requestId: result.newRequestId,
@@ -318,6 +327,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             feedbackRateLimit.set(ip, recent);
 
             console.log(`[API] Customer feedback recorded for failed request ${requestId} (${trimmed.length} chars).`);
+            notifier.notifyCustomerMessage({ requestId, feedback: trimmed }, config);
             res.status(200).json({ success: true, message: 'Thank you — your message has been sent to the operator.' });
         } catch (error) {
             console.error(`Error saving feedback for ${requestId}:`, error);

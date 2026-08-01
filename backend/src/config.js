@@ -2,7 +2,10 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const bitcoin = require('bitcoinjs-lib');
 
-const { PORT, MNEMONIC, BLOCKCYPHER_TOKEN, WEBHOOK_RECEIVER_BASE_URL, ADMIN_PASSWORD, API_KEY, SUPPORT_EMAIL } = process.env;
+const {
+    PORT, MNEMONIC, BLOCKCYPHER_TOKEN, WEBHOOK_RECEIVER_BASE_URL, ADMIN_PASSWORD, API_KEY, SUPPORT_EMAIL,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+} = process.env;
 
 // Basic validation
 if (!MNEMONIC || MNEMONIC.split(' ').length < 12) {
@@ -44,6 +47,13 @@ const REFUND_ENABLED = process.env.REFUND_ENABLED !== 'false'; // opt-out, on by
 // Customer feedback on failed requests
 const USER_FEEDBACK_MAX_BYTES = 1000;
 
+// Telegram notifications. Silently inactive unless both the token and chat id are set,
+// so the service behaves exactly as before when they are absent.
+const NOTIFY_ENABLED = process.env.NOTIFY_ENABLED !== 'false';
+if (NOTIFY_ENABLED && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
+    console.warn('WARNING: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set. Activity notifications are disabled.');
+}
+
 module.exports = {
     PORT: PORT || 3000,
     ADMIN_PASSWORD,
@@ -69,4 +79,8 @@ module.exports = {
     REFUND_ENABLED,
     // Customer feedback
     USER_FEEDBACK_MAX_BYTES,
+    // Telegram notifications
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    NOTIFY_ENABLED,
 };

@@ -16,6 +16,10 @@ services:
       - BLOCKCYPHER_TOKEN=${BLOCKCYPHER_TOKEN}
       - WEBHOOK_RECEIVER_BASE_URL=${WEBHOOK_RECEIVER_BASE_URL}
       - SUPPORT_EMAIL=${SUPPORT_EMAIL}
+      # Telegram activity notifications. Leave unset to disable them entirely.
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - NOTIFY_ENABLED=${NOTIFY_ENABLED:-true}
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend

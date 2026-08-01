@@ -15,6 +15,7 @@
 const bitcoin = require('bitcoinjs-lib');
 const chainProviders = require('./chain_providers');
 const { dbGet, dbRun } = require('./db_utils');
+const notifier = require('./notifier');
 
 // Statuses from which an AUTOMATIC refund may begin.
 //
@@ -199,6 +200,12 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
             [refundTxId, new Date().toISOString(), requestId]
         );
         console.log(`[Refund] Request ${requestId} refunded ${refundValue} sats to ${request.refundAddress}. TXID: ${refundTxId}`);
+        notifier.notifyRefunded({
+            requestId,
+            amount: refundValue,
+            refundTxId,
+            refundAddress: request.refundAddress,
+        }, config);
 
         return { ok: true, refundTxId, amount: refundValue };
     } catch (error) {

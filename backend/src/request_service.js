@@ -10,6 +10,7 @@ const { NO_REFUND_FAILURES } = require('./op_return_creator');
 const webhookManager = require('./webhook_manager');
 const { attemptRefund } = require('./refund');
 const { dbGet, dbRun } = require('./db_utils');
+const notifier = require('./notifier');
 
 /**
  * Attempts to fulfill a request by creating and broadcasting an OP_RETURN transaction.
@@ -73,6 +74,11 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
             if (request.blockcypherHookId) {
                 webhookManager.deleteWebhook(request.blockcypherHookId, config);
             }
+            notifier.notifyDelivered({
+                requestId,
+                message: request.message,
+                opReturnTxId: result.opReturnTxId,
+            }, config);
             return { success: true, opReturnTxId: result.opReturnTxId };
         }
 
@@ -120,6 +126,15 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
                 }
             }
         }
+
+        notifier.notifyFailed({
+            requestId,
+            message: request.message,
+            reason: failureReason,
+            amount: request.paymentReceivedSatoshis,
+            terminal,
+            refund,
+        }, config);
 
         return {
             success: false,

@@ -3,6 +3,7 @@ const express = require('express');
 const { dbGet, dbRun } = require('../db_utils');
 const { fulfillRequest } = require('../request_service');
 const chainProviders = require('../chain_providers');
+const notifier = require('../notifier');
 
 /**
  * Resolves the payer's address for a payment transaction, so a failed request can be
@@ -83,6 +84,11 @@ function createWebhookRouter(db, rootNode, config) {
                                 paymentReceivedSatoshis: output.value,
                                 refundAddress: matched.refundAddress || payerAddress,
                             };
+                            notifier.notifyPaymentReceived({
+                                requestId: matched.id,
+                                amount: output.value,
+                                message: matched.message,
+                            }, config);
                             break; // Address processed, break inner loop
                         } else if (confirmations === 0 && isSufficientAmount) {
                             console.log(`[Webhook] Unconfirmed payment detected for request ${matched.id}`);
