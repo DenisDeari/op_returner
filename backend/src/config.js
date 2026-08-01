@@ -53,6 +53,21 @@ const REFUND_ENABLED = process.env.REFUND_ENABLED !== 'false'; // opt-out, on by
 // Customer feedback on failed requests
 const USER_FEEDBACK_MAX_BYTES = 1000;
 
+// Wallet view (read-only; nothing here can spend).
+// A branch is scanned until this many consecutive never-used addresses are seen. 20 is
+// the BIP44 convention and what Electrum and Sparrow use, so a scan here finds the same
+// addresses they would.
+const WALLET_GAP_LIMIT = 20;
+// Hard ceiling per branch, so a pathological path cannot issue unbounded API calls.
+const WALLET_MAX_SCAN_INDICES = 200;
+// Balances are cached this long. A scan touches dozens of addresses and the panel gets
+// refreshed often; without this every refresh would be a fresh burst of explorer calls.
+const WALLET_CACHE_TTL_MS = 60 * 1000;
+// Parallel address lookups. Kept deliberately low: blockstream.info starts returning 429
+// at 8 parallel requests, and the same hosts serve the money paths, so tripping their
+// limits here would hurt broadcasts too.
+const WALLET_SCAN_CONCURRENCY = 4;
+
 // Telegram notifications. Silently inactive unless both the token and chat id are set,
 // so the service behaves exactly as before when they are absent.
 const NOTIFY_ENABLED = process.env.NOTIFY_ENABLED !== 'false';
@@ -86,6 +101,11 @@ module.exports = {
     REFUND_ENABLED,
     // Customer feedback
     USER_FEEDBACK_MAX_BYTES,
+    // Wallet view
+    WALLET_GAP_LIMIT,
+    WALLET_MAX_SCAN_INDICES,
+    WALLET_CACHE_TTL_MS,
+    WALLET_SCAN_CONCURRENCY,
     // Telegram notifications
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,

@@ -14,6 +14,14 @@
 const axios = require('axios');
 
 const HTTP_TIMEOUT_MS = 20000;
+// Read-only address lookups get a tighter deadline than a broadcast does. A wallet scan
+// issues a great many of them, and waiting the full 20 s on a rate-limited host before
+// falling back to the next one is what made an early version of the scan take 87 s.
+const LOOKUP_TIMEOUT_MS = 8000;
+// BlockCypher answers this many addresses in a single request. Batching turns a
+// 130-request scan into about 7, which is both far faster and much lighter on the API
+// quota than querying each address on its own.
+const SUMMARY_BATCH_SIZE = 20;
 
 // Substrings that indicate the transaction is fundamentally unacceptable to the network.
 // Retrying these against another provider or at a later time cannot help.
@@ -73,10 +81,43 @@ function classifyError(message) {
 
 function extractErrorMessage(error) {
     const data = error?.response?.data;
-    if (typeof data === 'string' && data.trim()) return data.trim();
-    if (data?.error) return typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
-    if (data) return JSON.stringify(data);
-    return error?.message || 'unknown error';
+    let message;
+    if (typeof data === 'string' && data.trim()) message = data.trim();
+    else if (data?.error) message = typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+    else if (data) message = JSON.stringify(data);
+    // A connection that never got as far as a response carries no body and, for Node's
+    // AggregateError, an empty message too — which used to surface as a bare
+    // "unknown error" that said nothing about what went wrong. Fall back to the syscall
+    // code so the log names the actual problem.
+    else message = error?.message || error?.code || 'unknown error';
+
+    // Prefixed rather than substituted, so every existing classification pattern still
+    // matches on the original text.
+    const status = error?.response?.status;
+    const code = !status && error?.code && !String(message).includes(error.code) ? `${error.code}: ` : '';
+    return status ? `HTTP ${status}: ${message}` : `${code}${message}`;
+}
+
+// A host that is rate-limiting us, or that cannot be reached at all, is tried last for a
+// while. Without this a wallet scan pays the same rejection once per address: this Pi
+// cannot open a connection to mempool.space, which cost roughly two seconds on every one
+// of 160 lookups before the host was demoted.
+//
+// Cooling down only reorders providers, never removes one — a broadcast must still be
+// offered to every host, however unpromising it looks.
+const UNHEALTHY_PROVIDER_PATTERNS = [
+    // rate limiting
+    'http 429', 'too many requests', 'rate limit', 'rate-limit',
+    // transport: the request never reached the service
+    'etimedout', 'econnrefused', 'econnreset', 'enotfound', 'enetunreach',
+    'ehostunreach', 'eai_again', 'socket hang up', 'timeout of',
+];
+const PROVIDER_COOLDOWN_MS = 60 * 1000;
+const providerCooldowns = new Map(); // provider name -> epoch ms until which it is deprioritised
+
+function isProviderUnhealthy(message) {
+    const lower = String(message || '').toLowerCase();
+    return UNHEALTHY_PROVIDER_PATTERNS.some((p) => lower.includes(p));
 }
 
 // --- Provider definitions -------------------------------------------------
@@ -125,6 +166,11 @@ function buildProviders(config) {
                     balance: res.data?.final_balance ?? 0,
                 };
             },
+            async getAddressSummary(address) {
+                const url = `${config.BLOCKCYPHER_API_BASE}/addrs/${address}/balance?token=${config.BLOCKCYPHER_TOKEN}`;
+                const res = await axios.get(url, { timeout: LOOKUP_TIMEOUT_MS });
+                return normalizeBlockcypherBalance(res.data || {});
+            },
             async getUnspent(address) {
                 const url = `${config.BLOCKCYPHER_API_BASE}/addrs/${address}?unspentOnly=true&token=${config.BLOCKCYPHER_TOKEN}`;
                 const res = await axios.get(url, { timeout: HTTP_TIMEOUT_MS });
@@ -172,6 +218,24 @@ function buildProviders(config) {
                     balance: (cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0),
                 };
             },
+            async getAddressSummary(address) {
+                const res = await axios.get(`${base}/address/${address}`, { timeout: LOOKUP_TIMEOUT_MS });
+                const cs = res.data?.chain_stats || {};
+                const ms = res.data?.mempool_stats || {};
+                return {
+                    confirmed: (cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0),
+                    unconfirmed: (ms.funded_txo_sum || 0) - (ms.spent_txo_sum || 0),
+                    // Note: this counts every output paying the address, including change
+                    // the address sent back to itself, so for a self-spending address like
+                    // the treasury it reads far higher than BlockCypher's total_received,
+                    // which nets those out. Both are self-consistent and both give the
+                    // same balance. Only balance and txCount are comparable across
+                    // providers, so those are the numbers the wallet view relies on.
+                    totalReceived: (cs.funded_txo_sum || 0) + (ms.funded_txo_sum || 0),
+                    totalSent: (cs.spent_txo_sum || 0) + (ms.spent_txo_sum || 0),
+                    txCount: (cs.tx_count || 0) + (ms.tx_count || 0),
+                };
+            },
             async getUnspent(address) {
                 const res = await axios.get(`${base}/address/${address}/utxo`, { timeout: HTTP_TIMEOUT_MS });
                 return (res.data || []).map((u) => ({
@@ -189,8 +253,29 @@ function buildProviders(config) {
 
 // --- Generic fallback runner ---------------------------------------------
 
-async function tryProviders(config, methodName, args, { label }) {
-    const providers = buildProviders(config).filter((p) => typeof p[methodName] === 'function');
+async function tryProviders(config, methodName, args, { label, preferProviders }) {
+    let providers = buildProviders(config).filter((p) => typeof p[methodName] === 'function');
+
+    // Some callers want a different order than the default. Wallet scanning issues one
+    // request per derived address, which would burn through BlockCypher's free-tier
+    // quota within a single scan, so it asks for the Esplora hosts first. Sort is stable,
+    // so providers that share a rank keep their original relative order.
+    if (preferProviders && preferProviders.length) {
+        const rank = (p) => {
+            const i = preferProviders.indexOf(p.name);
+            return i === -1 ? preferProviders.length : i;
+        };
+        providers = [...providers].sort((a, b) => rank(a) - rank(b));
+    }
+
+    // Anything currently rate-limiting us goes to the back of whatever order we settled
+    // on. Still tried, just last.
+    const now = Date.now();
+    if (providers.length > 1 && providerCooldowns.size > 0) {
+        const cooling = (p) => ((providerCooldowns.get(p.name) || 0) > now ? 1 : 0);
+        providers = [...providers].sort((a, b) => cooling(a) - cooling(b));
+    }
+
     const attempts = [];
 
     for (const provider of providers) {
@@ -206,6 +291,14 @@ async function tryProviders(config, methodName, args, { label }) {
         } catch (error) {
             const classified = classifyError(extractErrorMessage(error));
             attempts.push({ provider: provider.name, error: classified.message, permanent: classified.permanent });
+
+            if (isProviderUnhealthy(classified.message)) {
+                const until = Date.now() + PROVIDER_COOLDOWN_MS;
+                if (!(providerCooldowns.get(provider.name) > Date.now())) {
+                    console.warn(`[ChainProviders] ${provider.name} looks unhealthy (${classified.message}); trying it last for the next ${PROVIDER_COOLDOWN_MS / 1000}s.`);
+                }
+                providerCooldowns.set(provider.name, until);
+            }
 
             // "Already known" means an earlier attempt succeeded. Report it as success.
             if (classified.alreadyBroadcast) {
@@ -337,6 +430,81 @@ async function getPayerAddress(txId, config) {
     return { ok: true, address: addresses[0], provider: result.provider };
 }
 
+/** Maps a BlockCypher /balance payload onto the shape the wallet view expects. */
+function normalizeBlockcypherBalance(d) {
+    return {
+        confirmed: d.balance ?? 0,
+        unconfirmed: d.unconfirmed_balance ?? 0,
+        totalReceived: d.total_received ?? 0,
+        totalSent: d.total_sent ?? 0,
+        txCount: (d.n_tx ?? 0) + (d.unconfirmed_n_tx ?? 0),
+    };
+}
+
+/**
+ * Balances for many addresses, fetched a few at a time.
+ *
+ * BlockCypher does have a multi-address endpoint, and an earlier version of this used
+ * it. It was removed: BlockCypher bills each address in the batch against the quota, so
+ * a single wallet scan returned twenty 429s at once and spent the allowance that the
+ * payment webhooks and broadcasts depend on. Scanning must never cost the money paths
+ * their API budget, so it stays on the Esplora hosts, which have no such limit and are
+ * not used for webhook registration.
+ *
+ * @param {string[]} addresses
+ * @returns {Promise<Map<string, object>>} address -> {ok: true, …} | {ok: false, reason}
+ */
+async function getAddressSummaries(addresses, config) {
+    const results = new Map();
+    const wanted = [...new Set(addresses)];
+    if (wanted.length === 0) return results;
+
+    const concurrency = config.WALLET_SCAN_CONCURRENCY || 4;
+    for (let i = 0; i < wanted.length; i += concurrency) {
+        const chunk = wanted.slice(i, i + concurrency);
+        await Promise.all(chunk.map(async (address) => {
+            results.set(address, await getAddressSummary(address, config));
+        }));
+    }
+
+    // One gentle retry for whatever failed. Rate limits are transient by definition, and
+    // a single address that came back empty would otherwise be reported as an unknown
+    // balance for the next quarter of an hour.
+    const failed = wanted.filter((a) => !results.get(a)?.ok);
+    if (failed.length > 0 && failed.length < wanted.length) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        for (const address of failed) {
+            const retry = await getAddressSummary(address, config);
+            if (retry.ok) results.set(address, retry);
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Full balance picture for one address, used by the wallet view.
+ *
+ * Deliberately richer than getAddressStats: the wallet needs to distinguish confirmed
+ * from unconfirmed money and to know whether an address has ever been used at all,
+ * which is what the gap-limit scan decides on.
+ *
+ * Esplora hosts are tried first. A scan touches dozens of addresses, and putting
+ * BlockCypher first would exhaust its free-tier quota and then fail the money paths
+ * that genuinely depend on it.
+ *
+ * @returns {Promise<{ok: true, confirmed: number, unconfirmed: number, totalReceived: number,
+ *   totalSent: number, txCount: number, provider: string} | {ok: false, reason: string}>}
+ */
+async function getAddressSummary(address, config) {
+    const result = await tryProviders(config, 'getAddressSummary', [address], {
+        label: `address-summary ${address.slice(0, 12)}`,
+        preferProviders: ['blockstream.info', 'mempool.space'],
+    });
+    if (!result.ok) return { ok: false, reason: result.reason };
+    return { ok: true, ...result.value, provider: result.provider };
+}
+
 /** Confirmed unspent outputs for an address, used by the refund path. */
 async function getUnspent(address, config) {
     const result = await tryProviders(config, 'getUnspent', [address], { label: `utxos ${address.slice(0, 12)}` });
@@ -348,7 +516,10 @@ module.exports = {
     broadcastTransaction,
     findUtxoForAddress,
     getAddressStats,
+    getAddressSummary,
+    getAddressSummaries,
     getUnspent,
+    SUMMARY_BATCH_SIZE,
     isOutputSpent,
     getPayerAddress,
     classifyError,

@@ -446,39 +446,393 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fetchRequests();
 
-    // --- Wallet Balances ---
-    async function fetchWalletBalances() {
+    // --- Wallet -----------------------------------------------------------
+    // Shows every branch of the seed, not just the two addresses the old panel had
+    // hard-coded, and can look up any derivation path on demand.
+
+    const WALLET_API = `${API_BASE_URL}/wallet`;
+    const walletNotice = document.getElementById('wallet-notice');
+    const walletBranches = document.getElementById('wallet-branches');
+
+    // Links point at blockstream.info rather than mempool.space: mempool.space is not
+    // reachable from this network at all (the connection times out), so those links
+    // would simply hang.
+    const explorerAddress = (addr) => `https://blockstream.info/address/${encodeURIComponent(addr)}`;
+
+    const fmtSats = (sats) => `${Number(sats || 0).toLocaleString('en-US')} sats`;
+
+    function fmtFiat(sats, price) {
+        if (!price || !price.eur || !sats) return '';
+        const eur = (sats / 1e8) * price.eur;
+        const shown = eur < 0.01 ? eur.toFixed(4) : eur.toFixed(2);
+        return `about €${shown}`;
+    }
+
+    function fmtAge(iso) {
+        if (!iso) return '';
+        const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+        if (seconds < 90) return `${seconds} seconds ago`;
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 90) return `${minutes} minutes ago`;
+        const hours = Math.round(minutes / 60);
+        if (hours < 36) return `${hours} hours ago`;
+        return `${Math.round(hours / 24)} days ago`;
+    }
+
+    function setSplit(id, sats, extraClass) {
+        const el = document.getElementById(id);
+        el.textContent = fmtSats(sats);
+        el.className = `wallet-split-value${sats === 0 ? ' is-zero' : (extraClass ? ` ${extraClass}` : '')}`;
+    }
+
+    async function fetchWallet(refresh) {
         if (!adminPassword) return;
 
         refreshBalancesBtn.disabled = true;
-        refreshBalancesBtn.textContent = 'Loading...';
+        refreshBalancesBtn.textContent = refresh ? 'Checking…' : 'Loading…';
 
         try {
-            const res = await fetch(`${API_BASE_URL}/wallet-balances`, {
+            const res = await fetch(`${WALLET_API}/overview${refresh ? '?refresh=1' : ''}`, {
                 headers: { 'Authorization': `Bearer ${adminPassword}` }
             });
-            if (!res.ok) { refreshBalancesBtn.disabled = false; refreshBalancesBtn.textContent = 'Refresh'; return; }
-            const data = await res.json();
-
-            const fmt = (sats) => sats.toLocaleString() + ' sats';
-            const mempoolLink = (addr) => `<a href="https://mempool.space/address/${addr}" target="_blank">${addr}</a>`;
-
-            document.getElementById('treasury-address').innerHTML = mempoolLink(data.treasury.address);
-            document.getElementById('treasury-confirmed').textContent = fmt(data.treasury.confirmed);
-            document.getElementById('treasury-unconfirmed').textContent =
-                data.treasury.unconfirmed !== 0 ? `${data.treasury.unconfirmed > 0 ? '+' : ''}${fmt(data.treasury.unconfirmed)} unconfirmed` : '';
-
-            document.getElementById('user-address').innerHTML = mempoolLink(data.userWallet.address);
-            document.getElementById('user-confirmed').textContent = fmt(data.userWallet.confirmed);
-            document.getElementById('user-unconfirmed').textContent =
-                data.userWallet.unconfirmed !== 0 ? `${data.userWallet.unconfirmed > 0 ? '+' : ''}${fmt(data.userWallet.unconfirmed)} unconfirmed` : '';
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                walletBranches.innerHTML = `<p class="muted">Could not read the wallet: ${escapeHtml(body.error || `HTTP ${res.status}`)}</p>`;
+                return;
+            }
+            renderWallet(await res.json());
         } catch (e) {
-            console.error('Failed to fetch wallet balances:', e);
+            walletBranches.innerHTML = `<p class="muted">Could not read the wallet: ${escapeHtml(e.message)}</p>`;
         } finally {
             refreshBalancesBtn.disabled = false;
             refreshBalancesBtn.textContent = 'Refresh';
         }
     }
 
-    refreshBalancesBtn.addEventListener('click', fetchWalletBalances);
+    function renderWallet(data) {
+        const { totals, branches, price } = data;
+
+        document.getElementById('wallet-total').textContent = fmtSats(totals.total);
+        document.getElementById('wallet-total-fiat').textContent = fmtFiat(totals.total, price);
+        setSplit('wallet-yours', totals.yours);
+        setSplit('wallet-customer', totals.customerFunds, 'is-customer');
+        setSplit('wallet-unconfirmed', totals.unconfirmed);
+        document.getElementById('wallet-checked').textContent = `Checked ${fmtAge(data.generatedAt)}`;
+
+        // A number that might be wrong must never look authoritative. An incomplete scan
+        // or a stale figure is said plainly, above the total.
+        const problems = [];
+        if (data.incomplete) {
+            problems.push('Some addresses could not be checked just now, so the total above may be too low. Try Refresh in a minute.');
+        }
+        if (data.staleCount > 0) {
+            problems.push(`${data.staleCount} address${data.staleCount > 1 ? 'es are' : ' is'} showing an older figure` +
+                `${data.oldestStaleAt ? ` (oldest from ${fmtAge(data.oldestStaleAt)})` : ''}, because the block explorer did not answer.`);
+        }
+        if (problems.length) {
+            walletNotice.style.display = '';
+            walletNotice.innerHTML = problems.map((p) => `<div>${escapeHtml(p)}</div>`).join('');
+        } else {
+            walletNotice.style.display = 'none';
+            walletNotice.innerHTML = '';
+        }
+
+        walletBranches.innerHTML = branches.map(renderBranch).join('')
+            || '<p class="muted">No branches configured.</p>';
+    }
+
+    function renderBranch(branch) {
+        const typeLabel = {
+            p2wpkh: 'Native SegWit', p2tr: 'Taproot', p2sh_p2wpkh: 'Nested SegWit', p2pkh: 'Legacy',
+        }[branch.type] || branch.type;
+
+        const pathLabel = branch.mode === 'single' ? branch.path : `${branch.path}/…`;
+        const receive = branch.receiveAddress;
+
+        const receiveBlock = receive && receive.address ? `
+            <div class="branch-receive">
+                <span>Send funds here:</span>
+                <span class="receive-addr">${escapeHtml(receive.address)}</span>
+                <button class="btn-tiny btn-qr" data-address="${escapeHtml(receive.address)}"
+                        data-label="${escapeHtml(branch.label)}"
+                        data-fixed="${branch.receiveIsFixed ? '1' : ''}">Show QR code</button>
+            </div>` : '';
+
+        const rows = branch.addresses.map((a) => {
+            if (a.error) {
+                return `<tr class="addr-error"><td colspan="5">${escapeHtml(a.path)} — ${escapeHtml(a.error)}</td></tr>`;
+            }
+            const balance = (a.confirmed || 0) + (a.unconfirmed || 0);
+            const pending = a.request && !a.request.settled
+                ? `<span class="addr-flag flag-pending" title="Order ${escapeHtml(a.request.requestId)} (${escapeHtml(a.request.status)}) has not been delivered or refunded">not delivered</span>`
+                : '';
+            const stale = a.stale ? `<span class="addr-flag flag-stale" title="Figure from ${escapeHtml(fmtAge(new Date(a.cachedAt).toISOString()))}">old</span>` : '';
+            return `
+                <tr>
+                    <td class="addr-num">${a.index === null ? '—' : escapeHtml(a.index)}</td>
+                    <td class="addr-mono"><a href="${explorerAddress(a.address)}" target="_blank" rel="noopener">${escapeHtml(a.address)}</a>${pending}${stale}</td>
+                    <td class="addr-num ${balance > 0 ? 'has-balance' : ''}">${escapeHtml(Number(balance).toLocaleString('en-US'))}</td>
+                    <td class="addr-num">${escapeHtml(a.txCount ?? 0)}</td>
+                    <td class="addr-num"><button class="btn-tiny btn-qr" data-address="${escapeHtml(a.address)}" data-label="${escapeHtml(branch.label)}">QR</button></td>
+                </tr>`;
+        }).join('');
+
+        const table = branch.addresses.length ? `
+            <table class="addr-table">
+                <thead><tr><th>#</th><th>Address</th><th>Balance (sats)</th><th>Txs</th><th></th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>` : '<p class="muted">This path has never been used.</p>';
+
+        const warn = branch.incomplete
+            ? `<p class="branch-warn">${escapeHtml(branch.incompleteReason || 'This branch could not be read completely.')}</p>`
+            : '';
+
+        const removeBtn = branch.builtIn ? '' :
+            `<button class="btn-tiny btn-unwatch" data-id="${escapeHtml(branch.id)}">Stop watching</button>`;
+
+        return `
+        <details class="branch"${branch.total > 0 ? ' open' : ''}>
+            <summary>
+                <span class="branch-name">${escapeHtml(branch.label)}</span>
+                <span class="branch-balance${branch.total === 0 ? ' is-zero' : ''}">${escapeHtml(fmtSats(branch.total))}</span>
+                <span class="branch-meta">${escapeHtml(pathLabel)} &middot; ${escapeHtml(typeLabel)} &middot; ${escapeHtml(branch.usedCount)} used, ${escapeHtml(branch.fundedCount)} holding money</span>
+            </summary>
+            <div class="branch-body">
+                ${branch.note ? `<p class="branch-note">${escapeHtml(branch.note)}</p>` : ''}
+                ${warn}
+                ${receiveBlock}
+                ${table}
+                ${removeBtn ? `<div style="margin-top:0.8rem;">${removeBtn}</div>` : ''}
+            </div>
+        </details>`;
+    }
+
+    // --- Path scanner -----------------------------------------------------
+
+    const scanPathInput = document.getElementById('scan-path');
+    const scanTypeSelect = document.getElementById('scan-type');
+    const scanModeSelect = document.getElementById('scan-mode');
+    const scanBtn = document.getElementById('scan-btn');
+    const scanResult = document.getElementById('scan-result');
+    const watchlistBody = document.getElementById('watchlist-body');
+
+    scanBtn.addEventListener('click', async () => {
+        if (!adminPassword) return;
+        const path = scanPathInput.value.trim();
+        if (!path) {
+            scanResult.innerHTML = '<div class="scan-message is-error">Enter a derivation path first.</div>';
+            return;
+        }
+
+        scanBtn.disabled = true;
+        scanBtn.textContent = 'Looking…';
+        scanResult.innerHTML = '<p class="muted">Checking the blockchain, this can take a moment…</p>';
+
+        try {
+            const res = await fetch(`${WALLET_API}/scan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminPassword}` },
+                body: JSON.stringify({ path, type: scanTypeSelect.value, mode: scanModeSelect.value })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                scanResult.innerHTML = `<div class="scan-message is-error">${escapeHtml(data.error || `HTTP ${res.status}`)}</div>`;
+                return;
+            }
+            renderScanResult(data);
+        } catch (e) {
+            scanResult.innerHTML = `<div class="scan-message is-error">${escapeHtml(e.message)}</div>`;
+        } finally {
+            scanBtn.disabled = false;
+            scanBtn.textContent = 'Look up';
+        }
+    });
+
+    function renderScanResult(data) {
+        let message;
+        if (data.anyFunds) {
+            message = `<div class="scan-message is-found">Found ${escapeHtml(fmtSats(data.total))} on <code>${escapeHtml(data.path)}</code>.</div>`;
+        } else if (data.anyHistory) {
+            message = `<div class="scan-message is-empty">This path has been used before but holds nothing now.</div>`;
+        } else {
+            message = `<div class="scan-message is-empty">Nothing found on <code>${escapeHtml(data.path)}</code>. If you expected money here, try a different address type.</div>`;
+        }
+
+        const canWatch = data.requestedType !== 'all';
+        const watchBtn = canWatch
+            ? `<button class="btn btn-primary btn-watch" data-path="${escapeHtml(data.path)}" data-type="${escapeHtml(data.requestedType)}" data-mode="${escapeHtml(data.mode)}">Keep this in my totals</button>`
+            : '<p class="muted">Pick a single address type to keep a path in your totals.</p>';
+
+        scanResult.innerHTML = message + data.results.map(renderBranch).join('')
+            + `<div style="margin-top:0.8rem;">${watchBtn}</div>`;
+    }
+
+    async function fetchWatchlist() {
+        if (!adminPassword) return;
+        try {
+            const res = await fetch(`${WALLET_API}/watchlist`, { headers: { 'Authorization': `Bearer ${adminPassword}` } });
+            if (!res.ok) return;
+            renderWatchlist((await res.json()).watchlist);
+        } catch (e) {
+            console.error('Failed to load the watchlist:', e);
+        }
+    }
+
+    function renderWatchlist(list) {
+        if (!list || !list.length) {
+            watchlistBody.innerHTML = '<p class="muted">None yet. Anything you keep here is counted in the total above from then on.</p>';
+            return;
+        }
+        watchlistBody.innerHTML = list.map((w) => `
+            <div class="watch-row">
+                <span><strong>${escapeHtml(w.label)}</strong> <span class="watch-path">${escapeHtml(w.path)}${w.mode === 'single' ? '' : '/…'}</span></span>
+                <button class="btn-tiny btn-unwatch" data-id="${escapeHtml(w.id)}">Remove</button>
+            </div>`).join('');
+    }
+
+    async function addToWatchlist(path, type, mode) {
+        const res = await fetch(`${WALLET_API}/watchlist`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminPassword}` },
+            body: JSON.stringify({ path, type, mode })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+    }
+
+    async function removeFromWatchlist(id) {
+        const res = await fetch(`${WALLET_API}/watchlist/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${adminPassword}` }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+    }
+
+    // --- Receive / QR modal ----------------------------------------------
+
+    const qrModal = document.getElementById('qr-modal');
+    const qrHolder = document.getElementById('qr-holder');
+    const qrAddressEl = document.getElementById('qr-address');
+    const qrTitle = document.getElementById('qr-title');
+    const qrSubtitle = document.getElementById('qr-subtitle');
+    const qrAmountInput = document.getElementById('qr-amount');
+    let qrCurrentAddress = null;
+    let qrObjectUrl = null;
+
+    async function drawQr(address, amountSats) {
+        // The QR is fetched rather than linked because the endpoint needs the admin
+        // bearer token, which an <img src> cannot send. The SVG becomes a blob URL, so
+        // nothing server-generated is ever pushed through innerHTML.
+        if (qrObjectUrl) { URL.revokeObjectURL(qrObjectUrl); qrObjectUrl = null; }
+        qrHolder.innerHTML = '<p style="color:#000;font-size:0.8rem;">Drawing…</p>';
+
+        const params = new URLSearchParams({ address, label: 'SatWire' });
+        if (amountSats > 0) params.set('amount', String(amountSats));
+
+        try {
+            const res = await fetch(`${WALLET_API}/qr.svg?${params.toString()}`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                qrHolder.innerHTML = `<p style="color:#a00;font-size:0.8rem;">${escapeHtml(body.error || `HTTP ${res.status}`)}</p>`;
+                return;
+            }
+            qrObjectUrl = URL.createObjectURL(await res.blob());
+            const img = document.createElement('img');
+            img.src = qrObjectUrl;
+            img.alt = 'Payment QR code';
+            qrHolder.innerHTML = '';
+            qrHolder.appendChild(img);
+        } catch (e) {
+            qrHolder.innerHTML = `<p style="color:#a00;font-size:0.8rem;">${escapeHtml(e.message)}</p>`;
+        }
+    }
+
+    function openQr(address, label, isFixed) {
+        qrCurrentAddress = address;
+        qrTitle.textContent = label ? `Send funds to: ${label}` : 'Send funds here';
+        qrSubtitle.textContent = isFixed
+            ? 'This is the exact address the service spends from. Do not use a different one.'
+            : 'Scan this with your phone wallet.';
+        qrAddressEl.textContent = address;
+        qrAmountInput.value = '';
+        qrModal.style.display = 'block';
+        drawQr(address, 0);
+    }
+
+    function closeQr() {
+        qrModal.style.display = 'none';
+        if (qrObjectUrl) { URL.revokeObjectURL(qrObjectUrl); qrObjectUrl = null; }
+        qrHolder.innerHTML = '';
+    }
+
+    document.querySelector('.qr-close-button').addEventListener('click', closeQr);
+    // addEventListener rather than window.onclick, which is already assigned above for
+    // the request detail modal and would be overwritten.
+    window.addEventListener('click', (event) => { if (event.target === qrModal) closeQr(); });
+    document.getElementById('qr-amount-apply').addEventListener('click', () => {
+        if (qrCurrentAddress) drawQr(qrCurrentAddress, parseInt(qrAmountInput.value, 10) || 0);
+    });
+    document.getElementById('qr-copy').addEventListener('click', async () => {
+        if (!qrCurrentAddress) return;
+        const btn = document.getElementById('qr-copy');
+        try {
+            await navigator.clipboard.writeText(qrCurrentAddress);
+            btn.textContent = 'Copied';
+        } catch (e) {
+            btn.textContent = 'Copy failed';
+        }
+        setTimeout(() => { btn.textContent = 'Copy address'; }, 1500);
+    });
+
+    // One delegated handler for every button the wallet renders, so re-rendering never
+    // leaves listeners behind.
+    document.getElementById('wallet-container').addEventListener('click', async (event) => {
+        const qrButton = event.target.closest('.btn-qr');
+        if (qrButton) {
+            event.preventDefault();
+            openQr(qrButton.dataset.address, qrButton.dataset.label, qrButton.dataset.fixed === '1');
+            return;
+        }
+
+        const watchButton = event.target.closest('.btn-watch');
+        if (watchButton) {
+            watchButton.disabled = true;
+            try {
+                await addToWatchlist(watchButton.dataset.path, watchButton.dataset.type, watchButton.dataset.mode);
+                watchButton.textContent = 'Added';
+                await fetchWatchlist();
+                await fetchWallet(false);
+            } catch (e) {
+                alert(`Could not save: ${e.message}`);
+                watchButton.disabled = false;
+            }
+            return;
+        }
+
+        const unwatchButton = event.target.closest('.btn-unwatch');
+        if (unwatchButton) {
+            unwatchButton.disabled = true;
+            try {
+                await removeFromWatchlist(unwatchButton.dataset.id);
+                await fetchWatchlist();
+                await fetchWallet(false);
+            } catch (e) {
+                alert(`Could not remove: ${e.message}`);
+                unwatchButton.disabled = false;
+            }
+        }
+    });
+
+    // Refresh forces fresh blockchain lookups; the first load may use cached figures.
+    refreshBalancesBtn.addEventListener('click', () => fetchWallet(true));
+
+    function fetchWalletBalances() {
+        fetchWallet(false);
+        fetchWatchlist();
+    }
 });

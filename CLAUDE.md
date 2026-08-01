@@ -31,6 +31,8 @@ delivered on 2026-08-01 in tx `900e71e3…`.
 | Never auto-refund when the payment UTXO is already spent | `NO_REFUND_FAILURES`, `reconcile.js` |
 | The refund address comes from the chain, never from the webhook body | `routes/webhook.js` |
 | Nothing user-supplied reaches `innerHTML` unescaped | `frontend/admin/admin.js`, `frontend/js/app.js` |
+| The wallet view never spends BlockCypher's quota | `chain_providers.js` `getAddressSummaries` |
+| A balance that could not be read is never shown as 0 | `wallet_scan.js`, `incomplete` / `stale` flags |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -48,10 +50,14 @@ backend/src/
   op_return_creator.js  builds, signs and broadcasts the OP_RETURN transaction
   refund.js             returns funds to the payer when a request terminally fails
   reconcile.js          periodic safety net: unstick, retry, refund, report
-  chain_providers.js    BlockCypher → mempool.space → blockstream.info, with fallback
+  chain_providers.js    BlockCypher → blockstream.info → mempool.space, with fallback
   alerts.js             current problems, computed from the DB (not from logs)
   notifier.js           Telegram messages on every order event
   cleanup.js            deletes only old, provably unfunded requests
+  wallet_scan.js        read-only balance view over every branch of the seed
+  qr.js                 BIP21 payment URIs rendered as SVG QR codes
+  routes/wallet.js      admin-only, strictly read-only wallet API
+  routes/auth.js        the admin bearer check, shared by admin.js and wallet.js
 ```
 
 `reconcile.js` runs on startup and every 30 minutes. It is the reason a dropped request
@@ -67,6 +73,51 @@ expensive, so check it when touching provider code:
 - **fee too low** → retryable, and worth trying the other providers
 - **inputs already spent** → an earlier attempt probably confirmed; never auto-refund
 - **permanent** (dust, malformed) → stop, refund
+
+## The wallet view
+
+`wallet_scan.js` derives addresses and asks a block explorer what it sees. It never
+signs and never spends — keep it that way. If a spend endpoint is ever added to
+`routes/wallet.js`, that file becomes a money path and needs the locking and idempotency
+care that `refund.js` has.
+
+The seed uses three branches under `m/84'/0'/0'`:
+
+| Branch | What is there |
+|---|---|
+| `/0/i` | one payment address per order; a balance here is undelivered customer money |
+| `/1/i` | change from each published message — the service's actual earnings |
+| `/2/0` | the treasury, which pays for self-funded and free messages |
+
+Electrum and Sparrow scan only `/0` and `/1`, so the treasury is invisible to them. That
+is why the panel can scan an arbitrary path, and why the earnings on `/1` were unseen
+before this existed.
+
+Three things here are load-bearing:
+
+- **Topping up the treasury must go to `/2/0` exactly.** `treasury.js` spends from that
+  one address and no other, so the branch carries `fixedReceiveIndex: 0` and the panel
+  offers that address rather than a fresh one. A "next unused" address would be money
+  the free-proof service cannot reach.
+- **The receive branch is scanned past the highest index ever issued**, not just to the
+  gap limit. Abandoned orders leave unused indices, and this wallet already has gaps
+  wider than 20 (the highest index is 51 with only 19 orders), so a plain gap scan walks
+  straight past later addresses that may hold a customer's money.
+- **Scanning must never cost the money paths their API budget.** BlockCypher bills each
+  address in a multi-address request separately, so one scan returned twenty `429`s and
+  spent the allowance the webhooks depend on. Balance lookups therefore go to the Esplora
+  hosts only. Do not "optimise" this back to BlockCypher batching.
+
+mempool.space is **not reachable from this machine** — the connection times out, at every
+resolver, so it is not a DNS problem. It is still listed as a provider (it may come back,
+and the fallback handles it), but it is ordered last for balance lookups, and a provider
+that times out or rate-limits is now demoted for 60 seconds so a scan does not pay the
+same rejection once per address. Admin-panel explorer links point at blockstream.info for
+the same reason.
+
+A balance that could not be read is never rendered as zero. The last known figure is kept
+in memory and in `system_settings.wallet_balance_cache`, shown with its age, and the
+response carries `incomplete` / `staleCount` so the panel can say so plainly.
 
 ## Testing
 

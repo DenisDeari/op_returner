@@ -15,6 +15,7 @@ eventLog.install();
 const createApiRouter = require('./src/routes/api');
 const createWebhookRouter = require('./src/routes/webhook');
 const createAdminRouter = require('./src/routes/admin');
+const createWalletRouter = require('./src/routes/wallet');
 const createInternalRouter = require('./src/routes/internal');
 
 // --- Initialization ---
@@ -39,10 +40,13 @@ app.use('/admin', express.static(path.join(__dirname, '../frontend/admin')));
 const apiRouter = createApiRouter(db, rootNode, config, requestQueue);
 const webhookRouter = createWebhookRouter(db, rootNode, config);
 const adminRouter = createAdminRouter(db, rootNode, config);
+const walletRouter = createWalletRouter(db, rootNode, config);
 const internalRouter = createInternalRouter(db, rootNode, config);
 
 app.use('/api', apiRouter);
 app.use('/api/webhook', webhookRouter);
+// Mounted before the general admin router so /api/admin/wallet/* resolves here.
+app.use('/api/admin/wallet', walletRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/internal', internalRouter);
 

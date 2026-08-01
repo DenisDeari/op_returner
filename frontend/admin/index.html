@@ -25,28 +25,79 @@
             </details>
         </div>
 
-        <!-- Wallet Balances -->
-        <div id="wallet-balances-container" class="section">
+        <!-- Wallet -->
+        <div id="wallet-container" class="section">
             <div class="header-actions">
-                <h2>Wallet Balances</h2>
+                <h2>Wallet</h2>
                 <button id="refresh-balances-btn" class="btn btn-refresh">Refresh</button>
             </div>
-            <div class="balance-grid">
-                <div class="balance-card">
-                    <div class="balance-label">Treasury Wallet</div>
-                    <div class="balance-path" id="treasury-path">m/84'/0'/0'/2/0</div>
-                    <div class="balance-address" id="treasury-address">loading...</div>
-                    <div class="balance-amount" id="treasury-confirmed">— sats</div>
-                    <div class="balance-unconfirmed" id="treasury-unconfirmed"></div>
+
+            <div id="wallet-notice" class="wallet-notice" style="display: none;"></div>
+
+            <div class="wallet-headline">
+                <div class="wallet-total-block">
+                    <div class="wallet-total-label">Everything this wallet holds</div>
+                    <div class="wallet-total-sats" id="wallet-total">&mdash;</div>
+                    <div class="wallet-total-fiat" id="wallet-total-fiat"></div>
                 </div>
-                <div class="balance-card">
-                    <div class="balance-label">User Wallet (first address)</div>
-                    <div class="balance-path" id="user-path">m/84'/0'/0'/0/0</div>
-                    <div class="balance-address" id="user-address">loading...</div>
-                    <div class="balance-amount" id="user-confirmed">— sats</div>
-                    <div class="balance-unconfirmed" id="user-unconfirmed"></div>
+                <div class="wallet-split">
+                    <div class="wallet-split-row">
+                        <span class="wallet-split-label">Yours</span>
+                        <span class="wallet-split-value" id="wallet-yours">&mdash;</span>
+                    </div>
+                    <div class="wallet-split-row">
+                        <span class="wallet-split-label">Customer money not delivered yet</span>
+                        <span class="wallet-split-value" id="wallet-customer">&mdash;</span>
+                    </div>
+                    <div class="wallet-split-row">
+                        <span class="wallet-split-label">Waiting to confirm</span>
+                        <span class="wallet-split-value" id="wallet-unconfirmed">&mdash;</span>
+                    </div>
+                    <div class="wallet-checked" id="wallet-checked"></div>
                 </div>
             </div>
+
+            <div id="wallet-branches"><p class="muted">Loading&hellip;</p></div>
+
+            <!-- Look up any derivation path. Electrum only ever scans an account's /0 and
+                 /1 branches, so a balance on any other path is invisible there. -->
+            <details id="wallet-scanner" class="wallet-scanner">
+                <summary>Look up another derivation path</summary>
+                <p class="muted scanner-intro">
+                    A normal wallet app only looks at two branches of your seed
+                    (<code>/0</code> for receiving and <code>/1</code> for change). Money on
+                    any other path is invisible there. Enter a path here to check it.
+                </p>
+                <div class="scanner-form">
+                    <div class="scanner-field scanner-field-wide">
+                        <label for="scan-path">Derivation path</label>
+                        <input type="text" id="scan-path" placeholder="m/84'/0'/0'/2" spellcheck="false" autocomplete="off">
+                    </div>
+                    <div class="scanner-field">
+                        <label for="scan-type">Address type</label>
+                        <select id="scan-type">
+                            <option value="p2wpkh">Native SegWit (bc1q…)</option>
+                            <option value="p2tr">Taproot (bc1p…)</option>
+                            <option value="p2sh_p2wpkh">Nested SegWit (3…)</option>
+                            <option value="p2pkh">Legacy (1…)</option>
+                            <option value="all">Try all four</option>
+                        </select>
+                    </div>
+                    <div class="scanner-field">
+                        <label for="scan-mode">How to look</label>
+                        <select id="scan-mode">
+                            <option value="branch">Whole branch (many addresses)</option>
+                            <option value="single">Just this one address</option>
+                        </select>
+                    </div>
+                    <button id="scan-btn" class="btn btn-primary">Look up</button>
+                </div>
+                <div id="scan-result"></div>
+                <div id="watchlist-block">
+                    <h3 class="watchlist-title">Paths kept in the totals above</h3>
+                    <div id="watchlist-body"><p class="muted">None yet.</p></div>
+                </div>
+            </details>
         </div>
 
         <!-- System Configuration -->
@@ -90,6 +141,26 @@
             <span class="close-button">&times;</span>
             <h2>Request Details</h2>
             <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Receive / QR Modal -->
+    <div id="qr-modal" class="modal" style="display: none;">
+        <div class="modal-content qr-modal-content">
+            <span class="qr-close-button close-button">&times;</span>
+            <h2 id="qr-title">Send funds here</h2>
+            <p class="muted" id="qr-subtitle"></p>
+            <div class="qr-holder" id="qr-holder"></div>
+            <div class="qr-address" id="qr-address"></div>
+            <div class="qr-actions">
+                <div class="qr-amount-field">
+                    <label for="qr-amount">Amount in sats (optional)</label>
+                    <input type="number" id="qr-amount" min="0" step="1" placeholder="leave empty for any amount">
+                </div>
+                <button id="qr-amount-apply" class="btn btn-primary">Update code</button>
+                <button id="qr-copy" class="btn btn-refresh">Copy address</button>
+            </div>
+            <p class="qr-warning">Check the address on screen against your phone before you send.</p>
         </div>
     </div>
 

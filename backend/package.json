@@ -17,6 +17,7 @@
     "bitcoinjs-lib": "^6.1.7",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
+    "qrcode-generator": "^2.0.4",
     "sqlite3": "^5.1.7",
     "tiny-secp256k1": "^2.2.3",
     "uuid": "^11.1.0"

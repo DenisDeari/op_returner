@@ -1,67 +1,17 @@
 // backend/src/routes/admin.js
 const express = require('express');
 const axios = require('axios');
-const bitcoin = require('bitcoinjs-lib');
 const { dbGet, dbAll, dbRun } = require('../db_utils');
 const { deleteRequest, fulfillRequest } = require('../request_service');
 const { attemptRefund, OPERATOR_REFUNDABLE_STATUSES } = require('../refund');
-const { getTreasuryAddress } = require('../treasury');
 const { computeAlerts } = require('../alerts');
+const { requireAdmin } = require('./auth');
 const eventLog = require('../event_log');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
 
-    const ADMIN_PASSWORD = config.ADMIN_PASSWORD;
-
-    const protect = (req, res, next) => {
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader === `Bearer ${ADMIN_PASSWORD}`) {
-            next();
-        } else {
-            res.status(401).json({ error: 'Unauthorized' });
-        }
-    };
-
-    router.get('/wallet-balances', protect, async (req, res) => {
-        try {
-            // Treasury address (m/84'/0'/0'/2/0)
-            const treasuryAddress = getTreasuryAddress(rootNode, config.NETWORK);
-
-            // First user-facing receive address (m/84'/0'/0'/0/0)
-            const coinType = config.NETWORK === bitcoin.networks.bitcoin ? 0 : 1;
-            const userNode = rootNode.derivePath(`m/84'/${coinType}'/0'/0/0`);
-            const userPubkey = Buffer.from(userNode.publicKey);
-            const { address: userAddress } = bitcoin.payments.p2wpkh({ pubkey: userPubkey, network: config.NETWORK });
-
-            // Fetch balances from mempool.space (no token needed)
-            const [treasuryRes, userRes] = await Promise.all([
-                axios.get(`https://mempool.space/api/address/${treasuryAddress}`),
-                axios.get(`https://mempool.space/api/address/${userAddress}`)
-            ]);
-
-            const toBalance = (stats, mempoolStats) => ({
-                confirmed: stats.funded_txo_sum - stats.spent_txo_sum,
-                unconfirmed: mempoolStats.funded_txo_sum - mempoolStats.spent_txo_sum,
-            });
-
-            res.json({
-                treasury: {
-                    address: treasuryAddress,
-                    path: "m/84'/0'/0'/2/0",
-                    ...toBalance(treasuryRes.data.chain_stats, treasuryRes.data.mempool_stats),
-                },
-                userWallet: {
-                    address: userAddress,
-                    path: `m/84'/${coinType}'/0'/0/0`,
-                    ...toBalance(userRes.data.chain_stats, userRes.data.mempool_stats),
-                }
-            });
-        } catch (error) {
-            console.error('Error fetching wallet balances:', error.message);
-            res.status(500).json({ error: 'Failed to fetch wallet balances' });
-        }
-    });
+    const protect = requireAdmin(config);
 
     /**
      * Everything that currently needs a human, plus the recent warning/error log.
