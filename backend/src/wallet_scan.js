@@ -675,8 +675,11 @@ async function scanWallet(db, rootNode, config, options = {}) {
     const branches = [...builtInBranches(config), ...watched];
 
     // One budget shared by every branch, so the endpoint's total time is bounded no
-    // matter how many paths are being watched.
-    const deadline = Date.now() + (config.WALLET_SCAN_BUDGET_MS || 45000);
+    // matter how many paths are being watched. A deliberate Refresh gets the longer one.
+    const budget = refresh
+        ? (config.WALLET_REFRESH_BUDGET_MS || 60000)
+        : (config.WALLET_SCAN_BUDGET_MS || 25000);
+    const deadline = Date.now() + budget;
 
     const scanned = [];
     for (const branch of branches) {

@@ -74,6 +74,12 @@ const WALLET_SCAN_CONCURRENCY = 4;
 // out at the connection — a full scan can otherwise spend minutes failing. Past the
 // budget the scan stops, falls back to the last known figures, and says it is incomplete.
 const WALLET_SCAN_BUDGET_MS = 25 * 1000;
+// An explicit Refresh gets longer. A healthy full re-read of every address takes about
+// 28s, so the normal budget would cut it short and report "incomplete" every single time
+// — training the operator to ignore a warning that is supposed to mean something. The
+// operator pressed the button and is watching a spinner; the page-load path is the one
+// that must stay quick, and it is served from the overview cache anyway.
+const WALLET_REFRESH_BUDGET_MS = 60 * 1000;
 
 // Telegram notifications. Silently inactive unless both the token and chat id are set,
 // so the service behaves exactly as before when they are absent.
@@ -114,6 +120,7 @@ module.exports = {
     WALLET_CACHE_TTL_MS,
     WALLET_SCAN_CONCURRENCY,
     WALLET_SCAN_BUDGET_MS,
+    WALLET_REFRESH_BUDGET_MS,
     // Telegram notifications
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
