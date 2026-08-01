@@ -10,6 +10,21 @@
     <div class="container">
         <h1>SatWire &mdash; Admin</h1>
 
+        <!-- Warnings: anything holding customer funds or needing attention -->
+        <div id="alerts-container" class="section">
+            <div class="header-actions">
+                <h2>Warnings <span id="alerts-badge" class="alerts-badge"></span></h2>
+                <button id="refresh-alerts-btn" class="btn btn-refresh">Refresh</button>
+            </div>
+            <div id="alerts-body">
+                <p class="muted">Loading&hellip;</p>
+            </div>
+            <details id="event-log-details">
+                <summary>Recent server warnings &amp; errors</summary>
+                <div id="event-log-body"></div>
+            </details>
+        </div>
+
         <!-- Wallet Balances -->
         <div id="wallet-balances-container" class="section">
             <div class="header-actions">

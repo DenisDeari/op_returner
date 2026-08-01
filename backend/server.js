@@ -7,6 +7,11 @@ const { initializeWallet } = require('./src/wallet');
 const requestQueue = require('./src/queue');
 const { cleanupOldRequests } = require('./src/cleanup');
 const { runReconciliation } = require('./src/reconcile');
+const eventLog = require('./src/event_log');
+
+// Start capturing warnings and errors before anything else runs, so the admin panel's
+// log view includes startup problems too.
+eventLog.install();
 const createApiRouter = require('./src/routes/api');
 const createWebhookRouter = require('./src/routes/webhook');
 const createAdminRouter = require('./src/routes/admin');

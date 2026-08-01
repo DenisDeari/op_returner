@@ -6,6 +6,8 @@ const { dbGet, dbAll, dbRun } = require('../db_utils');
 const { deleteRequest, fulfillRequest } = require('../request_service');
 const { attemptRefund, OPERATOR_REFUNDABLE_STATUSES } = require('../refund');
 const { getTreasuryAddress } = require('../treasury');
+const { computeAlerts } = require('../alerts');
+const eventLog = require('../event_log');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -58,6 +60,26 @@ function createAdminRouter(db, rootNode, config) {
         } catch (error) {
             console.error('Error fetching wallet balances:', error.message);
             res.status(500).json({ error: 'Failed to fetch wallet balances' });
+        }
+    });
+
+    /**
+     * Everything that currently needs a human, plus the recent warning/error log.
+     * The alerts come from the database so they survive a restart; the events are an
+     * in-memory convenience view of what the server has been saying.
+     */
+    router.get('/alerts', protect, async (req, res) => {
+        try {
+            const { alerts, counts } = await computeAlerts(db, config);
+            res.status(200).json({
+                counts,
+                alerts,
+                events: eventLog.getEvents(100),
+                generatedAt: new Date().toISOString(),
+            });
+        } catch (error) {
+            console.error('Error computing alerts:', error.message);
+            res.status(500).json({ error: 'Failed to compute alerts' });
         }
     });
 

@@ -6,6 +6,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const closeButton = document.querySelector('.close-button');
     const refreshButton = document.getElementById('refresh-button');
     const refreshBalancesBtn = document.getElementById('refresh-balances-btn');
+    const refreshAlertsBtn = document.getElementById('refresh-alerts-btn');
+    const alertsBody = document.getElementById('alerts-body');
+    const alertsBadge = document.getElementById('alerts-badge');
+    const eventLogBody = document.getElementById('event-log-body');
 
     // Config Elements
     const maxPayloadInput = document.getElementById('max-payload-input');
@@ -112,6 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
             allRequests = requests;
             renderRequests(requests);
             fetchWalletBalances(); // load balances once we have a valid password
+            fetchAlerts();
         } catch (error) {
             requestsBody.innerHTML = `<tr><td colspan="7">Error loading requests: ${error.message}</td></tr>`;
         }
@@ -268,6 +273,79 @@ document.addEventListener('DOMContentLoaded', () => {
             modalBody.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
         }
     }
+
+    // --- Warnings panel ---------------------------------------------------
+    // Alerts come from the database, so they persist across restarts. The event log is
+    // an in-memory tail of what the server has been warning about since it started.
+    async function fetchAlerts() {
+        if (!adminPassword) return;
+
+        refreshAlertsBtn.disabled = true;
+        refreshAlertsBtn.textContent = 'Loading...';
+        try {
+            const res = await fetch(`${API_BASE_URL}/alerts`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+            if (!res.ok) {
+                alertsBody.innerHTML = `<p class="muted">Could not load warnings (HTTP ${res.status}).</p>`;
+                return;
+            }
+            const data = await res.json();
+            renderAlerts(data);
+        } catch (e) {
+            alertsBody.innerHTML = `<p class="muted">Could not load warnings: ${escapeHtml(e.message)}</p>`;
+        } finally {
+            refreshAlertsBtn.disabled = false;
+            refreshAlertsBtn.textContent = 'Refresh';
+        }
+    }
+
+    function renderAlerts(data) {
+        const { counts, alerts, events } = data;
+
+        // Badge summarising severity at a glance.
+        if (counts.critical > 0) {
+            alertsBadge.className = 'alerts-badge badge-critical';
+            alertsBadge.textContent = `${counts.critical} need attention`;
+        } else if (counts.warning > 0) {
+            alertsBadge.className = 'alerts-badge badge-warning';
+            alertsBadge.textContent = `${counts.warning} warning${counts.warning > 1 ? 's' : ''}`;
+        } else {
+            alertsBadge.className = 'alerts-badge badge-ok';
+            alertsBadge.textContent = 'all clear';
+        }
+
+        if (!alerts.length) {
+            alertsBody.innerHTML = '<p class="all-clear">No orders are holding customer funds. Nothing needs attention.</p>';
+        } else {
+            alertsBody.innerHTML = alerts.map(a => `
+                <div class="alert alert-${escapeHtml(a.severity)}">
+                    <div class="alert-title">
+                        ${escapeHtml(a.title)}
+                        <span class="alert-request">${escapeHtml(String(a.requestId).substring(0, 8))}</span>
+                    </div>
+                    <div class="alert-detail">${escapeHtml(a.detail)}</div>
+                    <div class="alert-meta">
+                        ${a.since ? `since ${escapeHtml(new Date(a.since).toLocaleString())}` : ''}
+                        ${a.address ? ` &middot; <a href="https://mempool.space/address/${encodeURIComponent(a.address)}" target="_blank">view address</a>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        if (!events || !events.length) {
+            eventLogBody.innerHTML = '<p class="muted">Nothing logged since the server started.</p>';
+        } else {
+            eventLogBody.innerHTML = `<div class="event-log">${events.map(e => `
+                <div class="event event-${escapeHtml(e.level)}">
+                    <span class="event-time">${escapeHtml(new Date(e.at).toLocaleTimeString())}</span>
+                    <span class="event-msg">${escapeHtml(e.message)}</span>
+                </div>
+            `).join('')}</div>`;
+        }
+    }
+
+    refreshAlertsBtn.addEventListener('click', fetchAlerts);
 
     requestsBody.addEventListener('click', async (event) => {
         const detailsButton = event.target.closest('.button-details');
