@@ -176,23 +176,32 @@ async function persistCache(db) {
  *
  * @returns {Promise<Map<string, object>>}
  */
-async function getSummaries(addresses, config, { refresh = false } = {}) {
+async function getSummaries(addresses, config, { refresh = false, deadline = null } = {}) {
     const ttl = config.WALLET_CACHE_TTL_MS;
     const now = Date.now();
     const out = new Map();
     const toFetch = [];
+    const outOfTime = deadline !== null && now > deadline;
 
     for (const address of addresses) {
         const cached = summaryCache.get(address);
         if (!refresh && cached && now - cached.at < ttl) {
             out.set(address, { ...cached.value, cached: true });
+        } else if (outOfTime) {
+            // Past the budget: no more network calls. Serve the last known figure,
+            // flagged stale, rather than making the caller wait.
+            if (cached) {
+                out.set(address, { ...cached.value, cached: true, stale: true, cachedAt: cached.at, staleReason: 'scan ran out of time' });
+            } else {
+                out.set(address, { ok: false, reason: 'scan ran out of time before this address was checked' });
+            }
         } else {
             toFetch.push(address);
         }
     }
 
     if (toFetch.length > 0) {
-        const fetched = await chainProviders.getAddressSummaries(toFetch, config);
+        const fetched = await chainProviders.getAddressSummaries(toFetch, config, { deadline });
         for (const address of toFetch) {
             const result = fetched.get(address) || { ok: false, reason: 'no answer from any provider' };
             if (result.ok) {
@@ -250,6 +259,7 @@ async function scanBranch(rootNode, branch, config, options = {}) {
     // the provider will accept.
     const windowSize = Math.max(1, Math.min(chainProviders.SUMMARY_BATCH_SIZE, gapLimit + 5));
     const refresh = !!options.refresh;
+    const deadline = options.deadline ?? null;
 
     const addresses = [];
     let consecutiveUnused = 0;
@@ -273,7 +283,7 @@ async function scanBranch(rootNode, branch, config, options = {}) {
         const summaries = await getSummaries(
             derived.filter((d) => d.address).map((d) => d.address),
             config,
-            { refresh }
+            { refresh, deadline }
         );
 
         const entries = derived.map((d) => {
@@ -314,6 +324,10 @@ async function scanBranch(rootNode, branch, config, options = {}) {
 
         if (errors >= 8) {
             incompleteReason = `${errors} addresses could not be checked — the block explorers are not answering.`;
+            break;
+        }
+        if (deadline !== null && Date.now() > deadline) {
+            incompleteReason = 'The block explorers were too slow to finish checking every address in time.';
             break;
         }
         if (consecutiveUnused >= gapLimit && index >= minIndices) break;
@@ -358,7 +372,7 @@ async function scanSingle(rootNode, pathSpec, config, options = {}) {
         };
     }
 
-    const summary = await getSummary(address, config, { refresh: !!options.refresh });
+    const summary = await getSummary(address, config, { refresh: !!options.refresh, deadline: options.deadline ?? null });
     const entry = summary.ok
         ? {
             index: null,
@@ -460,6 +474,10 @@ async function saveWatchedBranches(db, branches) {
         'INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)',
         [WATCH_SETTING_KEY, JSON.stringify(branches)]
     );
+    // The set of branches changed, so the assembled overview is wrong now. Without this
+    // a newly watched path would not appear, and a removed one would keep being counted,
+    // until the cache expired on its own.
+    invalidateOverview();
 }
 
 // --- Whose money is it ----------------------------------------------------
@@ -621,8 +639,32 @@ async function getPrice() {
 /**
  * Scans every built-in branch plus every saved custom one and adds up the result.
  */
+// The last completed overview, reused so the panel does not re-scan on every visit.
+//
+// The per-address cache alone is not enough. A failed lookup deliberately does NOT
+// refresh its timestamp — pretending stale data is current is the thing this must never
+// do — so while the explorers are unhappy every single request would retry every single
+// address and burn the full time budget. Caching the assembled result puts a floor on how
+// often that can happen. An incomplete result is held for much less time, so a temporary
+// outage is retried soon rather than sticking around for the full ten minutes.
+let overviewCache = null;
+const INCOMPLETE_REUSE_MS = 60 * 1000;
+
+function invalidateOverview() {
+    overviewCache = null;
+}
+
 async function scanWallet(db, rootNode, config, options = {}) {
     const refresh = !!options.refresh;
+
+    if (!refresh && overviewCache) {
+        const maxAge = overviewCache.value.incomplete ? INCOMPLETE_REUSE_MS : config.WALLET_CACHE_TTL_MS;
+        const age = Date.now() - overviewCache.at;
+        if (age < maxAge) {
+            return { ...overviewCache.value, servedFromCache: true, checkedAt: new Date(overviewCache.at).toISOString() };
+        }
+    }
+
     await ensureCacheLoaded(db);
     // Note: a refresh forces every address to be re-fetched, but the cache is NOT
     // cleared. If the re-fetch fails, the previous figure is still there to fall back on,
@@ -632,6 +674,10 @@ async function scanWallet(db, rootNode, config, options = {}) {
     const watched = await getWatchedBranches(db);
     const branches = [...builtInBranches(config), ...watched];
 
+    // One budget shared by every branch, so the endpoint's total time is bounded no
+    // matter how many paths are being watched.
+    const deadline = Date.now() + (config.WALLET_SCAN_BUDGET_MS || 45000);
+
     const scanned = [];
     for (const branch of branches) {
         // The receive branch is scanned at least as far as the highest index ever issued.
@@ -640,8 +686,8 @@ async function scanWallet(db, rootNode, config, options = {}) {
         // straight past a later address that does hold a customer's money.
         const minIndices = branch.id === 'receive' ? requestIndex.maxRequestIndex + 2 : 0;
         const scan = branch.mode === 'single'
-            ? await scanSingle(rootNode, branch, config, { refresh })
-            : await scanBranch(rootNode, branch, config, { refresh, minIndices });
+            ? await scanSingle(rootNode, branch, config, { refresh, deadline })
+            : await scanBranch(rootNode, branch, config, { refresh, minIndices, deadline });
         scanned.push(summariseBranch(branch, scan, requestIndex));
     }
 
@@ -665,7 +711,7 @@ async function scanWallet(db, rootNode, config, options = {}) {
         null
     );
 
-    return {
+    const result = {
         totals: {
             ...totals,
             total: totals.confirmed + totals.unconfirmed,
@@ -679,6 +725,8 @@ async function scanWallet(db, rootNode, config, options = {}) {
         account: accountPath(config),
         generatedAt: new Date().toISOString(),
     };
+    overviewCache = { at: Date.now(), value: result };
+    return { ...result, servedFromCache: false, checkedAt: result.generatedAt };
 }
 
 module.exports = {
@@ -695,6 +743,7 @@ module.exports = {
     saveWatchedBranches,
     loadRequestIndex,
     clearSummaryCache,
+    invalidateOverview,
     ensureCacheLoaded,
     persistCache,
     isUsed,

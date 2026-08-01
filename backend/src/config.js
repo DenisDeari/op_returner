@@ -60,13 +60,20 @@ const USER_FEEDBACK_MAX_BYTES = 1000;
 const WALLET_GAP_LIMIT = 20;
 // Hard ceiling per branch, so a pathological path cannot issue unbounded API calls.
 const WALLET_MAX_SCAN_INDICES = 200;
-// Balances are cached this long. A scan touches dozens of addresses and the panel gets
-// refreshed often; without this every refresh would be a fresh burst of explorer calls.
-const WALLET_CACHE_TTL_MS = 60 * 1000;
+// Balances are cached this long. Generous on purpose: a full scan touches well over a
+// hundred addresses, so a short window meant the panel re-scanned on nearly every visit
+// and spent 30s doing it. The panel shows when the figures were last checked and has a
+// Refresh button that forces a fresh read, which is how a wallet app normally behaves.
+const WALLET_CACHE_TTL_MS = 10 * 60 * 1000;
 // Parallel address lookups. Kept deliberately low: blockstream.info starts returning 429
 // at 8 parallel requests, and the same hosts serve the money paths, so tripping their
 // limits here would hurt broadcasts too.
 const WALLET_SCAN_CONCURRENCY = 4;
+// Hard wall-clock budget for one whole scan. This runs inside an admin HTTP request, and
+// when both Esplora hosts are struggling at once — one rate-limiting, the other timing
+// out at the connection — a full scan can otherwise spend minutes failing. Past the
+// budget the scan stops, falls back to the last known figures, and says it is incomplete.
+const WALLET_SCAN_BUDGET_MS = 25 * 1000;
 
 // Telegram notifications. Silently inactive unless both the token and chat id are set,
 // so the service behaves exactly as before when they are absent.
@@ -106,6 +113,7 @@ module.exports = {
     WALLET_MAX_SCAN_INDICES,
     WALLET_CACHE_TTL_MS,
     WALLET_SCAN_CONCURRENCY,
+    WALLET_SCAN_BUDGET_MS,
     // Telegram notifications
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,

@@ -18,9 +18,10 @@ const HTTP_TIMEOUT_MS = 20000;
 // issues a great many of them, and waiting the full 20 s on a rate-limited host before
 // falling back to the next one is what made an early version of the scan take 87 s.
 const LOOKUP_TIMEOUT_MS = 8000;
-// BlockCypher answers this many addresses in a single request. Batching turns a
-// 130-request scan into about 7, which is both far faster and much lighter on the API
-// quota than querying each address on its own.
+// How many addresses a wallet scan derives and looks up per round. Not a provider batch
+// — the Esplora hosts have no multi-address endpoint, so these still go out as
+// individual requests, throttled by WALLET_SCAN_CONCURRENCY. It only sets how far ahead
+// the scan looks before deciding whether the gap limit has been reached.
 const SUMMARY_BATCH_SIZE = 20;
 
 // Substrings that indicate the transaction is fundamentally unacceptable to the network.
@@ -98,13 +99,14 @@ function extractErrorMessage(error) {
     return status ? `HTTP ${status}: ${message}` : `${code}${message}`;
 }
 
-// A host that is rate-limiting us, or that cannot be reached at all, is tried last for a
-// while. Without this a wallet scan pays the same rejection once per address: this Pi
-// cannot open a connection to mempool.space, which cost roughly two seconds on every one
-// of 160 lookups before the host was demoted.
+// A host that is rate-limiting us, or that we cannot connect to, is tried last for a
+// while. Without this a wallet scan pays the same failure once per address: connections
+// from this machine to mempool.space time out most of the time — not always, it does get
+// through intermittently — which cost about two seconds on each of 160 lookups before
+// the host was demoted.
 //
-// Cooling down only reorders providers, never removes one — a broadcast must still be
-// offered to every host, however unpromising it looks.
+// Cooling down only reorders providers, never removes one, and callers must opt in. It
+// is deliberately NOT used for broadcasts; see the note in tryProviders.
 const UNHEALTHY_PROVIDER_PATTERNS = [
     // rate limiting
     'http 429', 'too many requests', 'rate limit', 'rate-limit',
@@ -459,13 +461,19 @@ function normalizeBlockcypherBalance(d) {
  * @param {string[]} addresses
  * @returns {Promise<Map<string, object>>} address -> {ok: true, …} | {ok: false, reason}
  */
-async function getAddressSummaries(addresses, config) {
+async function getAddressSummaries(addresses, config, { deadline = null } = {}) {
     const results = new Map();
     const wanted = [...new Set(addresses)];
     if (wanted.length === 0) return results;
 
+    const past = () => deadline !== null && Date.now() > deadline;
+
     const concurrency = config.WALLET_SCAN_CONCURRENCY || 4;
     for (let i = 0; i < wanted.length; i += concurrency) {
+        // Checked per chunk, not just by the caller between batches. With both hosts
+        // failing, one round costs two timeouts, and a 20-address batch is five rounds —
+        // long enough to blow the whole scan budget before control ever returns upstream.
+        if (past()) break;
         const chunk = wanted.slice(i, i + concurrency);
         await Promise.all(chunk.map(async (address) => {
             results.set(address, await getAddressSummary(address, config));
@@ -479,14 +487,17 @@ async function getAddressSummaries(addresses, config) {
     // Bounded on both count and wall-clock: this runs inside an admin HTTP request, and
     // an unbounded sequential retry over a large failed set would hold that request open
     // for minutes while hammering hosts that are already refusing us.
-    const MAX_RETRIES = 12;
-    const RETRY_DEADLINE_MS = 20000;
+    const MAX_RETRIES = 6;
+    const RETRY_DEADLINE_MS = 6000;
     const failed = wanted.filter((a) => !results.get(a)?.ok);
-    if (failed.length > 0 && failed.length < wanted.length) {
+    if (failed.length > 0 && failed.length < wanted.length && !past()) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const deadline = Date.now() + RETRY_DEADLINE_MS;
+        const retryDeadline = Math.min(
+            Date.now() + RETRY_DEADLINE_MS,
+            deadline === null ? Infinity : deadline
+        );
         for (const address of failed.slice(0, MAX_RETRIES)) {
-            if (Date.now() > deadline) break;
+            if (Date.now() > retryDeadline) break;
             const retry = await getAddressSummary(address, config);
             if (retry.ok) results.set(address, retry);
         }

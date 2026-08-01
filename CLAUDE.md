@@ -108,12 +108,23 @@ Three things here are load-bearing:
   spent the allowance the webhooks depend on. Balance lookups therefore go to the Esplora
   hosts only. Do not "optimise" this back to BlockCypher batching.
 
-mempool.space is **not reachable from this machine** — the connection times out, at every
-resolver, so it is not a DNS problem. It is still listed as a provider (it may come back,
-and the fallback handles it), but it is ordered last for balance lookups, and a provider
-that times out or rate-limits is now demoted for 60 seconds so a scan does not pay the
-same rejection once per address. Admin-panel explorer links point at blockstream.info for
-the same reason.
+Connections from this machine to mempool.space time out most of the time — not always,
+it does get through intermittently. Every resolver returns the same addresses, so it is
+not DNS. It is still a provider, but it is ordered last for balance lookups, and any host
+that times out or rate-limits is demoted for 60 seconds so a scan does not pay the same
+failure once per address. Admin-panel explorer links point at blockstream.info for the
+same reason.
+
+**That demotion is opt-in, and broadcasts must never use it.** `tryProviders` stops at
+the first *permanent* rejection and never asks the remaining hosts, so the order decides
+which host gets to declare a transaction invalid — and a permanent rejection is what
+triggers an automatic refund. A wallet scan tripping a rate limit must not be able to
+reshuffle that.
+
+A scan is bounded by `WALLET_SCAN_BUDGET_MS`. Past it the scan stops, falls back to the
+last known figures, and reports `incomplete`. This matters: it runs inside an admin HTTP
+request, and with one Esplora host rate-limiting while the other times out, an unbounded
+scan spent over a minute failing.
 
 A balance that could not be read is never rendered as zero. The last known figure is kept
 in memory and in `system_settings.wallet_balance_cache`, shown with its age, and the
