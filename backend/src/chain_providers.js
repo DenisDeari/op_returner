@@ -46,12 +46,29 @@ const INPUTS_SPENT_PATTERNS = [
     'inputs-missingorspent',
 ];
 
+// The transaction is well-formed but underpays. NOT permanent: another provider may
+// have a lower threshold, and rebuilding at a higher fee rate fixes it outright.
+// These must be matched BEFORE the generic patterns, because providers phrase it as
+// "non standard: low fee rate" — which would otherwise look permanent and both skip
+// the fallback providers and stop the request from ever being retried.
+const FEE_TOO_LOW_PATTERNS = [
+    'low fee rate',
+    'min relay fee not met',
+    'mempool min fee not met',
+    'insufficient fee',
+    'fee too low',
+    'min_relay_fee',
+    'tx-fee-too-low',
+];
+
 function classifyError(message) {
     const lower = String(message || '').toLowerCase();
     const alreadyBroadcast = ALREADY_BROADCAST_PATTERNS.some((p) => lower.includes(p));
+    const feeTooLow = FEE_TOO_LOW_PATTERNS.some((p) => lower.includes(p));
     const inputsSpent = INPUTS_SPENT_PATTERNS.some((p) => lower.includes(p));
-    const permanent = !alreadyBroadcast && (inputsSpent || PERMANENT_ERROR_PATTERNS.some((p) => lower.includes(p)));
-    return { permanent, alreadyBroadcast, inputsSpent, message: String(message || 'unknown error') };
+    const permanent = !alreadyBroadcast && !feeTooLow
+        && (inputsSpent || PERMANENT_ERROR_PATTERNS.some((p) => lower.includes(p)));
+    return { permanent, alreadyBroadcast, feeTooLow, inputsSpent, message: String(message || 'unknown error') };
 }
 
 function extractErrorMessage(error) {
@@ -205,6 +222,8 @@ async function tryProviders(config, methodName, args, { label }) {
                     reason: classified.message, attempts,
                 };
             }
+            // A fee rejection is worth trying elsewhere — thresholds differ per provider —
+            // so fall through to the next one rather than giving up here.
         }
     }
 
@@ -240,6 +259,7 @@ async function broadcastTransaction(txHex, config, expectedTxId) {
         ok: false,
         permanent: !!result.permanent,
         inputsSpent: !!result.inputsSpent,
+        feeTooLow: (result.attempts || []).some((a) => FEE_TOO_LOW_PATTERNS.some((p) => String(a.error).toLowerCase().includes(p))),
         reason: result.reason,
         attempts: result.attempts,
     };

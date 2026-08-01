@@ -87,7 +87,13 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         }
         estimatedVBytes = Math.ceil(estimatedVBytes);
 
-        const feeRateSatPerVByte = feeRate || appConfig.DEFAULT_FEE_RATE;
+        // Never build below the effective floor: a transaction sitting exactly on the
+        // minimum relay fee is rejected as non-standard by real providers.
+        const requestedFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
+        const feeRateSatPerVByte = Math.max(requestedFeeRate, appConfig.MIN_EFFECTIVE_FEE_RATE);
+        if (feeRateSatPerVByte !== requestedFeeRate) {
+            console.warn(`[OpReturnCreator] Raised fee rate ${requestedFeeRate} to the ${feeRateSatPerVByte} sat/vB floor for request ${id}.`);
+        }
         const fee = estimatedVBytes * feeRateSatPerVByte;
 
         const DUST_LIMIT = appConfig.DUST_LIMIT_SATS;
@@ -224,7 +230,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         // propagate, and it is far better to fail here than to broadcast something that
         // silently never confirms.
         const actualVBytes = transaction.virtualSize();
-        const minRelayFee = actualVBytes; // 1 sat/vByte floor
+        const minRelayFee = actualVBytes * appConfig.MIN_EFFECTIVE_FEE_RATE;
         if (fee < minRelayFee) {
             return failure(
                 'fee_below_relay_minimum',
@@ -243,6 +249,12 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
                 console.log(`[OpReturnCreator] Successfully broadcasted OP_RETURN TX: ${txId} (via ${broadcast.provider})`);
             }
             return { ok: true, opReturnTxId: txId, signedTxHex, changePath: usedChangePath };
+        }
+
+        // A fee rejection is fixable by rebuilding higher, so it must stay retryable
+        // rather than being treated as a permanent rejection.
+        if (broadcast.feeTooLow) {
+            return failure('fee_too_low', `${broadcast.reason} (paid ${fee} sats at ${feeRateSatPerVByte} sat/vB)`);
         }
 
         // Inputs already spent almost always means a previous attempt for this request

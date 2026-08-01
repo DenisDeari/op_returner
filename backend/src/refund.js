@@ -129,7 +129,12 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
         }
 
         const inputTotal = confirmed.reduce((sum, u) => sum + u.value, 0);
-        const feeRate = request.feeRate || config.DEFAULT_FEE_RATE;
+        // Same floor as the fulfilment path: a refund paying the bare minimum relay fee
+        // is rejected as non-standard, which would leave the customer unpaid twice over.
+        const feeRate = Math.max(
+            request.feeRate || config.DEFAULT_FEE_RATE,
+            config.MIN_EFFECTIVE_FEE_RATE || 2
+        );
         const fee = estimateRefundVBytes(confirmed.length) * feeRate;
         const refundValue = inputTotal - fee;
 

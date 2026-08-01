@@ -35,8 +35,14 @@ const DEFAULT_FEE_RATE = 2; // sats per vByte
 // amountToSend must be either 0 (no recipient output) or at least DUST_LIMIT_SATS.
 // Anything in between produces a non-standard "dust" output that relays reject —
 // which previously happened *after* the customer had already paid.
-const MIN_FEE_RATE = 1;   // sats/vByte
+// A transaction paying exactly 1 sat/vByte sits precisely on Bitcoin's minimum relay
+// fee, and providers reject it as "non standard: low fee rate" — observed in production
+// on 2026-08-01. Anything we build must clear that floor with room to spare, so the
+// effective rate is never allowed below MIN_EFFECTIVE_FEE_RATE regardless of what the
+// customer asked for. The difference comes out of the service fee, not the customer.
+const MIN_FEE_RATE = 2;   // sats/vByte, lowest a customer may request
 const MAX_FEE_RATE = 500; // sats/vByte
+const MIN_EFFECTIVE_FEE_RATE = 2; // sats/vByte, hard floor applied when building
 const MAX_AMOUNT_TO_SEND_SATS = 100_000_000; // 1 BTC sanity ceiling
 
 // Failure handling
@@ -72,6 +78,7 @@ module.exports = {
     // Intake validation bounds
     MIN_FEE_RATE,
     MAX_FEE_RATE,
+    MIN_EFFECTIVE_FEE_RATE,
     MAX_AMOUNT_TO_SEND_SATS,
     // Failure handling
     MAX_FULFILL_ATTEMPTS,
