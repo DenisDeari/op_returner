@@ -15,5 +15,3 @@ Thumbs.db
 # Database (WICHTIG: Damit deine User-Daten nicht überschrieben werden)
 *.db
 backend/data/
-# Personal study material, not part of the service
-frontend/learn/
