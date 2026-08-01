@@ -159,6 +159,18 @@ function createWalletRouter(db, rootNode, config) {
                 return res.status(409).json({ error: 'That path is already on the watchlist.' });
             }
 
+            // The built-in branches are scanned unconditionally. Watching one as well
+            // would scan it twice and add its balance into the total twice, which is
+            // exactly the kind of wrong number this panel must never show.
+            const builtInClash = walletScan.builtInBranches(config).find(
+                (b) => b.path === parsed.spec.path && b.type === parsed.spec.type && parsed.spec.mode === 'branch'
+            );
+            if (builtInClash) {
+                return res.status(409).json({
+                    error: `That path is already shown as "${builtInClash.label}" and is counted in the total. Adding it again would double it.`,
+                });
+            }
+
             const entry = {
                 id: uuidv4(),
                 label: parsed.spec.label || `Custom: ${parsed.spec.path}`,
@@ -200,9 +212,13 @@ function createWalletRouter(db, rootNode, config) {
      * GET /api/admin/wallet/qr.svg?address=…&amount=…&label=…
      * A scannable BIP21 code for topping the wallet up from a phone.
      *
-     * The address is re-derived from the requested path rather than echoed back from the
-     * query string wherever possible, so a QR code can only ever point at an address this
-     * seed actually controls.
+     * Two ways to ask. `path=` derives the address from the seed here, so the result is
+     * guaranteed to be an address this wallet controls. `address=` renders whatever
+     * address is passed and carries no such guarantee — it is only sanity-checked for
+     * shape. That is deliberate: the panel passes back addresses it received from
+     * /overview, and an operator may legitimately want a code for somewhere else. The
+     * modal always prints the address as text beside the code so it can be read before
+     * anything is sent.
      */
     router.get('/qr.svg', protect, async (req, res) => {
         try {

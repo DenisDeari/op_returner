@@ -253,26 +253,31 @@ function buildProviders(config) {
 
 // --- Generic fallback runner ---------------------------------------------
 
-async function tryProviders(config, methodName, args, { label, preferProviders }) {
+async function tryProviders(config, methodName, args, { label, onlyProviders, useCooldown = false }) {
     let providers = buildProviders(config).filter((p) => typeof p[methodName] === 'function');
 
-    // Some callers want a different order than the default. Wallet scanning issues one
-    // request per derived address, which would burn through BlockCypher's free-tier
-    // quota within a single scan, so it asks for the Esplora hosts first. Sort is stable,
-    // so providers that share a rank keep their original relative order.
-    if (preferProviders && preferProviders.length) {
-        const rank = (p) => {
-            const i = preferProviders.indexOf(p.name);
-            return i === -1 ? preferProviders.length : i;
-        };
-        providers = [...providers].sort((a, b) => rank(a) - rank(b));
+    // Some callers restrict which hosts may answer at all. The wallet view does: it
+    // issues one request per derived address, and BlockCypher bills each one against the
+    // free-tier quota that the payment webhooks and broadcasts depend on. A *preference*
+    // was not enough — once a preferred host was demoted for rate-limiting, BlockCypher
+    // moved up and got the traffic anyway. This is a hard restriction so the invariant
+    // holds no matter what order things end up in.
+    if (onlyProviders && onlyProviders.length) {
+        const rank = (p) => onlyProviders.indexOf(p.name);
+        providers = providers.filter((p) => rank(p) !== -1).sort((a, b) => rank(a) - rank(b));
     }
 
-    // Anything currently rate-limiting us goes to the back of whatever order we settled
-    // on. Still tried, just last.
-    const now = Date.now();
-    if (providers.length > 1 && providerCooldowns.size > 0) {
+    // Reordering is opt-in, and deliberately NOT used for broadcasts.
+    //
+    // tryProviders stops at the first PERMANENT rejection and never consults the
+    // remaining hosts. So changing the order changes which host gets to pronounce a
+    // transaction permanently invalid — and a permanent rejection is what triggers an
+    // automatic refund. A wallet scan hitting a rate limit must not be able to reshuffle
+    // that and turn a deliverable order into a refunded one.
+    if (useCooldown && providers.length > 1 && providerCooldowns.size > 0) {
+        const now = Date.now();
         const cooling = (p) => ((providerCooldowns.get(p.name) || 0) > now ? 1 : 0);
+        // Stable sort, so the order chosen above survives among hosts of equal health.
         providers = [...providers].sort((a, b) => cooling(a) - cooling(b));
     }
 
@@ -469,11 +474,19 @@ async function getAddressSummaries(addresses, config) {
 
     // One gentle retry for whatever failed. Rate limits are transient by definition, and
     // a single address that came back empty would otherwise be reported as an unknown
-    // balance for the next quarter of an hour.
+    // balance until the cache expires.
+    //
+    // Bounded on both count and wall-clock: this runs inside an admin HTTP request, and
+    // an unbounded sequential retry over a large failed set would hold that request open
+    // for minutes while hammering hosts that are already refusing us.
+    const MAX_RETRIES = 12;
+    const RETRY_DEADLINE_MS = 20000;
     const failed = wanted.filter((a) => !results.get(a)?.ok);
     if (failed.length > 0 && failed.length < wanted.length) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        for (const address of failed) {
+        const deadline = Date.now() + RETRY_DEADLINE_MS;
+        for (const address of failed.slice(0, MAX_RETRIES)) {
+            if (Date.now() > deadline) break;
             const retry = await getAddressSummary(address, config);
             if (retry.ok) results.set(address, retry);
         }
@@ -497,9 +510,12 @@ async function getAddressSummaries(addresses, config) {
  *   totalSent: number, txCount: number, provider: string} | {ok: false, reason: string}>}
  */
 async function getAddressSummary(address, config) {
+    // Esplora hosts ONLY — never BlockCypher. See the note in tryProviders: a scan would
+    // otherwise spend the API quota that the money paths depend on.
     const result = await tryProviders(config, 'getAddressSummary', [address], {
         label: `address-summary ${address.slice(0, 12)}`,
-        preferProviders: ['blockstream.info', 'mempool.space'],
+        onlyProviders: ['blockstream.info', 'mempool.space'],
+        useCooldown: true,
     });
     if (!result.ok) return { ok: false, reason: result.reason };
     return { ok: true, ...result.value, provider: result.provider };

@@ -486,7 +486,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function fetchWallet(refresh) {
-        if (!adminPassword) return;
+        // Say so rather than sitting on "Loading…" forever, which is what happens when
+        // the password prompt is dismissed.
+        if (!adminPassword) {
+            walletBranches.innerHTML = '<p class="muted">Enter the admin password to see the wallet.</p>';
+            return;
+        }
 
         refreshBalancesBtn.disabled = true;
         refreshBalancesBtn.textContent = refresh ? 'Checking…' : 'Loading…';
@@ -541,7 +546,10 @@ document.addEventListener('DOMContentLoaded', () => {
             || '<p class="muted">No branches configured.</p>';
     }
 
-    function renderBranch(branch) {
+    // `options.isScanResult` marks a one-off lookup that is not on the watchlist, so it
+    // gets no "Stop watching" button — there would be no entry for it to remove.
+    function renderBranch(branch, options) {
+        const isScanResult = !!(options && options.isScanResult);
         const typeLabel = {
             p2wpkh: 'Native SegWit', p2tr: 'Taproot', p2sh_p2wpkh: 'Nested SegWit', p2pkh: 'Legacy',
         }[branch.type] || branch.type;
@@ -566,14 +574,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const pending = a.request && !a.request.settled
                 ? `<span class="addr-flag flag-pending" title="Order ${escapeHtml(a.request.requestId)} (${escapeHtml(a.request.status)}) has not been delivered or refunded">not delivered</span>`
                 : '';
-            const stale = a.stale ? `<span class="addr-flag flag-stale" title="Figure from ${escapeHtml(fmtAge(new Date(a.cachedAt).toISOString()))}">old</span>` : '';
+            const stale = a.stale && a.cachedAt
+                ? `<span class="addr-flag flag-stale" title="Figure from ${escapeHtml(fmtAge(new Date(a.cachedAt).toISOString()))}">old</span>`
+                : '';
+            // The row's own QR must carry the same warning the branch header does. On the
+            // treasury this address IS the one the service spends from, and the row
+            // button would otherwise open a code with no such note.
+            const rowIsFixed = branch.receiveIsFixed && receive && receive.address === a.address;
             return `
                 <tr>
                     <td class="addr-num">${a.index === null ? '—' : escapeHtml(a.index)}</td>
                     <td class="addr-mono"><a href="${explorerAddress(a.address)}" target="_blank" rel="noopener">${escapeHtml(a.address)}</a>${pending}${stale}</td>
                     <td class="addr-num ${balance > 0 ? 'has-balance' : ''}">${escapeHtml(Number(balance).toLocaleString('en-US'))}</td>
                     <td class="addr-num">${escapeHtml(a.txCount ?? 0)}</td>
-                    <td class="addr-num"><button class="btn-tiny btn-qr" data-address="${escapeHtml(a.address)}" data-label="${escapeHtml(branch.label)}">QR</button></td>
+                    <td class="addr-num"><button class="btn-tiny btn-qr" data-address="${escapeHtml(a.address)}" data-label="${escapeHtml(branch.label)}" data-fixed="${rowIsFixed ? '1' : ''}">QR</button></td>
                 </tr>`;
         }).join('');
 
@@ -587,7 +601,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `<p class="branch-warn">${escapeHtml(branch.incompleteReason || 'This branch could not be read completely.')}</p>`
             : '';
 
-        const removeBtn = branch.builtIn ? '' :
+        const removeBtn = (branch.builtIn || isScanResult) ? '' :
             `<button class="btn-tiny btn-unwatch" data-id="${escapeHtml(branch.id)}">Stop watching</button>`;
 
         return `
@@ -663,7 +677,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `<button class="btn btn-primary btn-watch" data-path="${escapeHtml(data.path)}" data-type="${escapeHtml(data.requestedType)}" data-mode="${escapeHtml(data.mode)}">Keep this in my totals</button>`
             : '<p class="muted">Pick a single address type to keep a path in your totals.</p>';
 
-        scanResult.innerHTML = message + data.results.map(renderBranch).join('')
+        scanResult.innerHTML = message + data.results.map((b) => renderBranch(b, { isScanResult: true })).join('')
             + `<div style="margin-top:0.8rem;">${watchBtn}</div>`;
     }
 
@@ -721,12 +735,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const qrAmountInput = document.getElementById('qr-amount');
     let qrCurrentAddress = null;
     let qrObjectUrl = null;
+    // Every draw gets a ticket. A response whose ticket is no longer the current one is
+    // discarded instead of rendered. Without this, opening one address's code and then
+    // another's can leave the slower first response painted next to the second address's
+    // text — a QR that does not match the address shown under it, which is the one way
+    // this panel could send money to the wrong place.
+    let qrRequestToken = 0;
+
+    function releaseQrUrl() {
+        if (qrObjectUrl) { URL.revokeObjectURL(qrObjectUrl); qrObjectUrl = null; }
+    }
 
     async function drawQr(address, amountSats) {
         // The QR is fetched rather than linked because the endpoint needs the admin
         // bearer token, which an <img src> cannot send. The SVG becomes a blob URL, so
         // nothing server-generated is ever pushed through innerHTML.
-        if (qrObjectUrl) { URL.revokeObjectURL(qrObjectUrl); qrObjectUrl = null; }
+        const token = ++qrRequestToken;
+        releaseQrUrl();
         qrHolder.innerHTML = '<p style="color:#000;font-size:0.8rem;">Drawing…</p>';
 
         const params = new URLSearchParams({ address, label: 'SatWire' });
@@ -736,18 +761,26 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(`${WALLET_API}/qr.svg?${params.toString()}`, {
                 headers: { 'Authorization': `Bearer ${adminPassword}` }
             });
+            if (token !== qrRequestToken) return; // superseded
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 qrHolder.innerHTML = `<p style="color:#a00;font-size:0.8rem;">${escapeHtml(body.error || `HTTP ${res.status}`)}</p>`;
                 return;
             }
-            qrObjectUrl = URL.createObjectURL(await res.blob());
+            const blob = await res.blob();
+            // Re-checked after the second await: the modal may have been closed or
+            // redrawn while the body was still arriving, and the URL created below would
+            // then never be revoked.
+            if (token !== qrRequestToken) return;
+            const url = URL.createObjectURL(blob);
+            qrObjectUrl = url;
             const img = document.createElement('img');
-            img.src = qrObjectUrl;
+            img.src = url;
             img.alt = 'Payment QR code';
             qrHolder.innerHTML = '';
             qrHolder.appendChild(img);
         } catch (e) {
+            if (token !== qrRequestToken) return;
             qrHolder.innerHTML = `<p style="color:#a00;font-size:0.8rem;">${escapeHtml(e.message)}</p>`;
         }
     }
@@ -766,8 +799,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function closeQr() {
         qrModal.style.display = 'none';
-        if (qrObjectUrl) { URL.revokeObjectURL(qrObjectUrl); qrObjectUrl = null; }
+        qrRequestToken++; // any draw still in flight is now stale and must not paint
+        releaseQrUrl();
         qrHolder.innerHTML = '';
+        qrCurrentAddress = null;
     }
 
     document.querySelector('.qr-close-button').addEventListener('click', closeQr);

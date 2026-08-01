@@ -135,8 +135,13 @@ async function ensureCacheLoaded(db) {
         const row = await dbGet(db, 'SELECT value FROM system_settings WHERE key = ?', [CACHE_SETTING_KEY]);
         if (!row || !row.value) return;
         const parsed = JSON.parse(row.value);
+        // Validated field by field, not just shape-checked. These numbers are added
+        // straight into the displayed total, and a malformed entry would turn it into
+        // NaN or "0 sats" — the one thing this cache exists to prevent.
+        const isBalance = (v) => Number.isFinite(v.confirmed) && Number.isFinite(v.unconfirmed)
+            && Number.isFinite(v.txCount) && v.ok === true;
         for (const [address, entry] of Object.entries(parsed)) {
-            if (entry && typeof entry.at === 'number' && entry.value) {
+            if (entry && Number.isFinite(entry.at) && entry.at > 0 && entry.value && isBalance(entry.value)) {
                 summaryCache.set(address, entry);
             }
         }
@@ -314,8 +319,19 @@ async function scanBranch(rootNode, branch, config, options = {}) {
         if (consecutiveUnused >= gapLimit && index >= minIndices) break;
     }
 
+    // Three separate ways a scan can be less than the whole truth. All of them must set
+    // the flag: a total that quietly omits addresses is worse than no total at all.
     if (!incompleteReason && index >= maxIndices && consecutiveUnused < gapLimit) {
         incompleteReason = `Stopped at the ${maxIndices}-address limit while addresses were still in use — there may be more.`;
+    }
+    if (!incompleteReason && index >= maxIndices && index < minIndices) {
+        // The ceiling cut the scan short before it reached the highest index this wallet
+        // has actually issued, so a funded address past the ceiling would be missed.
+        incompleteReason = `Stopped at the ${maxIndices}-address limit, but this wallet has issued addresses up to index ${minIndices - 1}. Raise WALLET_MAX_SCAN_INDICES.`;
+    }
+    if (!incompleteReason && errors > 0) {
+        // Below the abort threshold, but still unread. The total omits these.
+        incompleteReason = `${errors} address${errors > 1 ? 'es' : ''} could not be read, so this figure may be too low.`;
     }
 
     return {
@@ -387,6 +403,10 @@ function builtInBranches(config) {
             path: `${account}/0`,
             type: 'p2wpkh',
             builtIn: true,
+            // No top-up address is offered here. The next unused address on this branch
+            // is the one the next customer will be told to pay, so the operator's own
+            // money arriving there would look exactly like that customer's payment.
+            noReceive: true,
             note: 'One address per order. Anything sitting here is a customer payment that has not been spent yet.',
         },
         {
@@ -400,7 +420,11 @@ function builtInBranches(config) {
         {
             id: 'treasury',
             label: 'Treasury (pays for the free proofs)',
-            path: `${account}/2`,
+            // Hardcoded coin type 0 to match TREASURY_PATH in treasury.js, which does the
+            // same. On testnet the rest of the wallet would sit under coin type 1, and
+            // deriving the treasury there would show a balance for an address the
+            // treasury code never touches.
+            path: "m/84'/0'/0'/2",
             type: 'p2wpkh',
             builtIn: true,
             // treasury.js spends from index 0 and nothing else, so topping it up must go
@@ -462,9 +486,21 @@ async function loadRequestIndex(db) {
             createdAt: row.createdAt,
         });
     }
+    // The highest index this wallet has ever handed out. Taken from BOTH the requests
+    // table and wallet_state, because cleanup.js deletes old unfunded request rows while
+    // wallet_state keeps counting — so the table alone can understate how far the wallet
+    // has gone, and the scan would stop short of a funded address.
     const indexRow = await dbGet(db, 'SELECT MAX("index") AS maxIndex FROM requests');
     if (indexRow && indexRow.maxIndex !== null && indexRow.maxIndex !== undefined) {
         maxIndex = indexRow.maxIndex;
+    }
+    try {
+        const stateRow = await dbGet(db, 'SELECT last_derived_index FROM wallet_state WHERE id = 1');
+        if (stateRow && Number.isInteger(stateRow.last_derived_index)) {
+            maxIndex = Math.max(maxIndex, stateRow.last_derived_index);
+        }
+    } catch (error) {
+        console.warn(`[Wallet] Could not read wallet_state: ${error.message}`);
     }
     return { byAddress, maxRequestIndex: maxIndex };
 }
@@ -474,11 +510,18 @@ function summariseBranch(branch, scan, requestIndex) {
     let unconfirmed = 0;
     let customerFunds = 0;
     let staleCount = 0;
+    // Tracked here, over the UNFILTERED list. A stale zero balance is dropped from the
+    // displayed rows, so deriving this from the filtered list later would report
+    // staleCount > 0 with no age to go with it.
+    let oldestStale = null;
     const funded = [];
 
     for (const entry of scan.addresses) {
         if (entry.error || !entry.address) continue;
-        if (entry.stale) staleCount += 1;
+        if (entry.stale) {
+            staleCount += 1;
+            if (entry.cachedAt && (oldestStale === null || entry.cachedAt < oldestStale)) oldestStale = entry.cachedAt;
+        }
         const linked = requestIndex.byAddress.get(entry.address) || null;
         entry.request = linked;
         confirmed += entry.confirmed;
@@ -491,9 +534,17 @@ function summariseBranch(branch, scan, requestIndex) {
     }
 
     const nextUnused = scan.addresses.find((a) => !a.error && a.address && !isUsed(a)) || null;
-    const fixedReceive = (branch.fixedReceiveIndex === undefined || branch.fixedReceiveIndex === null)
-        ? null
-        : (scan.addresses.find((a) => a.index === branch.fixedReceiveIndex && a.address && !a.error) || null);
+
+    // A branch with a fixed receive index has exactly one correct top-up address, and
+    // falling back to a different one would send money somewhere the service never
+    // spends from. So the error flag is deliberately ignored here: a failed *balance*
+    // lookup says nothing about the address itself, which is derived locally and is
+    // still correct. Only a derivation failure (no address at all) leaves it unset, and
+    // in that case no address is offered rather than the wrong one.
+    const hasFixedIndex = branch.fixedReceiveIndex !== undefined && branch.fixedReceiveIndex !== null;
+    const fixedReceive = hasFixedIndex
+        ? (scan.addresses.find((a) => a.index === branch.fixedReceiveIndex && a.address) || null)
+        : null;
 
     return {
         ...branch,
@@ -512,11 +563,16 @@ function summariseBranch(branch, scan, requestIndex) {
         // history. A hundred untouched addresses are noise.
         addresses: scan.addresses.filter((a) => a.error || a.address && (isUsed(a) || a.confirmed !== 0 || a.unconfirmed !== 0)),
         nextUnusedAddress: nextUnused,
-        // Where the operator should send money to top this branch up. For most branches
-        // that is a fresh address; for the treasury it is the one fixed address the
-        // self-funding code actually spends from.
-        receiveAddress: fixedReceive || nextUnused,
-        receiveIsFixed: !!fixedReceive,
+        // Where the operator should send money to top this branch up.
+        //
+        // A fixed-index branch offers that address and nothing else — never a fallback.
+        // Branches with noReceive offer nothing at all: the customer-payment branch's
+        // next unused address is the one about to be quoted to the next customer, and
+        // the operator's own money landing there would be indistinguishable from a
+        // payment for that order.
+        receiveAddress: hasFixedIndex ? fixedReceive : (branch.noReceive ? null : nextUnused),
+        receiveIsFixed: hasFixedIndex && !!fixedReceive,
+        oldestStaleAt: oldestStale,
     };
 }
 
@@ -604,10 +660,10 @@ async function scanWallet(db, rootNode, config, options = {}) {
     const staleCount = scanned.reduce((sum, b) => sum + (b.staleCount || 0), 0);
     // The oldest figure contributing to the total, so the panel can say how far behind
     // the number might be rather than presenting it as current.
-    const oldestStale = scanned
-        .flatMap((b) => b.addresses)
-        .filter((a) => a.stale && a.cachedAt)
-        .reduce((oldest, a) => (oldest === null || a.cachedAt < oldest ? a.cachedAt : oldest), null);
+    const oldestStale = scanned.reduce(
+        (oldest, b) => (b.oldestStaleAt && (oldest === null || b.oldestStaleAt < oldest) ? b.oldestStaleAt : oldest),
+        null
+    );
 
     return {
         totals: {
