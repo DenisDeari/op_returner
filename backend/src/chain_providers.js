@@ -70,6 +70,18 @@ const FEE_TOO_LOW_PATTERNS = [
     'tx-fee-too-low',
 ];
 
+// Dust is the one permanent rejection where providers genuinely disagree. Bitcoin Core
+// discounts the witness part of a spend when it computes the threshold, putting a P2WSH
+// output at 330 sats; BlockCypher does not, and wants 573. On 2026-08-06 it rejected two
+// paid orders at 548 sats as "non standard: dust" and, because a permanent rejection
+// stops the fallback dead, blockstream and mempool.space were never asked — both would
+// almost certainly have taken them. Both customers were refunded instead.
+//
+// So this stays permanent, but only once every host has had its say. Unlike a fee
+// rejection it is not retryable afterwards: nothing about trying again later changes the
+// output value, so a request whose providers all agree should refund rather than spin.
+const DUST_PATTERNS = ['dust'];
+
 function classifyError(message) {
     const lower = String(message || '').toLowerCase();
     const alreadyBroadcast = ALREADY_BROADCAST_PATTERNS.some((p) => lower.includes(p));
@@ -77,7 +89,10 @@ function classifyError(message) {
     const inputsSpent = INPUTS_SPENT_PATTERNS.some((p) => lower.includes(p));
     const permanent = !alreadyBroadcast && !feeTooLow
         && (inputsSpent || PERMANENT_ERROR_PATTERNS.some((p) => lower.includes(p)));
-    return { permanent, alreadyBroadcast, feeTooLow, inputsSpent, message: String(message || 'unknown error') };
+    // Only meaningful when the rejection is otherwise permanent — "dust" appearing in an
+    // already-known or fee-too-low message must not defer those classifications.
+    const dust = permanent && !inputsSpent && DUST_PATTERNS.some((p) => lower.includes(p));
+    return { permanent, alreadyBroadcast, feeTooLow, inputsSpent, dust, message: String(message || 'unknown error') };
 }
 
 function extractErrorMessage(error) {
@@ -297,7 +312,12 @@ async function tryProviders(config, methodName, args, { label, onlyProviders, us
             attempts.push({ provider: provider.name, error: 'empty response' });
         } catch (error) {
             const classified = classifyError(extractErrorMessage(error));
-            attempts.push({ provider: provider.name, error: classified.message, permanent: classified.permanent });
+            attempts.push({
+                provider: provider.name,
+                error: classified.message,
+                permanent: classified.permanent,
+                dust: classified.dust,
+            });
 
             if (isProviderUnhealthy(classified.message)) {
                 const until = Date.now() + PROVIDER_COOLDOWN_MS;
@@ -315,16 +335,30 @@ async function tryProviders(config, methodName, args, { label, onlyProviders, us
 
             console.warn(`[ChainProviders] ${label} failed via ${provider.name}: ${classified.message}`);
 
-            // A permanently invalid transaction will be rejected identically everywhere.
-            if (classified.permanent) {
+            // A permanently invalid transaction will be rejected identically everywhere —
+            // except for dust, where the threshold is each provider's own choice. Put
+            // that one to the remaining hosts before accepting it; if they all agree it
+            // is returned as permanent below.
+            if (classified.permanent && !classified.dust) {
                 return {
                     ok: false, permanent: true, inputsSpent: classified.inputsSpent,
                     reason: classified.message, attempts,
                 };
             }
+            if (classified.dust) {
+                console.warn(`[ChainProviders] ${label}: ${provider.name} calls this dust, but dust thresholds differ between providers — asking the rest.`);
+            }
             // A fee rejection is worth trying elsewhere — thresholds differ per provider —
             // so fall through to the next one rather than giving up here.
         }
+    }
+
+    // Every host has now refused. A dust rejection that none of them contradicted is as
+    // permanent as it first looked, and must be reported that way: retrying cannot change
+    // an output value, so the caller should refund rather than keep the request spinning.
+    const dustAttempt = attempts.find((a) => a.dust);
+    if (dustAttempt) {
+        return { ok: false, permanent: true, reason: dustAttempt.error, attempts };
     }
 
     return {

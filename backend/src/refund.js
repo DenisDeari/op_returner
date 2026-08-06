@@ -16,6 +16,7 @@ const bitcoin = require('bitcoinjs-lib');
 const chainProviders = require('./chain_providers');
 const { dbGet, dbRun } = require('./db_utils');
 const notifier = require('./notifier');
+const txSizing = require('./tx_sizing');
 
 // Statuses from which an AUTOMATIC refund may begin.
 //
@@ -36,9 +37,18 @@ const OPERATOR_REFUNDABLE_STATUSES = [
 
 /**
  * Estimates the vbyte size of a P2WPKH sweep: overhead + n inputs + 1 output.
+ *
+ * The refund goes to whatever address the payer sent from, which is frequently not
+ * P2WPKH — the four refunds on 2026-08-06 all went to P2SH addresses. Callers pass that
+ * output's real size; the 31-byte default is a P2WPKH output, kept so the existing
+ * single-argument callers and the unit harness still work.
+ *
+ * The overhead is 10.5, not 10: 4 version + 0.5 segwit marker/flag + 1 input count
+ * + 1 output count + 4 locktime. Rounding it down put the four refunds above at
+ * 1.96 sat/vB against a floor that is supposed to be 2.
  */
-function estimateRefundVBytes(inputCount) {
-    return Math.ceil(10 + 68 * inputCount + 31);
+function estimateRefundVBytes(inputCount, outputVBytes = 31) {
+    return Math.ceil(10.5 + 68 * inputCount + outputVBytes);
 }
 
 async function markRefundFailed(db, requestId, reason) {
@@ -106,9 +116,12 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
     try {
         const network = config.NETWORK;
 
-        // Validate the destination before doing anything irreversible.
+        // Validate the destination before doing anything irreversible. The script is kept
+        // so the fee and the dust floor below are both sized against the address we are
+        // actually paying, rather than an assumed P2WPKH one.
+        let refundScript;
         try {
-            bitcoin.address.toOutputScript(request.refundAddress, network);
+            refundScript = bitcoin.address.toOutputScript(request.refundAddress, network);
         } catch (e) {
             return markRefundFailed(db, requestId, `invalid_refund_address: ${e.message}`);
         }
@@ -135,18 +148,19 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
             request.feeRate || config.DEFAULT_FEE_RATE,
             config.MIN_EFFECTIVE_FEE_RATE || 2
         );
-        const fee = estimateRefundVBytes(confirmed.length) * feeRate;
+        const fee = estimateRefundVBytes(confirmed.length, txSizing.outputVBytes(refundScript)) * feeRate;
         const refundValue = inputTotal - fee;
 
         console.log(`[Refund] ${requestId}: ${confirmed.length} UTXO(s), total ${inputTotal} sats, fee ${fee}, refunding ${refundValue}`);
 
-        if (refundValue < config.DUST_LIMIT_SATS) {
+        const refundDustLimit = txSizing.dustLimitForScript(refundScript, config);
+        if (refundValue < refundDustLimit) {
             // Sending this would create a dust output that relays reject — the exact
             // failure mode this whole change set exists to prevent.
             return markRefundFailed(
                 db,
                 requestId,
-                `refund_below_dust: ${inputTotal} sats minus ${fee} fee leaves ${refundValue}, under dust limit ${config.DUST_LIMIT_SATS}`
+                `refund_below_dust: ${inputTotal} sats minus ${fee} fee leaves ${refundValue}, under the ${refundDustLimit} sat dust limit for ${request.refundAddress}`
             );
         }
 
@@ -162,7 +176,7 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
                 witnessUtxo: { script: scriptPubKey, value: utxo.value },
             });
         }
-        psbt.addOutput({ address: request.refundAddress, value: refundValue });
+        psbt.addOutput({ script: refundScript, value: refundValue });
 
         const signer = {
             publicKey: Buffer.from(keyPair.publicKey),

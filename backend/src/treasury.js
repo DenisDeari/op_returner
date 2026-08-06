@@ -7,6 +7,7 @@ const bitcoin = require('bitcoinjs-lib');
 const { BIP32Factory } = require('bip32');
 const ecc = require('tiny-secp256k1');
 const appConfig = require('./config');
+const txSizing = require('./tx_sizing');
 
 const bip32 = BIP32Factory(ecc);
 
@@ -78,8 +79,21 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
     const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
     const opReturnScriptLength = opReturnOutput.output.length;
 
-    let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10; // input + opreturn + change + overhead
-    if (targetAddress) estimatedVBytes += 31;
+    // Validate and size the recipient output before pricing anything, exactly as the
+    // public path does: both the fee and the dust limit depend on its script type.
+    let targetScript = null;
+    if (targetAddress) {
+        try {
+            targetScript = bitcoin.address.toOutputScript(targetAddress, network);
+        } catch (e) {
+            throw new Error(`Invalid targetAddress for this network: ${e.message}`);
+        }
+    }
+
+    // input + opreturn + change (P2WPKH) + overhead, plus the recipient output measured
+    // from its own script — a flat 31 undercounts a P2WSH one by 12 vBytes.
+    let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10;
+    if (targetScript) estimatedVBytes += txSizing.outputVBytes(targetScript);
     estimatedVBytes = Math.ceil(estimatedVBytes);
 
     const effectiveFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
@@ -87,17 +101,13 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
 
     // A recipient output below the dust limit makes the transaction non-standard and it
     // is rejected at broadcast. Same failure mode as the public path — clamp it here too,
-    // and validate the address before signing rather than discovering it at push time.
+    // against the limit for this address type rather than a single constant.
     let targetValue = 0;
-    if (targetAddress && amountToSend && amountToSend > 0) {
-        targetValue = Math.max(amountToSend, appConfig.DUST_LIMIT_SATS);
+    if (targetScript && amountToSend && amountToSend > 0) {
+        const recipientDustLimit = txSizing.dustLimitForScript(targetScript, appConfig);
+        targetValue = Math.max(amountToSend, recipientDustLimit);
         if (targetValue !== amountToSend) {
-            console.warn(`[Treasury] Raised sub-dust recipient amount ${amountToSend} to dust limit ${appConfig.DUST_LIMIT_SATS}.`);
-        }
-        try {
-            bitcoin.address.toOutputScript(targetAddress, network);
-        } catch (e) {
-            throw new Error(`Invalid targetAddress for this network: ${e.message}`);
+            console.warn(`[Treasury] Raised sub-dust recipient amount ${amountToSend} to ${recipientDustLimit} (the dust limit for ${targetAddress}).`);
         }
     }
 
@@ -128,9 +138,9 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
     psbt.addOutput({ script: opReturnOutput.output, value: 0 });
 
     // Optional recipient output
-    if (targetAddress && targetValue > 0) {
+    if (targetScript && targetValue > 0) {
         console.log(`[Treasury] Adding recipient output: ${targetValue} sats → ${targetAddress}`);
-        psbt.addOutput({ address: targetAddress, value: targetValue });
+        psbt.addOutput({ script: targetScript, value: targetValue });
     }
 
     // Change back to treasury

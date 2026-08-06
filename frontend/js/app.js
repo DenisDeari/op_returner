@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('message-input');
     const targetAddressInput = document.getElementById('target-address-input');
     const amountInput = document.getElementById('amount-input');
+    const amountHint = document.getElementById('amount-hint');
     const feeRateSlider = document.getElementById('fee-rate-slider');
     const feeRateDisplay = document.getElementById('fee-rate-display');
     const costNetworkFee = document.getElementById('cost-network-fee');
@@ -67,6 +68,26 @@ document.addEventListener('DOMContentLoaded', () => {
         byteCounter.style.color = byteLength >= MAX_BYTES ? '#f85149' : '';
     }
 
+    // Size of the output paying `address`, mirroring backend/src/tx_sizing.js. The
+    // preview used to assume every recipient was P2WPKH (31 bytes); a P2WSH output is
+    // 43, so the quote the server came back with was higher than the figure shown here.
+    // Recognised by prefix rather than by decoding — this only drives a preview, and the
+    // server is the authority on what is actually charged.
+    function recipientOutputVBytes(address) {
+        const a = (address || '').trim().toLowerCase();
+        if (a.startsWith('bc1p')) return 43;                 // P2TR
+        if (a.startsWith('bc1q')) return a.length > 50 ? 43 : 31; // P2WSH : P2WPKH
+        if (a.startsWith('3')) return 32;                    // P2SH
+        if (a.startsWith('1')) return 34;                    // P2PKH
+        return 43;                                           // unknown: quote the largest
+    }
+
+    // The dust limit for that output, again mirroring tx_sizing.js: 3 sat/vB against the
+    // output plus an undiscounted 148-vByte spend, floored at the service-wide 546.
+    function recipientDustLimit(address) {
+        return Math.max(546, 3 * (recipientOutputVBytes(address) + 148));
+    }
+
     function updateCostBreakdown() {
         const feeRate = parseInt(feeRateSlider.value);
         const amountToSend = parseInt(amountInput.value) || 0;
@@ -79,7 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const messageBytes = new TextEncoder().encode(message).length;
         vBytes += (11 + messageBytes);
         vBytes += 31;
-        if (recipient) vBytes += 31;
+        if (recipient) vBytes += recipientOutputVBytes(recipient);
         vBytes = Math.ceil(vBytes);
 
         const networkFee = vBytes * feeRate;
@@ -89,6 +110,23 @@ document.addEventListener('DOMContentLoaded', () => {
         costNetworkFee.textContent = `~${networkFee.toLocaleString()} sats`;
         costRecipientAmount.textContent = `${amountToSend.toLocaleString()} sats`;
         costTotal.textContent = `~${total.toLocaleString()} sats`;
+
+        // Say the minimum out loud, before any money moves. The server refuses a
+        // sub-dust amount, but a customer who only finds that out after paying has
+        // learned it the expensive way — which is exactly what happened on 2026-08-06.
+        if (recipient) {
+            const minimum = recipientDustLimit(recipient);
+            amountInput.min = String(minimum);
+            amountHint.textContent = `(0, or at least ${minimum} for this address)`;
+            const tooSmall = amountToSend > 0 && amountToSend < minimum;
+            amountInput.style.borderColor = tooSmall ? '#f85149' : '';
+            amountHint.style.color = tooSmall ? '#f85149' : '';
+        } else {
+            amountInput.min = '0';
+            amountHint.textContent = '(optional)';
+            amountInput.style.borderColor = '';
+            amountHint.style.color = '';
+        }
     }
 
     // --- Orders ---

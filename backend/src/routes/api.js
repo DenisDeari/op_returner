@@ -5,6 +5,7 @@ const bitcoin = require('bitcoinjs-lib');
 const { dbGet, dbRun } = require('../db_utils');
 const { fulfillRequest, deleteRequest } = require('../request_service');
 const notifier = require('../notifier');
+const txSizing = require('../tx_sizing');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -28,12 +29,15 @@ function validateRequestParams({ targetAddress, feeRate, amountToSend }, config)
     }
 
     // --- targetAddress ---
+    // The script is kept, not just checked: the dust limit below depends on which kind
+    // of output this address produces.
+    let targetScript = null;
     if (targetAddress !== undefined && targetAddress !== null && targetAddress !== '') {
         if (typeof targetAddress !== 'string') {
             return 'targetAddress must be a string.';
         }
         try {
-            bitcoin.address.toOutputScript(targetAddress, config.NETWORK);
+            targetScript = bitcoin.address.toOutputScript(targetAddress, config.NETWORK);
         } catch {
             return 'targetAddress is not a valid Bitcoin address for this network.';
         }
@@ -44,11 +48,16 @@ function validateRequestParams({ targetAddress, feeRate, amountToSend }, config)
         if (!Number.isInteger(amountToSend) || amountToSend < 0) {
             return 'amountToSend must be a non-negative integer number of satoshis.';
         }
-        if (amountToSend > 0 && !targetAddress) {
+        if (amountToSend > 0 && !targetScript) {
             return 'amountToSend requires a targetAddress to send it to.';
         }
-        if (amountToSend > 0 && amountToSend < config.DUST_LIMIT_SATS) {
-            return `amountToSend must be 0 or at least ${config.DUST_LIMIT_SATS} sats (the Bitcoin dust limit). Smaller outputs are rejected by the network.`;
+        // The dust limit is a property of the recipient's script type, not one constant.
+        // 546 clears a P2PKH output but not a P2WSH one, and on 2026-08-06 four orders
+        // paying 548 sats to a P2WSH address were quoted, paid, and only then rejected by
+        // the network as dust. Measure against the address the customer actually gave.
+        const minAmountToSend = txSizing.dustLimitForScript(targetScript, config);
+        if (amountToSend > 0 && amountToSend < minAmountToSend) {
+            return `amountToSend must be 0 or at least ${minAmountToSend} sats for this address type. Below that the output is treated as dust and rejected by the network.`;
         }
         if (amountToSend > config.MAX_AMOUNT_TO_SEND_SATS) {
             return `amountToSend exceeds the maximum of ${config.MAX_AMOUNT_TO_SEND_SATS} sats.`;

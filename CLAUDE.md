@@ -13,18 +13,32 @@ Every economic parameter is validated in `routes/api.js` (`validateRequestParams
 transaction, validate it there too — not in the builder, which runs after the customer
 has already paid.
 
-This is not theoretical. On 2026-05-26 a customer paid 2311 sats with
-`amountToSend: 100`. That is below Bitcoin's 546-sat dust limit, so the signed
-transaction was non-standard and the network rejected it — after the money was taken.
-Nothing retried it, nothing refunded it, and nobody noticed for 66 days. It was finally
-delivered on 2026-08-01 in tx `900e71e3…`.
+This is not theoretical. It has now cost customers money twice:
+
+- **2026-05-26** — a customer paid 2311 sats with `amountToSend: 100`, below the 546-sat
+  dust limit. The signed transaction was non-standard and the network rejected it, after
+  the money was taken. Nothing retried it, nothing refunded it, and nobody noticed for
+  66 days. Delivered eventually on 2026-08-01 in tx `900e71e3…`.
+- **2026-08-06** — four orders in ninety minutes, one customer, all paying a **P2WSH**
+  recipient. Every fee estimate in the codebase added a flat 31 vBytes for the recipient
+  output, the size of a *P2WPKH* output; a P2WSH output is 43. Two orders were priced
+  below the minimum relay fee and caught before broadcast; two cleared that and were
+  rejected by BlockCypher as dust, because 548 sats clears our flat 546 limit but not the
+  573 BlockCypher wants for that output type. All four were auto-refunded, correctly and
+  within a second — but the customer paid 1526 sats in refund fees for our arithmetic and
+  got nothing published. See **Sizing and dust** below.
+
+The pattern in both: an economic assumption that was true for the *common* case, applied
+to a case that did not match. Size and price everything from the actual scriptPubKey.
 
 ## Invariants — do not break these
 
 | Invariant | Enforced in |
 |---|---|
-| A recipient output is 0 or ≥ 546 sats (dust limit) | `routes/api.js`, clamped again in `op_return_creator.js` |
+| A recipient output is 0 or ≥ the dust limit **for its own script type** | `routes/api.js`, clamped again in `op_return_creator.js` and `treasury.js` |
+| Output sizes come from the real scriptPubKey, never from an assumed address type | `tx_sizing.js`, used by `queue.js`, `op_return_creator.js`, `refund.js`, `treasury.js` |
 | The effective fee rate is never below `MIN_EFFECTIVE_FEE_RATE` (2 sat/vB) | `config.js`, applied in `op_return_creator.js` and `refund.js` |
+| The built transaction's fee clears the relay minimum for its *actual* signed size | `op_return_creator.js`, checked after `extractTransaction` |
 | Outputs never exceed inputs — checked *before* signing | `op_return_creator.js` |
 | A request that has any sign of payment is never deleted | `cleanup.js`, `routes/api.js` DELETE |
 | A refund never runs twice — conditional `UPDATE` acts as the lock | `refund.js` |
@@ -47,10 +61,11 @@ backend/src/
   routes/admin.js       Bearer-token admin API (fulfil, refund, alerts)
   routes/internal.js    API-key-only, treasury-funded publishing
   queue.js              derives the address and computes the quote
+  tx_sizing.js          output sizes and dust limits, derived from the scriptPubKey
   op_return_creator.js  builds, signs and broadcasts the OP_RETURN transaction
   refund.js             returns funds to the payer when a request terminally fails
   reconcile.js          periodic safety net: unstick, retry, refund, report
-  chain_providers.js    BlockCypher → blockstream.info → mempool.space, with fallback
+  chain_providers.js    BlockCypher → mempool.space → blockstream.info, with fallback
   alerts.js             current problems, computed from the DB (not from logs)
   notifier.js           Telegram messages on every order event
   cleanup.js            deletes only old, provably unfunded requests
@@ -64,15 +79,63 @@ backend/src/
 can no longer go unnoticed — but it also means **a deploy can move real money**, because
 it will finish any order left stranded.
 
+## Sizing and dust
+
+`tx_sizing.js` is the single source of truth. Nothing else may hardcode an output size or
+a dust threshold.
+
+An output is `8 + 1 + script.length` vBytes. The sizes that matter:
+
+| Type | Output | Dust limit we use |
+|---|---|---|
+| P2PKH (`1…`) | 34 | 546 |
+| P2SH (`3…`) | 32 | 546 |
+| P2WPKH (`bc1q…`, 42 chars) | 31 | 546 |
+| P2WSH (`bc1q…`, 62 chars) | 43 | **573** |
+| P2TR (`bc1p…`) | 43 | **573** |
+
+The dust limit is Bitcoin Core's `GetDustThreshold`: 3 sat/vB against the cost of making
+the output plus the cost of spending it. **Core discounts the witness part of that spend;
+BlockCypher does not.** Core would take a 330-sat P2WSH output; BlockCypher wants 573 and
+is first in the broadcast order. We quote against the stricter, undiscounted rule — a
+threshold that clears every provider is the only one that keeps the promise above.
+
+The result is floored at `DUST_LIMIT_SATS` (546), so this is only ever a tightening: the
+undiscounted formula puts P2WPKH at 537 and P2SH at 540, and relaxing a limit that is not
+causing trouble buys nothing.
+
+The change output is always P2WPKH, so the flat 546 is the right limit for it. The
+*recipient* output is whatever the customer gave us.
+
+`frontend/js/app.js` mirrors this arithmetic to preview the cost and to name the minimum
+next to the amount field. It recognises types by address prefix rather than decoding —
+it only drives a preview, and the server remains the authority — but if you change
+`tx_sizing.js`, change it there too or the quote will not match what was displayed.
+
 ## Error classification
 
-`chain_providers.js` sorts broadcast errors into four buckets. Getting this wrong is
+`chain_providers.js` sorts broadcast errors into buckets. Getting this wrong is
 expensive, so check it when touching provider code:
 
 - **already broadcast** (`txn-already-known`) → this is *success*, not failure
 - **fee too low** → retryable, and worth trying the other providers
 - **inputs already spent** → an earlier attempt probably confirmed; never auto-refund
-- **permanent** (dust, malformed) → stop, refund
+- **dust** → permanent, but only after every provider has been asked (see below)
+- **permanent** (malformed, bad-txns-*) → stop at the first host, refund
+
+`tryProviders` stops at the first *permanent* rejection and never consults the remaining
+hosts, so whichever host answers first gets to declare a transaction invalid — and a
+permanent rejection is what triggers an automatic refund.
+
+**Dust is the one exception, because providers genuinely disagree about it.** On
+2026-08-06 BlockCypher called two transactions dust and the fallback stopped dead;
+neither Esplora host was ever asked, and both would almost certainly have accepted them.
+A dust rejection now falls through to the remaining providers and is only reported as
+permanent once none of them has contradicted it. It stays *permanent* rather than
+retryable, because no amount of retrying changes an output value — the request should
+refund, not spin.
+
+Do not extend that exception to anything else without the same evidence of disagreement.
 
 ## The wallet view
 
@@ -100,9 +163,9 @@ Three things here are load-bearing:
   offers that address rather than a fresh one. A "next unused" address would be money
   the free-proof service cannot reach.
 - **The receive branch is scanned past the highest index ever issued**, not just to the
-  gap limit. Abandoned orders leave unused indices, and this wallet already has gaps
-  wider than 20 (the highest index is 51 with only 19 orders), so a plain gap scan walks
-  straight past later addresses that may hold a customer's money.
+  gap limit. Abandoned orders leave unused indices — index 61 was issued and deleted
+  unfunded on 2026-08-06, and this wallet already has gaps wider than 20 — so a plain gap
+  scan walks straight past later addresses that may hold a customer's money.
 - **Scanning must never cost the money paths their API budget.** BlockCypher bills each
   address in a multi-address request separately, so one scan returned twenty `429`s and
   spent the allowance the webhooks depend on. Balance lookups therefore go to the Esplora
@@ -115,11 +178,9 @@ that times out or rate-limits is demoted for 60 seconds so a scan does not pay t
 failure once per address. Admin-panel explorer links point at blockstream.info for the
 same reason.
 
-**That demotion is opt-in, and broadcasts must never use it.** `tryProviders` stops at
-the first *permanent* rejection and never asks the remaining hosts, so the order decides
-which host gets to declare a transaction invalid — and a permanent rejection is what
-triggers an automatic refund. A wallet scan tripping a rate limit must not be able to
-reshuffle that.
+**That demotion is opt-in, and broadcasts must never use it** — see the note in
+`tryProviders` about who gets to declare a transaction invalid. A wallet scan tripping a
+rate limit must not be able to reshuffle that.
 
 A scan is bounded by `WALLET_SCAN_BUDGET_MS`. Past it the scan stops, falls back to the
 last known figures, and reports `incomplete`. This matters: it runs inside an admin HTTP
@@ -137,6 +198,20 @@ There is no test runner in the repo. Verification lives outside it: a unit harne
 (20 API tests against a real server on a throwaway database). Rehearse any schema change
 against a *copy* of the production database before deploying.
 
+`refund.js` exports `estimateRefundVBytes`, which the unit harness asserts against. It
+now takes a second argument (the refund output's size) and uses a 10.5-vByte overhead
+rather than 10, so its numbers moved: a single-input P2WPKH sweep is 110 vBytes, not 109.
+Update those assertions rather than reverting the signature — the old estimate priced the
+four refunds of 2026-08-06 at 1.96 sat/vB against a floor that is meant to be 2.
+
+Two useful patterns when changing anything that builds a transaction:
+
+- Build and sign the real PSBT with a throwaway key and compare `virtualSize()` against
+  the estimate. The estimate must never come out below the real size.
+- Stub `axios.post` before requiring `chain_providers.js` to exercise the fallback order
+  without touching the network. The broadcast order is blockcypher, mempool.space,
+  blockstream.info.
+
 For manual checks, never point a test server at production data. The live database lives
 in the `op-returner_op_returner_data` Docker volume.
 
@@ -144,7 +219,8 @@ in the `op-returner_op_returner_data` Docker volume.
 
 `backend/` and `frontend/` are bind-mounted into the container, so a code change needs a
 `docker restart op_returner` — `docker compose up -d` alone will not reload JS. Only
-compose-file or env changes need `up -d`.
+compose-file or env changes need `up -d`. **Editing a file under `backend/src/` changes
+nothing until that restart**, so a "fixed" money path is still broken until you do it.
 
 Schema migrations are additive `ALTER TABLE ADD COLUMN` statements in `database.js`,
 applied on boot. The HTTP listener and the scheduled jobs both start only after

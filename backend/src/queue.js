@@ -1,6 +1,7 @@
 // backend/src/queue.js
 const { v4: uuidv4 } = require('uuid');
 const bitcoin = require('bitcoinjs-lib');
+const txSizing = require('./tx_sizing');
 
 const requestProcessingQueue = [];
 let isProcessing = false;
@@ -32,11 +33,16 @@ async function processNextInQueue(db, rootNode, config) {
         const pubkeyBuffer = Buffer.from(childNode.publicKey);
         const address = bitcoin.payments.p2wpkh({ pubkey: pubkeyBuffer, network: config.NETWORK }).address;
 
-        // Calculate required amount
+        // Calculate required amount.
+        // The trailing 31 is the change output, which we always derive as P2WPKH. The
+        // recipient output is sized from its own script: a flat 31 assumed P2WPKH there
+        // too, and under-quoting a 43-byte P2WSH output by 12 vBytes is what left four
+        // orders on 2026-08-06 priced below the minimum relay fee once actually built.
+        // targetAddress has already been through validateRequestParams, so it parses.
         const messageBytes = Buffer.byteLength(message, 'utf8');
         let estimatedVBytes = 10.5 + 68 + (11 + messageBytes) + 31;
         if (targetAddress) {
-            estimatedVBytes += 31;
+            estimatedVBytes += txSizing.outputVBytesForAddress(targetAddress, config.NETWORK);
         }
         estimatedVBytes = Math.ceil(estimatedVBytes);
 

@@ -5,6 +5,7 @@ const { BIP32Factory } = require('bip32');
 const ecc = require('tiny-secp256k1');
 const appConfig = require('./config');
 const chainProviders = require('./chain_providers');
+const txSizing = require('./tx_sizing');
 
 const bip32 = BIP32Factory(ecc);
 
@@ -74,16 +75,31 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
         const opReturnScriptLength = opReturnOutput.output.length;
 
+        // Validate the recipient address before anything is priced, rather than
+        // discovering it at broadcast. Both the fee and the dust limit below depend on
+        // the script this produces, so it has to be resolved first.
+        let targetScript = null;
+        if (targetAddress) {
+            try {
+                targetScript = bitcoin.address.toOutputScript(targetAddress, network);
+            } catch (e) {
+                return failure('invalid_target_address', `${targetAddress}: ${e.message}`);
+            }
+        }
+
         // Fee estimation: input (68) + OP_RETURN output (script + 9 overhead)
-        // + change output (31) + tx overhead (10), plus the recipient output if present.
+        // + change output (31, always P2WPKH) + tx overhead (10), plus the recipient
+        // output if present — sized from its own script rather than assumed to be
+        // P2WPKH. A flat 31 undercounts a P2WSH recipient by 12 vBytes, which on
+        // 2026-08-06 priced two paid orders below the relay minimum at feeRate 2.
         // FEE_SAFETY_VBYTES covers the varint growth of the OP_RETURN push prefix and
         // the 1-vbyte rounding in this estimate. Underestimating here puts the whole
         // transaction below the minimum relay fee at feeRate=1, where there is no
         // headroom at all, and the network silently refuses to propagate it.
         const FEE_SAFETY_VBYTES = 4;
         let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10 + FEE_SAFETY_VBYTES;
-        if (targetAddress) {
-            estimatedVBytes += 31;
+        if (targetScript) {
+            estimatedVBytes += txSizing.outputVBytes(targetScript);
         }
         estimatedVBytes = Math.ceil(estimatedVBytes);
 
@@ -96,6 +112,7 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         }
         const fee = estimatedVBytes * feeRateSatPerVByte;
 
+        // The change output is always P2WPKH, so the service-wide floor is its limit.
         const DUST_LIMIT = appConfig.DUST_LIMIT_SATS;
 
         // A recipient output below the dust limit makes the whole transaction
@@ -103,18 +120,17 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
         // sub-dust amountToSend values, but clamp here too: this function is also
         // reachable from the admin "Manually Fulfill" button and from historic rows
         // written before that validation existed.
+        //
+        // The recipient's limit comes from its own script type. A flat 546 passed a
+        // 548-sat P2WSH output straight through to BlockCypher, which wants 573 and
+        // rejected it as dust after the customer had paid.
         let targetValue = 0;
-        if (targetAddress) {
-            const requested = amountToSend && amountToSend > 0 ? amountToSend : DUST_LIMIT;
-            targetValue = Math.max(requested, DUST_LIMIT);
+        if (targetScript) {
+            const recipientDustLimit = txSizing.dustLimitForScript(targetScript, appConfig);
+            const requested = amountToSend && amountToSend > 0 ? amountToSend : recipientDustLimit;
+            targetValue = Math.max(requested, recipientDustLimit);
             if (targetValue !== requested) {
-                console.warn(`[OpReturnCreator] Raised sub-dust recipient amount ${requested} to dust limit ${DUST_LIMIT} for request ${id}.`);
-            }
-            // Validate the address before signing rather than discovering it at broadcast.
-            try {
-                bitcoin.address.toOutputScript(targetAddress, network);
-            } catch (e) {
-                return failure('invalid_target_address', `${targetAddress}: ${e.message}`);
+                console.warn(`[OpReturnCreator] Raised sub-dust recipient amount ${requested} to ${recipientDustLimit} (the dust limit for ${targetAddress}) for request ${id}.`);
             }
         }
 
@@ -153,9 +169,9 @@ async function createOpReturnTransaction(request, rootNode, network, config) {
 
         psbt.addOutput({ script: opReturnOutput.output, value: 0 });
 
-        if (targetAddress) {
+        if (targetScript) {
             console.log(`[OpReturnCreator] Adding target output: ${targetValue} sats to ${targetAddress}`);
-            psbt.addOutput({ address: targetAddress, value: targetValue });
+            psbt.addOutput({ script: targetScript, value: targetValue });
         }
 
         if (changeValue >= DUST_LIMIT) {
