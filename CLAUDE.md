@@ -92,7 +92,7 @@ An output is `8 + 1 + script.length` vBytes. The sizes that matter:
 | P2SH (`3…`) | 32 | 546 |
 | P2WPKH (`bc1q…`, 42 chars) | 31 | 546 |
 | P2WSH (`bc1q…`, 62 chars) | 43 | **573** |
-| P2TR (`bc1p…`) | 43 | **573** |
+| P2TR (`bc1p…`) | 43 | **573**, but see below |
 
 The dust limit is Bitcoin Core's `GetDustThreshold`: 3 sat/vB against the cost of making
 the output plus the cost of spending it. **Core discounts the witness part of that spend;
@@ -106,6 +106,16 @@ causing trouble buys nothing.
 
 The change output is always P2WPKH, so the flat 546 is the right limit for it. The
 *recipient* output is whatever the customer gave us.
+
+**Taproot recipients do not work today, and the P2TR row above is theory.** bitcoinjs
+routes a bech32m v1 address through `payments.p2tr()`, which needs an ECC backend
+registered via `initEccLib`. The only call is in `wallet_scan.js`, deliberately lazy and
+scoped to its own address derivation, so the payment path has none: `toOutputScript`
+throws and intake reports a perfectly valid `bc1p…` address as *not a valid Bitcoin
+address for this network*. It fails closed — no money is taken — but a customer paying
+to taproot is simply turned away, and a taproot payer cannot be auto-refunded either.
+Fixing it is a one-line global `initEccLib`; the unit harness asserts the current
+behaviour so the day it changes is a deliberate one.
 
 `frontend/js/app.js` mirrors this arithmetic to preview the cost and to name the minimum
 next to the amount field. It recognises types by address prefix rather than decoding —
@@ -193,16 +203,33 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 
 ## Testing
 
-There is no test runner in the repo. Verification lives outside it: a unit harness
-(58 assertions, stubs the chain layer so nothing is broadcast) and an end-to-end suite
-(20 API tests against a real server on a throwaway database). Rehearse any schema change
-against a *copy* of the production database before deploying.
+There is no test runner in the repo. Verification lives outside it, in
+`/home/admin/op_returner_tests/`:
 
-`refund.js` exports `estimateRefundVBytes`, which the unit harness asserts against. It
-now takes a second argument (the refund output's size) and uses a 10.5-vByte overhead
-rather than 10, so its numbers moved: a single-input P2WPKH sweep is 110 vBytes, not 109.
-Update those assertions rather than reverting the signature — the old estimate priced the
-four refunds of 2026-08-06 at 1.96 sat/vB against a floor that is meant to be 2.
+- `unit_harness.js` — 85 assertions. Stubs the chain layer, so nothing is broadcast and
+  no network call is made. Run it with `node unit_harness.js`; exit code 0 means clean.
+- `provider_fallback.js` — 12 assertions over the broadcast fallback, with `axios.post`
+  stubbed before `chain_providers.js` is required.
+
+Both point at `/home/admin/webseiten/op_returner/backend/src` by absolute path, so they
+test the deployed tree directly. They previously lived in a session scratchpad under
+`/tmp`, one reboot away from being lost.
+
+An end-to-end suite also exists (20 API tests against a real server on a throwaway
+database). Rehearse any schema change against a *copy* of the production database before
+deploying.
+
+**Prove a guard actually fires before trusting it.** Copy `backend/src` to a temp dir,
+symlink `node_modules` next to it, reintroduce the bug there, point a copy of the harness
+at it by editing its `SRC` constant, and check the assertions fail. Reintroducing the
+flat 31-vByte recipient output this way reproduces the 2026-08-06 production error
+verbatim — `computed fee 458 sats is below the 476 sat minimum for a 238 vByte
+transaction`. Never do this against `backend/src` itself.
+
+`refund.js` exports `estimateRefundVBytes`, which the harness asserts against. It takes a
+second argument (the refund output's size) and uses a 10.5-vByte overhead rather than 10,
+so a single-input P2WPKH sweep is 110 vBytes, not 109. The old numbers priced the four
+refunds of 2026-08-06 at 1.96 sat/vB against a floor that is meant to be 2.
 
 Two useful patterns when changing anything that builds a transaction:
 
