@@ -63,6 +63,11 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // indistinguishable `undefined` — so we can never know a hook is really gone, and
     // discarding the id would throw away the only handle to a possibly-live one.
     'ADD COLUMN webhooksRetiredAt TEXT',
+    // Long-horizon redaction. The row survives — only its content is dropped, so a late
+    // payment stays attributable to an address. messageBytes preserves the one thing
+    // about the message worth studying after the text itself is gone.
+    'ADD COLUMN redactedAt TEXT',
+    'ADD COLUMN messageBytes INTEGER',
 ];
 
 // Durable, append-only history of what happened to each request.

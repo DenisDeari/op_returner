@@ -44,7 +44,13 @@ function createAdminRouter(db, rootNode, config) {
                 db,
                 includeArchived
                     ? 'SELECT * FROM requests ORDER BY createdAt DESC'
-                    : 'SELECT * FROM requests WHERE archivedAt IS NULL ORDER BY createdAt DESC'
+                    // An archived row that holds money is never hidden, whatever the
+                    // filter says — that is the one the operator has to act on.
+                    : `SELECT * FROM requests
+                       WHERE archivedAt IS NULL
+                          OR paymentTxId IS NOT NULL
+                          OR paymentReceivedSatoshis IS NOT NULL
+                       ORDER BY createdAt DESC`
             );
             res.status(200).json(rows);
         } catch (error) {

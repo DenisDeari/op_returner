@@ -110,7 +110,7 @@ async function recordUnexpectedPayment(db, row, stats) {
              paymentTxId = COALESCE(paymentTxId, ?),
              refundAddress = COALESCE(refundAddress, ?),
              failureReason = ?
-         WHERE id = ? AND failureReason IS NULL AND archivedAt IS NULL`,
+         WHERE id = ? AND failureReason IS NULL`,
         [
             value, paymentTxId, refundAddress,
             `unexpected payment found at archive time: ${value} sats at ${row.address}`,
@@ -239,16 +239,119 @@ async function archiveAbandonedRequests(db) {
 }
 
 /**
+ * Drops the content of archived orders that were never paid, long after the fact.
+ *
+ * The ROW IS NOT DELETED. It keeps the index, the address and the derivation path, so a
+ * payment arriving years later is still attributable to a specific order, the wallet view
+ * can still explain money at a derived address, and the UNIQUE constraints still stop an
+ * index being re-issued. Only the parts that are a stranger's words go: the message, any
+ * feedback they wrote, and the address they asked us to pay.
+ *
+ * Everything a behavioural question needs survives — when it was made, what fee rate,
+ * what amount, how it died, and (via messageBytes) how long the message was.
+ *
+ * The event log is redacted alongside it. `detail` on a feedback event holds the text
+ * verbatim, and on a created event it holds the recipient address; redacting `requests`
+ * alone would leave both behind. Kind and timestamp are kept, so the shape of what
+ * happened survives without the content.
+ *
+ * This is the one irreversible operation in the service, so it is guarded like an
+ * archive and then some: only archived rows, only ones with no sign of money, only past
+ * REDACT_ARCHIVED_AFTER_MS, and only after a fresh chain check. Money can arrive at an
+ * abandoned address at any time, and if it has, the message is the only record of what
+ * that money was for — so a funded address is reported and left completely alone.
+ */
+async function redactOldArchivedRequests(db) {
+    if (!config.REDACTION_ENABLED) return { redacted: 0, funded: 0, kept: 0 };
+
+    const cutoff = new Date(Date.now() - config.REDACT_ARCHIVED_AFTER_MS).toISOString();
+
+    const candidates = await dbAll(
+        db,
+        `SELECT id, address, message, createdAt FROM requests
+         WHERE archivedAt IS NOT NULL
+           AND archivedAt < ?
+           AND redactedAt IS NULL
+           AND ${UNTOUCHED_BY_MONEY}
+         ORDER BY archivedAt ASC`,
+        [cutoff]
+    );
+
+    if (candidates.length === 0) return { redacted: 0, funded: 0, kept: 0 };
+
+    console.log(`[Cleanup] ${candidates.length} archived request(s) past the ${config.REDACT_ARCHIVED_AFTER_MS / 86400000}-day content horizon.`);
+
+    let redacted = 0, funded = 0, kept = 0, checked = 0;
+
+    for (const row of candidates) {
+        if (checked >= MAX_CHAIN_CHECKS_PER_PASS) { kept++; continue; }
+        checked++;
+
+        const stats = await chainProviders.getAddressStats(row.address, config, {
+            onlyProviders: chainProviders.ESPLORA_ONLY,
+            useCooldown: true,
+        });
+        if (!stats.ok) {
+            kept++;
+            console.log(`[Cleanup]   ${row.id} — not redacted, chain lookup failed: ${stats.reason}`);
+            continue;
+        }
+        if (stats.totalReceived > 0) {
+            // Money turned up at an address we had written off. The message is now the
+            // only record of what it was for, so nothing here touches it.
+            if (await recordUnexpectedPayment(db, row, stats)) funded++;
+            else kept++;
+            continue;
+        }
+
+        const bytes = row.message ? Buffer.byteLength(row.message, 'utf8') : null;
+        const claim = await dbRun(
+            db,
+            // message is NOT NULL in the original schema, so it is emptied rather than
+            // nulled — redactedAt is the marker, not the message value. userFeedback and
+            // targetAddress arrived via ALTER TABLE and are nullable.
+            `UPDATE requests
+             SET message = '', userFeedback = NULL, targetAddress = NULL,
+                 messageBytes = COALESCE(messageBytes, ?),
+                 redactedAt = ?
+             WHERE id = ?
+               AND archivedAt IS NOT NULL
+               AND redactedAt IS NULL
+               AND ${UNTOUCHED_BY_MONEY}`,
+            [bytes, new Date().toISOString(), row.id]
+        );
+        if (claim.changes !== 1) { kept++; continue; }
+
+        await dbRun(db, 'UPDATE request_events SET detail = NULL WHERE requestId = ?', [row.id]);
+        events.record(db, row.id, events.KINDS.REDACTED, `content dropped after ${config.REDACT_ARCHIVED_AFTER_MS / 86400000} days; ${bytes ?? '?'} message bytes`);
+        redacted++;
+        console.log(`[Cleanup] Redacted content of archived request ${row.id} (row and address kept).`);
+    }
+
+    if (redacted > 0 || funded > 0) {
+        console.log(`[Cleanup] Redaction complete. Redacted: ${redacted}, funded-and-spared: ${funded}, kept: ${kept}.`);
+    }
+    return { redacted, funded, kept };
+}
+
+/**
  * The scheduled retention job. Retires webhooks first so an address stops costing quota
- * as early as possible, then decides which rows are finished with.
+ * as early as possible, then decides which rows are finished with, then — much later —
+ * drops the content of the ones nobody ever paid.
  */
 async function cleanupOldRequests(db) {
     try {
         await retireStaleWebhooks(db);
         await archiveAbandonedRequests(db);
+        await redactOldArchivedRequests(db);
     } catch (error) {
         console.error('[Cleanup] Error during cleanup:', error.message);
     }
 }
 
-module.exports = { cleanupOldRequests, retireStaleWebhooks, archiveAbandonedRequests };
+module.exports = {
+    cleanupOldRequests,
+    retireStaleWebhooks,
+    archiveAbandonedRequests,
+    redactOldArchivedRequests,
+};

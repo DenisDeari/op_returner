@@ -62,6 +62,22 @@ const MAX_AMOUNT_TO_SEND_SATS = 100_000_000; // 1 BTC sanity ceiling
 const WEBHOOK_RETIRE_AFTER_MS = 62 * 60 * 60 * 1000;   // 62 hours
 const REQUEST_ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// Long-horizon redaction of archived orders that were never paid.
+//
+// The ROW is never removed — it carries the index-to-address mapping that keeps a late
+// payment attributable, and the UNIQUE constraints that stop an index being re-issued.
+// Only the content is dropped: the customer's message, anything they wrote to us, and
+// the address they wanted paid. Everything a behavioural question needs survives —
+// when it was made, what fee rate, what amount, how big the message was, how it died.
+//
+// Six months, because the point is to not hold a stranger's words forever, not to save
+// space: 67 orders in nine months is nothing. A redaction is irreversible, so it is
+// guarded exactly like an archive, including a fresh chain check — money can arrive at
+// an address long after it was abandoned, and the message is the only record of what
+// that money was for.
+const REDACT_ARCHIVED_AFTER_MS = 180 * 24 * 60 * 60 * 1000; // 180 days
+const REDACTION_ENABLED = process.env.REDACTION_ENABLED !== 'false'; // opt-out, on by default
+
 // Failure handling
 const MAX_FULFILL_ATTEMPTS = 3;
 const RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -144,6 +160,8 @@ module.exports = {
     // Request retention
     WEBHOOK_RETIRE_AFTER_MS,
     REQUEST_ARCHIVE_AFTER_MS,
+    REDACT_ARCHIVED_AFTER_MS,
+    REDACTION_ENABLED,
     // Failure handling
     MAX_FULFILL_ATTEMPTS,
     RECONCILE_INTERVAL_MS,

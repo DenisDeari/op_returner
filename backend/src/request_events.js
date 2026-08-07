@@ -38,6 +38,7 @@ const KINDS = Object.freeze({
     CANCELLED: 'cancelled',
     ARCHIVED: 'archived',
     UNEXPECTED_PAYMENT: 'unexpected_payment',
+    REDACTED: 'redacted',
 });
 
 const MAX_DETAIL_CHARS = 2000;
