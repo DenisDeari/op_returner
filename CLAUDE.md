@@ -47,6 +47,11 @@ to a case that did not match. Size and price everything from the actual scriptPu
 | Nothing user-supplied reaches `innerHTML` unescaped | `frontend/admin/admin.js`, `frontend/js/app.js` |
 | The wallet view never spends BlockCypher's quota | `chain_providers.js` `getAddressSummaries` |
 | A balance that could not be read is never shown as 0 | `wallet_scan.js`, `incomplete` / `stale` flags |
+| Nothing in a webhook body is acted on until the chain confirms it | `routes/webhook.js` `verifyPaymentOnChain` |
+| A request row is archived, never deleted | `cleanup.js`, `request_service.js` |
+| An archived row is never a payment target, never fulfilled, never auto-refunded | `archivedAt IS NULL` in `routes/webhook.js`, `routes/api.js`, `cleanup.js` |
+| An address that holds money is never archived — it is reported to a human | `cleanup.js` `recordUnexpectedPayment` |
+| Every DDL statement lives in one place, shared with the tests | `schema.js` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -57,9 +62,10 @@ out of the service fee, never out of what the customer is charged.
 ```
 backend/src/
   routes/api.js         intake validation, status polling, customer feedback endpoint
-  routes/webhook.js     BlockCypher payment callbacks — UNAUTHENTICATED, treat body as hostile
+  routes/webhook.js     BlockCypher payment callbacks — UNAUTHENTICATED, every value re-read from the chain
   routes/admin.js       Bearer-token admin API (fulfil, refund, alerts)
   routes/internal.js    API-key-only, treasury-funded publishing
+  schema.js             every CREATE TABLE and column migration, side-effect free
   queue.js              derives the address and computes the quote
   tx_sizing.js          output sizes and dust limits, derived from the scriptPubKey
   op_return_creator.js  builds, signs and broadcasts the OP_RETURN transaction
@@ -68,7 +74,8 @@ backend/src/
   chain_providers.js    BlockCypher → mempool.space → blockstream.info, with fallback
   alerts.js             current problems, computed from the DB (not from logs)
   notifier.js           Telegram messages on every order event
-  cleanup.js            deletes only old, provably unfunded requests
+  cleanup.js            retires webhooks at 62h, archives unfunded requests at 7 days
+  request_events.js     durable per-request history — append-only, fire-and-forget
   wallet_scan.js        read-only balance view over every branch of the seed
   qr.js                 BIP21 payment URIs rendered as SVG QR codes
   routes/wallet.js      admin-only, strictly read-only wallet API
@@ -147,6 +154,64 @@ refund, not spin.
 
 Do not extend that exception to anything else without the same evidence of disagreement.
 
+## Retention: archive, never delete
+
+A request row is the only record of what a customer asked for and which address they were
+quoted. Deleting it makes a late payment unattributable — the wallet view sees money at a
+derived address with nothing to explain it. Nothing is ever hard-deleted.
+
+`archivedAt` marks a row dead. **`status` is deliberately left alone**, so it still says
+how the order died; that is the part worth studying later. `archivedReason` is either
+`cancelled_by_customer` or `abandoned_unpaid`.
+
+Two deadlines, on purpose:
+
+| At | What happens |
+|---|---|
+| 62h (`WEBHOOK_RETIRE_AFTER_MS`) | webhooks retired — two open hooks per abandoned order spend a quota the money paths need |
+| 7 days (`REQUEST_ARCHIVE_AFTER_MS`) | one final chain check, then archive |
+
+**An address that turns out to hold money is not archived.** The amount, the txid and a
+resolved refund address are written and a Telegram alert fires once; nothing automatic
+touches it after that. Those writes are not cosmetic: the admin panel only renders its
+Refund button for a row carrying a payment, and `refund.js` refuses outright when
+`refundAddress` is null — without them the manual escape hatch would not exist.
+
+Every write claims the row first and acts second, and carries all four money guards
+(`paymentTxId`, `paymentReceivedSatoshis`, `opReturnTxId`, `refundTxId` all NULL). The old
+code tore webhooks down *before* the guarded write, so a payment landing mid-pass left a
+funded row whose hooks were already gone.
+
+`webhooksRetiredAt` is a separate column rather than nulling `blockcypherHookId`:
+`deleteWebhook` returns `undefined` on every path — missing token, 204, 404, network
+error — so a deletion can never be confirmed, and discarding the id would throw away the
+only handle to a possibly-live hook.
+
+Because `status` survives archiving, **anything that keys on status alone must also check
+`archivedAt IS NULL`** — the webhook matcher, the status endpoint, the cleanup candidate
+query. Two queries must NOT be filtered: `alerts.js` and `reconcile.js` `reportStrandedFunds`
+key on `paymentTxId` with no status predicate, and that is exactly what makes the 66-day
+silent failure impossible to repeat.
+
+Intake is rate limited (10/hour, 40/day per client address, API key exempt). With hard
+deletion gone, that limiter is the only bound on the table.
+
+## The event log
+
+`request_events` is the durable history: `requestId, at, kind, detail`. `event_log.js` is a
+different thing — an in-memory ring buffer of warnings, wiped on restart, not keyed by
+request.
+
+Two rules:
+
+- **Writes never break or delay the caller.** Fire-and-forget, errors swallowed. This is
+  called from the middle of building and broadcasting transactions.
+- **Lifecycle transitions only.** The database is `journal_mode=delete` on the same
+  serialized handle the money paths use, so every insert is its own fsync. Never record
+  per poll, per scan, or inside a loop.
+
+Read it with `GET /api/admin/requests/:id/events`.
+
 ## The wallet view
 
 `wallet_scan.js` derives addresses and asks a block explorer what it sees. It never
@@ -204,12 +269,16 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/`:
+`/home/admin/op_returner_tests/` — **183 assertions across five files**, all offline:
 
-- `unit_harness.js` — 85 assertions. Stubs the chain layer, so nothing is broadcast and
-  no network call is made. Run it with `node unit_harness.js`; exit code 0 means clean.
-- `provider_fallback.js` — 12 assertions over the broadcast fallback, with `axios.post`
-  stubbed before `chain_providers.js` is required.
+- `unit_harness.js` — 85. Intake validation, builder guards, sizing, dust, classification.
+- `provider_fallback.js` — 12. Broadcast fallback, with `axios.post` stubbed.
+- `webhook_forgery.js` — 28. Proves a forged notification cannot drive a row.
+- `intake_rate_limit.js` — 13. Throttling, per-client buckets, API-key exemption.
+- `archive_lifecycle.js` — 45. Archive-not-delete, funded-and-kept, retirement, events.
+
+Throwaway databases are built from `schema.js`, so a test schema can no longer drift from
+production — that drift already broke a harness once, when `archivedAt` was added.
 
 Both point at `/home/admin/webseiten/op_returner/backend/src` by absolute path, so they
 test the deployed tree directly. They previously lived in a session scratchpad under
