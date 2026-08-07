@@ -174,6 +174,12 @@ Two deadlines, on purpose:
 | 7 days (`REQUEST_ARCHIVE_AFTER_MS`) | one final chain check, then archive |
 | 180 days (`REDACT_ARCHIVED_AFTER_MS`) | another chain check, then the content is dropped |
 
+Settled orders — published or refunded — are swept at any age by the same retirement pass.
+`deleteWebhook` is unawaited and returns `undefined` on every path, so whether the hooks
+fired at fulfilment and refund time actually went away was never knowable; eight rows in
+production were still holding hook ids months later. Deleting twice is harmless
+(BlockCypher answers 404, and `deleteWebhook` swallows it), so the sweep is unconditional.
+
 **An address that turns out to hold money is not archived.** The amount, the txid and a
 resolved refund address are written and a Telegram alert fires once; nothing automatic
 touches it after that. Those writes are not cosmetic: the admin panel only renders its
@@ -292,14 +298,14 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **206 assertions across five files**, all offline:
+`/home/admin/op_returner_tests/` — **212 assertions across five files**, all offline:
 
 - `unit_harness.js` — 85. Intake validation, builder guards, sizing, dust, classification.
 - `provider_fallback.js` — 12. Broadcast fallback, with `axios.post` stubbed.
 - `webhook_forgery.js` — 28. Proves a forged notification cannot drive a row.
 - `intake_rate_limit.js` — 13. Throttling, per-client buckets, API-key exemption.
-- `archive_lifecycle.js` — 68. Archive-not-delete, funded-and-kept, retirement, events,
-  redaction and its guards.
+- `archive_lifecycle.js` — 74. Archive-not-delete, funded-and-kept, retirement (pending
+  and settled), events, redaction and its guards.
 
 Throwaway databases are built from `schema.js`, so a test schema can no longer drift from
 production — that drift already broke a harness once, when `archivedAt` was added.
@@ -311,6 +317,11 @@ test the deployed tree directly. They previously lived in a session scratchpad u
 An end-to-end suite also exists (20 API tests against a real server on a throwaway
 database). Rehearse any schema change against a *copy* of the production database before
 deploying.
+
+**Known gaps, deliberately open.** Taproot recipients do not work (see *Sizing and dust*)
+— a one-line global `initEccLib` fixes it, and the harness asserts the current behaviour
+so the day it changes is a deliberate one. Nothing else from the 2026-08-07 retention
+audit is outstanding.
 
 **Prove a guard actually fires before trusting it.** Copy `backend/src` to a temp dir,
 symlink `node_modules` next to it, reintroduce the bug there, point a copy of the harness
