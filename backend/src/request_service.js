@@ -11,6 +11,7 @@ const webhookManager = require('./webhook_manager');
 const { attemptRefund } = require('./refund');
 const { dbGet, dbRun } = require('./db_utils');
 const notifier = require('./notifier');
+const events = require('./request_events');
 
 /**
  * Attempts to fulfill a request by creating and broadcasting an OP_RETURN transaction.
@@ -50,6 +51,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
         }
 
         const attemptNumber = (request.attemptCount || 0) + 1;
+        events.record(db, requestId, events.KINDS.FULFIL_ATTEMPT, `attempt ${attemptNumber}`);
         let result;
         try {
             result = await opReturnCreator.createOpReturnTransaction(request, rootNode, config.NETWORK, config);
@@ -70,6 +72,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
                 [result.opReturnTxId, result.signedTxHex, result.changePath || null, new Date().toISOString(), requestId]
             );
             console.log(`[RequestService] Request ${requestId} status updated to op_return_broadcasted`);
+            events.record(db, requestId, events.KINDS.PUBLISHED, `attempt ${attemptNumber}, tx ${result.opReturnTxId}`);
 
             if (request.blockcypherHookId) {
                 webhookManager.deleteWebhook(request.blockcypherHookId, config);
@@ -104,6 +107,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
         console.error(
             `[RequestService] Request ${requestId} failed (attempt ${attemptNumber}, permanent=${!!result.permanent}, terminal=${terminal}): ${failureReason}`
         );
+        events.record(db, requestId, events.KINDS.FULFIL_FAILED, `attempt ${attemptNumber}, terminal=${terminal}: ${failureReason}`);
 
         if (request.blockcypherHookId && terminal) {
             webhookManager.deleteWebhook(request.blockcypherHookId, config);
@@ -209,6 +213,7 @@ async function deleteRequest(requestId, db, config) {
             await dbRun(db, 'UPDATE requests SET webhooksRetiredAt = ? WHERE id = ? AND webhooksRetiredAt IS NULL',
                 [new Date().toISOString(), requestId]);
         }
+        events.record(db, requestId, events.KINDS.CANCELLED, 'cancelled by customer, archived');
         console.log(`[RequestService] Request ${requestId} cancelled by customer and archived`);
 
         return { success: true };

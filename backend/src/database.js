@@ -2,6 +2,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
+const schema = require('./schema');
 
 const DATA_DIR = path.join(__dirname, '../data');
 const DB_FILE = path.join(DATA_DIR, 'requests.db');
@@ -28,11 +29,12 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
  *   otherwise race the CREATE TABLE and fail with "no such table".
  */
 function initializeDatabase(onReady) {
-    // Three independent async chains run below (requests, wallet_state, system_settings).
+    // Four independent async chains run below (requests, wallet_state, system_settings,
+    // request_events).
     // onReady fires only once ALL of them have finished. The server must not begin
     // accepting traffic before that: an early request would otherwise reach a database
     // with no wallet_state row and fail with "Wallet state not initialized".
-    const pendingSteps = new Set(['requests', 'wallet_state', 'system_settings']);
+    const pendingSteps = new Set(['requests', 'wallet_state', 'system_settings', 'request_events']);
     function markStepDone(step) {
         pendingSteps.delete(step);
         if (pendingSteps.size === 0) {
@@ -41,25 +43,8 @@ function initializeDatabase(onReady) {
         }
     }
 
-    const createTableSql = `
-        CREATE TABLE IF NOT EXISTS requests (
-            id TEXT PRIMARY KEY,
-            message TEXT NOT NULL,
-            address TEXT UNIQUE NOT NULL,
-            derivationPath TEXT NOT NULL,
-            "index" INTEGER UNIQUE NOT NULL,
-            requiredAmountSatoshis INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending_payment',
-            createdAt TEXT NOT NULL,
-            blockcypherHookId TEXT,
-            paymentTxId TEXT,
-            paymentReceivedSatoshis INTEGER,
-            paymentConfirmationCount INTEGER,
-            paymentConfirmedAt TEXT,
-            opReturnTxId TEXT,
-            opReturnTxHex TEXT
-        );
-    `;
+    const createTableSql = schema.CREATE_REQUESTS_SQL;
+
     db.run(createTableSql, (err) => {
         if (err) {
             console.error("FATAL ERROR: Error creating requests table:", err.message);
@@ -70,41 +55,7 @@ function initializeDatabase(onReady) {
         // Additive, idempotent column migrations.
         // ALTER TABLE ADD COLUMN never rewrites or drops existing rows, and the
         // "duplicate column name" error is the expected no-op on an already-migrated DB.
-        const columnMigrations = [
-            'ADD COLUMN targetAddress TEXT',
-            'ADD COLUMN feeRate INTEGER DEFAULT 2',
-            'ADD COLUMN amountToSend INTEGER DEFAULT 0',
-            // Failure diagnostics: why a fulfilment failed and how often it has been retried.
-            // The BIP32 path of the change output, recorded so operator revenue is
-            // recoverable from the seed directly rather than relying on a wallet's
-            // gap-limit scan finding a sparsely-used change index.
-            'ADD COLUMN changePath TEXT',
-            'ADD COLUMN failureReason TEXT',
-            'ADD COLUMN attemptCount INTEGER DEFAULT 0',
-            'ADD COLUMN lastAttemptAt TEXT',
-            // Refunds: refundAddress is the payer's address, captured from the payment tx.
-            'ADD COLUMN refundAddress TEXT',
-            'ADD COLUMN refundTxId TEXT',
-            'ADD COLUMN refundedAt TEXT',
-            // Kept separate from failureReason so a refund error never overwrites the
-            // fulfilment diagnostic that the retry logic classifies against.
-            'ADD COLUMN refundFailureReason TEXT',
-            // Customer message left on a failed request, shown in the admin panel.
-            'ADD COLUMN userFeedback TEXT',
-            'ADD COLUMN userFeedbackAt TEXT',
-            // Retention. Rows are archived rather than deleted, so the record of what a
-            // customer asked for — and which address it was quoted at — survives forever.
-            // `status` is deliberately NOT overwritten: archivedAt marks the row dead,
-            // status still says how it died, which is the part worth studying later.
-            'ADD COLUMN archivedAt TEXT',
-            'ADD COLUMN archivedReason TEXT',
-            // Kept separate from blockcypherHookId rather than nulling it. deleteWebhook
-            // has no return value on any path — missing token, 204, 404 and a network
-            // error are all indistinguishable `undefined` — so we can never know a hook
-            // is really gone, and discarding the id would throw away the only handle to a
-            // possibly-live one.
-            'ADD COLUMN webhooksRetiredAt TEXT',
-        ];
+        const columnMigrations = schema.REQUEST_COLUMN_MIGRATIONS;
 
         let remaining = columnMigrations.length;
         for (const migration of columnMigrations) {
@@ -121,12 +72,7 @@ function initializeDatabase(onReady) {
     });
 
     // Create wallet_state table for persistent index tracking
-    const createWalletStateTableSql = `
-        CREATE TABLE IF NOT EXISTS wallet_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            last_derived_index INTEGER NOT NULL DEFAULT 0
-        );
-    `;
+    const createWalletStateTableSql = schema.CREATE_WALLET_STATE_SQL;
     db.run(createWalletStateTableSql, (err) => {
         if (err) {
             console.error("FATAL ERROR: Error creating wallet_state table:", err.message);
@@ -151,12 +97,7 @@ function initializeDatabase(onReady) {
     });
 
     // Create system_settings table
-    const createSystemSettingsTableSql = `
-        CREATE TABLE IF NOT EXISTS system_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-    `;
+    const createSystemSettingsTableSql = schema.CREATE_SYSTEM_SETTINGS_SQL;
     db.run(createSystemSettingsTableSql, (err) => {
         if (err) {
             console.error("Error creating system_settings table:", err.message);
@@ -165,6 +106,25 @@ function initializeDatabase(onReady) {
         console.log("Table 'system_settings' created or already exists.");
         db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')", () => {
             markStepDone('system_settings');
+        });
+    });
+
+    // Durable per-request history. Follows the wallet_state pattern rather than the
+    // requests one: markStepDone is called on EVERY path, including failure, and nothing
+    // here calls process.exit. onReady is the sole caller of app.listen and of the
+    // scheduled jobs, so a path through this chain that forgot to mark itself done would
+    // leave the HTTP listener unbound and reconcile never started — a total outage behind
+    // a process that looks perfectly healthy. An event log is a convenience; it must
+    // never be able to take the service down.
+    db.run(schema.CREATE_REQUEST_EVENTS_SQL, (err) => {
+        if (err) {
+            console.error("Error creating request_events table:", err.message);
+            return markStepDone('request_events');
+        }
+        console.log("Table 'request_events' created or already exists.");
+        db.run(schema.CREATE_REQUEST_EVENTS_INDEX_SQL, (indexErr) => {
+            if (indexErr) console.error("Error creating request_events index:", indexErr.message);
+            markStepDone('request_events');
         });
     });
 }

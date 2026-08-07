@@ -17,6 +17,7 @@ const chainProviders = require('./chain_providers');
 const { dbGet, dbRun } = require('./db_utils');
 const notifier = require('./notifier');
 const txSizing = require('./tx_sizing');
+const events = require('./request_events');
 
 // Statuses from which an AUTOMATIC refund may begin.
 //
@@ -59,6 +60,7 @@ async function markRefundFailed(db, requestId, reason) {
         "UPDATE requests SET status = 'refund_failed', refundFailureReason = ? WHERE id = ? AND refundTxId IS NULL",
         [reason, requestId]
     );
+    events.record(db, requestId, events.KINDS.REFUND_FAILED, reason);
     console.error(`[Refund] Request ${requestId} refund failed: ${reason}`);
     return { ok: false, reason };
 }
@@ -112,6 +114,7 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
         return { ok: false, reason: 'refund_lock_not_acquired' };
     }
     console.log(`[Refund] Lock acquired for ${requestId}. Refunding to ${request.refundAddress}`);
+    events.record(db, requestId, events.KINDS.REFUND_STARTED, `to ${request.refundAddress}`);
 
     try {
         const network = config.NETWORK;
@@ -218,6 +221,7 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
             "UPDATE requests SET status = 'refunded', refundTxId = ?, refundedAt = ? WHERE id = ?",
             [refundTxId, new Date().toISOString(), requestId]
         );
+        events.record(db, requestId, events.KINDS.REFUNDED, `${refundValue} sats to ${request.refundAddress}, tx ${refundTxId}`);
         console.log(`[Refund] Request ${requestId} refunded ${refundValue} sats to ${request.refundAddress}. TXID: ${refundTxId}`);
         notifier.notifyRefunded({
             requestId,

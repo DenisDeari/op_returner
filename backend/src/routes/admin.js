@@ -7,6 +7,7 @@ const { attemptRefund, OPERATOR_REFUNDABLE_STATUSES } = require('../refund');
 const { computeAlerts } = require('../alerts');
 const { requireAdmin } = require('./auth');
 const eventLog = require('../event_log');
+const requestEvents = require('../request_events');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -48,6 +49,18 @@ function createAdminRouter(db, rootNode, config) {
             res.status(200).json(rows);
         } catch (error) {
             res.status(500).json({ error: 'Failed to retrieve requests' });
+        }
+    });
+
+    // The durable history of one request. Unlike event_log.js — an in-memory ring buffer
+    // wiped on restart — this survives, and it is the reason archived rows are worth
+    // keeping: the row says what was asked for, this says what happened to it.
+    router.get('/requests/:requestId/events', protect, async (req, res) => {
+        try {
+            const events = await requestEvents.forRequest(db, req.params.requestId);
+            res.status(200).json(events);
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to retrieve request history' });
         }
     });
 

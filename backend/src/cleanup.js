@@ -3,6 +3,7 @@ const config = require('./config');
 const chainProviders = require('./chain_providers');
 const notifier = require('./notifier');
 const { dbAll, dbRun } = require('./db_utils');
+const events = require('./request_events');
 
 // Never verify more than this many addresses per pass, to stay within provider rate limits.
 const MAX_CHAIN_CHECKS_PER_PASS = 25;
@@ -61,6 +62,7 @@ async function retireStaleWebhooks(db) {
 
         // blockcypherHookId holds a comma-joined pair; deleteWebhook splits it itself.
         webhookManager.deleteWebhook(row.blockcypherHookId, config);
+        events.record(db, row.id, events.KINDS.WEBHOOKS_RETIRED, `unpaid after ${config.WEBHOOK_RETIRE_AFTER_MS / 3600000}h`);
         retired++;
         console.log(`[Cleanup] Retired webhooks for unpaid request ${row.id} (${row.address}).`);
     }
@@ -122,6 +124,7 @@ async function recordUnexpectedPayment(db, row, stats) {
         `[Cleanup] KEEPING ${row.id}: ${row.address} holds ${value} sats but the request was never marked paid. ` +
         `Not archived. Refund address ${refundAddress || 'UNKNOWN'}.`
     );
+    events.record(db, row.id, events.KINDS.UNEXPECTED_PAYMENT, `${value} sats at ${row.address}, refund to ${refundAddress || 'UNKNOWN'}`);
     notifier.notifyArchiveFunded({
         requestId: row.id,
         address: row.address,
@@ -226,6 +229,7 @@ async function archiveAbandonedRequests(db) {
             await dbRun(db, 'UPDATE requests SET webhooksRetiredAt = ? WHERE id = ? AND webhooksRetiredAt IS NULL',
                 [new Date().toISOString(), row.id]);
         }
+        events.record(db, row.id, events.KINDS.ARCHIVED, 'abandoned_unpaid: never funded, verified against the chain');
         archived++;
         console.log(`[Cleanup] Archived ${row.id} (${row.address}) — abandoned, never funded.`);
     }

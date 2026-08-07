@@ -4,6 +4,7 @@ const { dbGet, dbRun } = require('../db_utils');
 const { fulfillRequest } = require('../request_service');
 const chainProviders = require('../chain_providers');
 const notifier = require('../notifier');
+const events = require('../request_events');
 
 /**
  * Resolves the payer's address for a payment transaction, so a failed request can be
@@ -121,6 +122,7 @@ function createWebhookRouter(db, rootNode, config) {
                                 `[Webhook] IGNORING notification for ${matched.id}: could not verify that ${txHash} pays ` +
                                 `${paidAddress} — ${verified.reason}. Body claimed ${output.value} sats, ${confirmations} conf.`
                             );
+                            events.record(db, matched.id, events.KINDS.NOTIFICATION_REJECTED, `${txHash} does not pay ${paidAddress}: ${verified.reason}`);
                             continue;
                         }
                         if (verified.value !== output.value || verified.confirmations !== confirmations) {
@@ -139,6 +141,7 @@ function createWebhookRouter(db, rootNode, config) {
 
                         if (chainConfirmations >= 1 && isSufficientAmount) {
                             console.log(`[Webhook] Payment VALID for request ${matched.id}`);
+                            events.record(db, matched.id, events.KINDS.PAYMENT_CONFIRMED, `${paidValue} sats, ${chainConfirmations} conf, tx ${txHash}`);
                             await dbRun(
                                 db,
                                 `UPDATE requests
@@ -176,6 +179,7 @@ function createWebhookRouter(db, rootNode, config) {
                                      WHERE id = ?`,
                                     ['payment_detected', txHash, paidValue, chainConfirmations, payerAddress, matched.id]
                                 );
+                                events.record(db, matched.id, events.KINDS.PAYMENT_DETECTED, `${paidValue} sats unconfirmed, tx ${txHash}`);
                                 console.log(`[Webhook] Request ${matched.id} status updated to payment_detected.`);
                             }
                         } else if (!isSufficientAmount) {
@@ -197,6 +201,7 @@ function createWebhookRouter(db, rootNode, config) {
                                     matched.id
                                 ]
                             );
+                            events.record(db, matched.id, events.KINDS.UNDERPAID, `${paidValue} of ${matched.requiredAmountSatoshis} sats, tx ${txHash}`);
                         }
                     }
                 }

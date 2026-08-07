@@ -6,6 +6,7 @@ const { dbGet, dbRun } = require('../db_utils');
 const { fulfillRequest, deleteRequest } = require('../request_service');
 const notifier = require('../notifier');
 const txSizing = require('../tx_sizing');
+const events = require('../request_events');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -221,11 +222,14 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config);
             if (recordIntake) recordIntake();
 
+            events.record(db, result.newRequestId, events.KINDS.CREATED, `${Buffer.byteLength(message, 'utf8')} bytes, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}`);
+
             const webhookManager = require('../webhook_manager');
             const hookId = await webhookManager.registerWebhook(result.address, config);
             if (hookId) {
                 db.run('UPDATE requests SET blockcypherHookId = ? WHERE id = ?', [hookId, result.newRequestId]);
                 console.log(`Successfully updated hook ID ${hookId} for request ${result.newRequestId}`);
+                events.record(db, result.newRequestId, events.KINDS.WEBHOOKS_REGISTERED, hookId);
             }
 
             // Fire-and-forget: a notification problem must never affect the order.
@@ -418,6 +422,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
             gate.record();
 
+            events.record(db, requestId, events.KINDS.FEEDBACK, trimmed);
             console.log(`[API] Customer feedback recorded for failed request ${requestId} (${trimmed.length} chars).`);
             notifier.notifyCustomerMessage({ requestId, feedback: trimmed }, config);
             res.status(200).json({ success: true, message: 'Thank you — your message has been sent to the operator.' });
