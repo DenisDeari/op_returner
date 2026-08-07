@@ -52,6 +52,8 @@ to a case that did not match. Size and price everything from the actual scriptPu
 | An archived row is never a payment target, never fulfilled, never auto-refunded | `archivedAt IS NULL` in `routes/webhook.js`, `routes/api.js`, `cleanup.js` |
 | An address that holds money is never archived — it is reported to a human | `cleanup.js` `recordUnexpectedPayment` |
 | Every DDL statement lives in one place, shared with the tests | `schema.js` |
+| A row is redacted, never removed — index, address and path always survive | `cleanup.js` `redactOldArchivedRequests` |
+| An archived row holding money is never hidden from the operator | `routes/admin.js` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -170,6 +172,7 @@ Two deadlines, on purpose:
 |---|---|
 | 62h (`WEBHOOK_RETIRE_AFTER_MS`) | webhooks retired — two open hooks per abandoned order spend a quota the money paths need |
 | 7 days (`REQUEST_ARCHIVE_AFTER_MS`) | one final chain check, then archive |
+| 180 days (`REDACT_ARCHIVED_AFTER_MS`) | another chain check, then the content is dropped |
 
 **An address that turns out to hold money is not archived.** The amount, the txid and a
 resolved refund address are written and a Telegram alert fires once; nothing automatic
@@ -195,6 +198,26 @@ silent failure impossible to repeat.
 
 Intake is rate limited (10/hour, 40/day per client address, API key exempt). With hard
 deletion gone, that limiter is the only bound on the table.
+
+### Redaction, at 180 days
+
+The one irreversible operation in the service. It **redacts, it does not delete**: the row
+keeps its index, address and derivation path, so a payment arriving years later is still
+attributable and the wallet view can still explain money at a derived address. What goes
+is the content — `message` (emptied, not nulled: it is `NOT NULL` in the original schema,
+so `redactedAt` is the marker), `userFeedback`, `targetAddress`.
+
+`request_events.detail` is cleared for the same request in the same pass. A feedback event
+holds the customer's text verbatim and a created event holds the recipient address, so
+redacting `requests` alone would leave both behind. Kind and timestamp survive.
+
+Guarded like an archive and then some: archived only, no sign of money, past the horizon,
+and **a fresh chain check first**. A funded address is reported through
+`recordUnexpectedPayment` and left completely alone — if money arrived, the message is the
+only record of what it was for. `REDACTION_ENABLED=false` turns it off.
+
+What survives for study: `createdAt`, `status`, `archivedReason`, `feeRate`,
+`amountToSend`, `requiredAmountSatoshis`, `messageBytes`.
 
 ## The event log
 
@@ -269,13 +292,14 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **183 assertions across five files**, all offline:
+`/home/admin/op_returner_tests/` — **206 assertions across five files**, all offline:
 
 - `unit_harness.js` — 85. Intake validation, builder guards, sizing, dust, classification.
 - `provider_fallback.js` — 12. Broadcast fallback, with `axios.post` stubbed.
 - `webhook_forgery.js` — 28. Proves a forged notification cannot drive a row.
 - `intake_rate_limit.js` — 13. Throttling, per-client buckets, API-key exemption.
-- `archive_lifecycle.js` — 45. Archive-not-delete, funded-and-kept, retirement, events.
+- `archive_lifecycle.js` — 68. Archive-not-delete, funded-and-kept, retirement, events,
+  redaction and its guards.
 
 Throwaway databases are built from `schema.js`, so a test schema can no longer drift from
 production — that drift already broke a harness once, when `archivedAt` was added.
