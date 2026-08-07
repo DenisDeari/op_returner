@@ -60,4 +60,59 @@ async function deleteWebhook(hookIdString, config) {
     }
 }
 
-module.exports = { registerWebhook, deleteWebhook };
+/**
+ * Every webhook currently registered against this BlockCypher token.
+ *
+ * Read-only, and the missing half of the picture. `deleteWebhook` cannot report success —
+ * missing token, 204, 404 and a network error are all indistinguishable `undefined` — so
+ * the database's idea of which hooks are gone has always been a hope rather than a fact.
+ * Roughly forty request rows were hard-deleted before archiving existed, each firing an
+ * unawaited delete, and nothing in this codebase could tell you whether those hooks are
+ * still live and still consuming the free-tier allowance the payment path depends on.
+ *
+ * @returns {Promise<{ok: true, hooks: Array<{id, event, address, url}>} | {ok: false, reason: string}>}
+ */
+async function listWebhooks(config) {
+    if (!config.BLOCKCYPHER_TOKEN) {
+        return { ok: false, reason: 'no BlockCypher token configured' };
+    }
+    try {
+        const res = await axios.get(`${config.BLOCKCYPHER_API_BASE}/hooks?token=${config.BLOCKCYPHER_TOKEN}`, { timeout: 15000 });
+        const hooks = Array.isArray(res.data) ? res.data : [];
+        return {
+            ok: true,
+            hooks: hooks.map((h) => ({
+                id: h.id,
+                event: h.event,
+                address: h.address || null,
+                url: h.url || null,
+            })),
+        };
+    } catch (error) {
+        const detail = error?.response?.data?.error || error.message;
+        console.warn(`[WebhookManager] Could not list webhooks: ${detail}`);
+        return { ok: false, reason: detail };
+    }
+}
+
+/**
+ * Deletes one hook by id and reports whether it is now gone.
+ *
+ * Unlike `deleteWebhook`, this distinguishes outcomes: a 404 counts as success, because
+ * the hook not being there is the state we wanted. Used by the orphan sweep, which must
+ * not claim to have cleaned up something it could not reach.
+ *
+ * @returns {Promise<{ok: boolean, alreadyGone?: boolean, reason?: string}>}
+ */
+async function deleteWebhookById(hookId, config) {
+    if (!hookId || !config.BLOCKCYPHER_TOKEN) return { ok: false, reason: 'missing hook id or token' };
+    try {
+        await axios.delete(`${config.BLOCKCYPHER_API_BASE}/hooks/${hookId}?token=${config.BLOCKCYPHER_TOKEN}`, { timeout: 15000 });
+        return { ok: true };
+    } catch (error) {
+        if (error?.response?.status === 404) return { ok: true, alreadyGone: true };
+        return { ok: false, reason: error?.response?.data?.error || error.message };
+    }
+}
+
+module.exports = { registerWebhook, deleteWebhook, listWebhooks, deleteWebhookById };

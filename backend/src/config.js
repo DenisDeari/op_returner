@@ -23,6 +23,20 @@ if (!API_KEY) {
     console.warn("WARNING: API_KEY environment variable not set. API endpoints will reject all requests.");
 }
 
+// Taproot support.
+//
+// bitcoinjs routes a bech32m v1 address through payments.p2tr(), which refuses to decode
+// one until an ECC backend is registered. Without this, `toOutputScript` THROWS on a
+// perfectly valid `bc1p…` address, and intake reports it as "not a valid Bitcoin address
+// for this network" — so a customer paying to Taproot was turned away, and a Taproot payer
+// could not be auto-refunded either. It failed closed, so no money was ever at risk, but
+// it turned away legitimate business.
+//
+// Registered here because every module on a money path requires config, so there is no
+// import order in which a Taproot address can reach toOutputScript before the backend
+// exists. wallet_scan.js keeps its own lazy call; initEccLib is idempotent.
+bitcoin.initEccLib(require('tiny-secp256k1'));
+
 const NETWORK = bitcoin.networks.bitcoin; // Or bitcoin.networks.testnet
 const NETWORK_NAME = NETWORK === bitcoin.networks.bitcoin ? 'main' : 'test3';
 
