@@ -96,7 +96,17 @@ function createWebhookRouter(db, rootNode, config) {
                     // request object this handler is closed over.
                     const matched = await dbGet(
                         db,
-                        "SELECT * FROM requests WHERE address = ? AND (status = 'pending_payment' OR status = 'payment_detected')",
+                        // archivedAt IS NULL is load-bearing. `status` is deliberately not
+                        // overwritten when a row is archived, so without this an archived
+                        // order — cancelled by its customer, or abandoned for a week — would
+                        // still match and be driven through fulfilment by a late or replayed
+                        // notification, publishing a message the customer withdrew and
+                        // spending their money to do it. Rows are kept forever now, so this
+                        // would apply to every address the service has ever issued.
+                        `SELECT * FROM requests
+                         WHERE address = ?
+                           AND archivedAt IS NULL
+                           AND (status = 'pending_payment' OR status = 'payment_detected')`,
                         [paidAddress]
                     );
 

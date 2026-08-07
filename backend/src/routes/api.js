@@ -257,6 +257,28 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 return res.status(404).json({ error: 'Request not found' });
             }
 
+            // An archived order must never be presentable as payable. `status` is left
+            // untouched by archiving, so without this the response would hand back
+            // `pending_payment` together with the payment address of an order nobody is
+            // watching any more — inviting a payment into a dead address. Reporting a
+            // distinct status also removes the PAY button on already-open tabs with no
+            // frontend deploy, because the button only renders for known live statuses.
+            //
+            // The address and the amount are withheld for the same reason.
+            if (row.archivedAt) {
+                return res.status(200).json({
+                    id: row.id,
+                    status: 'archived',
+                    archivedAt: row.archivedAt,
+                    archivedReason: row.archivedReason,
+                    createdAt: row.createdAt,
+                    message: row.message,
+                    error: row.archivedReason === 'cancelled_by_customer'
+                        ? 'This request was cancelled.'
+                        : 'This request expired without payment. Please create a new one.',
+                });
+            }
+
             // Self-Healing: Check blockchain if pending and older than 15s
             const ageInSeconds = (new Date() - new Date(row.createdAt)) / 1000;
             const now = Date.now();

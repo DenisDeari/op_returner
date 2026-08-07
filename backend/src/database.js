@@ -92,6 +92,18 @@ function initializeDatabase(onReady) {
             // Customer message left on a failed request, shown in the admin panel.
             'ADD COLUMN userFeedback TEXT',
             'ADD COLUMN userFeedbackAt TEXT',
+            // Retention. Rows are archived rather than deleted, so the record of what a
+            // customer asked for — and which address it was quoted at — survives forever.
+            // `status` is deliberately NOT overwritten: archivedAt marks the row dead,
+            // status still says how it died, which is the part worth studying later.
+            'ADD COLUMN archivedAt TEXT',
+            'ADD COLUMN archivedReason TEXT',
+            // Kept separate from blockcypherHookId rather than nulling it. deleteWebhook
+            // has no return value on any path — missing token, 204, 404 and a network
+            // error are all indistinguishable `undefined` — so we can never know a hook
+            // is really gone, and discarding the id would throw away the only handle to a
+            // possibly-live one.
+            'ADD COLUMN webhooksRetiredAt TEXT',
         ];
 
         let remaining = columnMigrations.length;

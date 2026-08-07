@@ -35,7 +35,16 @@ function createAdminRouter(db, rootNode, config) {
 
     router.get('/requests', protect, async (req, res) => {
         try {
-            const rows = await dbAll(db, "SELECT * FROM requests ORDER BY createdAt DESC");
+            // Archived rows are kept forever, so the panel would fill with abandoned and
+            // cancelled orders over time. Hidden by default, still reachable with
+            // ?includeArchived=1 — they are retained precisely so they can be studied.
+            const includeArchived = req.query.includeArchived === '1' || req.query.includeArchived === 'true';
+            const rows = await dbAll(
+                db,
+                includeArchived
+                    ? 'SELECT * FROM requests ORDER BY createdAt DESC'
+                    : 'SELECT * FROM requests WHERE archivedAt IS NULL ORDER BY createdAt DESC'
+            );
             res.status(200).json(rows);
         } catch (error) {
             res.status(500).json({ error: 'Failed to retrieve requests' });

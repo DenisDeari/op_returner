@@ -45,6 +45,23 @@ const MAX_FEE_RATE = 500; // sats/vByte
 const MIN_EFFECTIVE_FEE_RATE = 2; // sats/vByte, hard floor applied when building
 const MAX_AMOUNT_TO_SEND_SATS = 100_000_000; // 1 BTC sanity ceiling
 
+// Request retention.
+//
+// Requests are archived, never deleted: a row is the only record of what a customer
+// asked for and where their money would go, and losing it destroys the ability to
+// attribute a late payment to an address. `archivedAt` marks a row dead; `status` is
+// deliberately left alone, because it is the behavioural signal worth keeping.
+//
+// The two deadlines are separate on purpose. Webhooks are retired first, because holding
+// two BlockCypher hooks open per abandoned order costs a quota the money paths need.
+// Archiving happens later, and only after one final chain check: an address that turns
+// out to hold money is NOT archived — it is recorded and reported, for a human to decide.
+// Between the two deadlines nothing is watching the address automatically, but the
+// customer's own status polling still does its own chain check, and the archive-time
+// check is the backstop.
+const WEBHOOK_RETIRE_AFTER_MS = 62 * 60 * 60 * 1000;   // 62 hours
+const REQUEST_ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 // Failure handling
 const MAX_FULFILL_ATTEMPTS = 3;
 const RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -124,6 +141,9 @@ module.exports = {
     MAX_FEE_RATE,
     MIN_EFFECTIVE_FEE_RATE,
     MAX_AMOUNT_TO_SEND_SATS,
+    // Request retention
+    WEBHOOK_RETIRE_AFTER_MS,
+    REQUEST_ARCHIVE_AFTER_MS,
     // Failure handling
     MAX_FULFILL_ATTEMPTS,
     RECONCILE_INTERVAL_MS,

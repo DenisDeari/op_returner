@@ -170,6 +170,27 @@ function notifyRefunded({ requestId, amount, refundTxId, refundAddress }, config
     );
 }
 
+/**
+ * An order that was about to be archived turns out to hold money.
+ *
+ * Deliberately not part of the automatic lifecycle: nothing will fulfil or refund this
+ * row, because it was abandoned days ago and a timer should not decide what happens to
+ * money that arrived late. This message is the handover to a human.
+ */
+function notifyArchiveFunded({ requestId, address, amount, refundAddress, createdAt }, config) {
+    fire(
+        `⚠️ <b>Unexpected payment on an abandoned order</b>\n`
+        + `Order: <code>${esc(shortId(requestId))}</code>\n`
+        + `Ordered: ${esc(String(createdAt || '').slice(0, 10))}\n`
+        + `Address: <code>${esc(address)}</code>\n`
+        + `Holds: <b>${esc(amount)}</b> sats\n`
+        + `Refund to: <code>${esc(refundAddress || 'UNKNOWN — resolve by hand')}</code>\n\n`
+        + `It was NOT archived and nothing automatic will touch it. `
+        + `Fulfil or refund it from the admin panel.`,
+        config
+    );
+}
+
 function notifyCustomerMessage({ requestId, feedback }, config) {
     fire(
         `💬 <b>A customer wrote to you</b>\n\n` +
@@ -188,5 +209,6 @@ module.exports = {
     notifyFailed,
     notifyRefunded,
     notifyCustomerMessage,
+    notifyArchiveFunded,
     MAX_PER_HOUR,
 };

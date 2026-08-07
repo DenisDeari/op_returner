@@ -161,30 +161,60 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
  */
 async function deleteRequest(requestId, db, config) {
     try {
-        // Get webhook ID before deleting
         const row = await dbGet(
             db,
-            "SELECT blockcypherHookId FROM requests WHERE id = ?",
+            "SELECT blockcypherHookId, archivedAt FROM requests WHERE id = ?",
             [requestId]
         );
 
         if (!row) {
             return { success: false, error: 'Request not found' };
         }
-
-        // Delete associated webhook
-        if (row.blockcypherHookId) {
-            webhookManager.deleteWebhook(row.blockcypherHookId, config);
+        if (row.archivedAt) {
+            // Already cancelled. Idempotent so a double-click is not an error.
+            return { success: true };
         }
 
-        // Delete the request
-        await dbRun(db, "DELETE FROM requests WHERE id = ?", [requestId]);
-        console.log(`[RequestService] Request ${requestId} deleted successfully`);
+        // Archived, never deleted. The row is the only record of what this customer asked
+        // for and which address they were quoted, and a cancel used to destroy it — so a
+        // payment landing in the gap between the caller's payment check and the DELETE
+        // left money at an address with nothing to explain it. Marking the row instead
+        // makes that race harmless: the worst case is an archived row that holds funds,
+        // which alerts.js and reconcile's stranded report both surface because they key on
+        // payment alone.
+        //
+        // The money guards are carried into the write, so this cannot claim a row that
+        // acquired a payment since the caller checked.
+        const claim = await dbRun(
+            db,
+            `UPDATE requests
+             SET archivedAt = ?, archivedReason = 'cancelled_by_customer'
+             WHERE id = ?
+               AND archivedAt IS NULL
+               AND paymentTxId IS NULL
+               AND paymentReceivedSatoshis IS NULL
+               AND opReturnTxId IS NULL
+               AND refundTxId IS NULL`,
+            [new Date().toISOString(), requestId]
+        );
+
+        if (claim.changes !== 1) {
+            return { success: false, error: 'This request has an associated payment and cannot be cancelled.' };
+        }
+
+        // Only once the row is claimed. Stopping the watch on a row we failed to claim
+        // would leave a paying customer unwatched.
+        if (row.blockcypherHookId) {
+            webhookManager.deleteWebhook(row.blockcypherHookId, config);
+            await dbRun(db, 'UPDATE requests SET webhooksRetiredAt = ? WHERE id = ? AND webhooksRetiredAt IS NULL',
+                [new Date().toISOString(), requestId]);
+        }
+        console.log(`[RequestService] Request ${requestId} cancelled by customer and archived`);
 
         return { success: true };
 
     } catch (error) {
-        console.error(`[RequestService] Error deleting request ${requestId}:`, error);
+        console.error(`[RequestService] Error cancelling request ${requestId}:`, error);
         return { success: false, error: error.message };
     }
 }
