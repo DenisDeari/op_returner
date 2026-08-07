@@ -45,8 +45,7 @@ async function retireStaleWebhooks(db) {
         [cutoff]
     );
 
-    if (candidates.length === 0) return 0;
-
+    // No early return when this is empty: the settled sweep below is independent of it.
     let retired = 0;
     for (const row of candidates) {
         const claim = await dbRun(
@@ -67,8 +66,41 @@ async function retireStaleWebhooks(db) {
         console.log(`[Cleanup] Retired webhooks for unpaid request ${row.id} (${row.address}).`);
     }
 
+    // Settled orders, at any age. A request that has been published or refunded is
+    // finished, and nothing will ever notify us about it again — but the deleteWebhook
+    // fired at fulfilment and refund time is unawaited and cannot report success, so
+    // whether those hooks are really gone has always been unknowable. Nine rows in
+    // production carry a hook id that was never marked retired; without this they would
+    // stay that way forever, quietly holding a quota the payment path depends on.
+    // Deleting twice is harmless: BlockCypher answers 404 and deleteWebhook swallows it.
+    const settled = await dbAll(
+        db,
+        `SELECT id, address, blockcypherHookId FROM requests
+         WHERE blockcypherHookId IS NOT NULL
+           AND webhooksRetiredAt IS NULL
+           AND (opReturnTxId IS NOT NULL OR refundTxId IS NOT NULL)
+         ORDER BY createdAt ASC`
+    );
+
+    for (const row of settled) {
+        const claim = await dbRun(
+            db,
+            `UPDATE requests SET webhooksRetiredAt = ?
+             WHERE id = ?
+               AND webhooksRetiredAt IS NULL
+               AND (opReturnTxId IS NOT NULL OR refundTxId IS NOT NULL)`,
+            [new Date().toISOString(), row.id]
+        );
+        if (claim.changes !== 1) continue;
+
+        webhookManager.deleteWebhook(row.blockcypherHookId, config);
+        events.record(db, row.id, events.KINDS.WEBHOOKS_RETIRED, 'order settled');
+        retired++;
+        console.log(`[Cleanup] Retired webhooks for settled request ${row.id}.`);
+    }
+
     if (retired > 0) {
-        console.log(`[Cleanup] Stopped watching ${retired} unpaid address(es) older than ${config.WEBHOOK_RETIRE_AFTER_MS / 3600000}h.`);
+        console.log(`[Cleanup] Stopped watching ${retired} address(es).`);
     }
     return retired;
 }
