@@ -58,7 +58,16 @@ async function cleanupOldRequests(db) {
             checked++;
 
             // Guard 2 (blockchain): has this address ever received anything?
-            const stats = await chainProviders.getAddressStats(candidate.address, config);
+            //
+            // Esplora only. This runs on a timer over up to MAX_CHAIN_CHECKS_PER_PASS
+            // addresses, and BlockCypher bills each one against the free-tier allowance
+            // the webhooks and broadcasts depend on. If both hosts fail the lookup fails,
+            // and an unverified row is kept — so restricting providers can only ever make
+            // this job more cautious, never less.
+            const stats = await chainProviders.getAddressStats(candidate.address, config, {
+                onlyProviders: chainProviders.ESPLORA_ONLY,
+                useCooldown: true,
+            });
             if (!stats.ok) {
                 // Could not verify — keep it. An unverified row is never deleted.
                 kept.push({ id: candidate.id, reason: `chain lookup failed: ${stats.reason}` });

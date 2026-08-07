@@ -67,6 +67,51 @@ function validateRequestParams({ targetAddress, feeRate, amountToSend }, config)
     return null;
 }
 
+/**
+ * The real client address.
+ *
+ * This app sits behind Cloudflare and a tunnel, so `req.ip` is the proxy's address and is
+ * identical for every visitor — keying a rate limit on it alone would make one global
+ * bucket that any single user could exhaust for everyone.
+ */
+function clientIp(req) {
+    return req.headers['cf-connecting-ip']
+        || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+        || req.ip
+        || req.socket?.remoteAddress
+        || 'unknown';
+}
+
+/**
+ * Sliding-window counter shared by the intake and feedback limiters.
+ *
+ * `store` maps ip -> [timestamps]. Timestamps older than the longest window are dropped
+ * on read, so the map self-prunes on the addresses that are actually active; the periodic
+ * sweep handles the ones that go quiet.
+ */
+function withinLimit(store, ip, windows) {
+    const now = Date.now();
+    const longest = Math.max(...windows.map((w) => w.ms));
+    const stamps = (store.get(ip) || []).filter((t) => t > now - longest);
+    for (const w of windows) {
+        if (stamps.filter((t) => t > now - w.ms).length >= w.max) {
+            store.set(ip, stamps);
+            return { ok: false, window: w };
+        }
+    }
+    store.set(ip, stamps);
+    return { ok: true, record: () => store.set(ip, [...stamps, now]) };
+}
+
+function sweepRateLimit(store, maxAgeMs) {
+    const cutoff = Date.now() - maxAgeMs;
+    for (const [ip, stamps] of store) {
+        const recent = stamps.filter((t) => t > cutoff);
+        if (recent.length === 0) store.delete(ip);
+        else store.set(ip, recent);
+    }
+}
+
 // Cache for self-heal checks to prevent API spam
 const selfHealCache = {};
 const CACHE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
@@ -117,6 +162,18 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         });
     });
 
+    // Intake throttling. Creating a request permanently burns a wallet index and
+    // registers two BlockCypher webhooks, and rows are archived rather than deleted, so
+    // nothing else bounds this table. See the note in config.js for how the limits were
+    // sized. Counted only once a request is about to be created — a caller who merely
+    // fails validation has cost us nothing and should keep getting real error messages.
+    const intakeRateLimit = new Map(); // ip -> [timestamps]
+    const INTAKE_WINDOWS = [
+        { ms: 60 * 60 * 1000, max: config.INTAKE_MAX_PER_HOUR, label: 'hour' },
+        { ms: 24 * 60 * 60 * 1000, max: config.INTAKE_MAX_PER_DAY, label: 'day' },
+    ];
+    setInterval(() => sweepRateLimit(intakeRateLimit, 24 * 60 * 60 * 1000), 60 * 60 * 1000).unref?.();
+
     // --- Authenticated Endpoints ---
     router.post('/message-request', optionalApiKey, async (req, res) => {
         const { message, targetAddress, feeRate, amountToSend } = req.body;
@@ -143,7 +200,26 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 return res.status(400).json({ error: paramError });
             }
 
+            // Throttled here, after validation and immediately before anything is
+            // consumed. A caller presenting a valid API key is the operator or the
+            // internal service and is exempt.
+            const authenticated = !!(req.headers['x-api-key'] && config.API_KEY
+                && req.headers['x-api-key'] === config.API_KEY);
+            let recordIntake = null;
+            if (!authenticated) {
+                const ip = clientIp(req);
+                const gate = withinLimit(intakeRateLimit, ip, INTAKE_WINDOWS);
+                if (!gate.ok) {
+                    console.warn(`[API] Intake rate limit hit for ${ip}: over ${gate.window.max} per ${gate.window.label}.`);
+                    return res.status(429).json({
+                        error: `Too many requests created. The limit is ${gate.window.max} per ${gate.window.label}. Please try again later.`,
+                    });
+                }
+                recordIntake = gate.record;
+            }
+
             const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config);
+            if (recordIntake) recordIntake();
 
             const webhookManager = require('../webhook_manager');
             const hookId = await webhookManager.registerWebhook(result.address, config);
@@ -281,14 +357,9 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     const FEEDBACK_WINDOW_MS = 60 * 60 * 1000;
     const FEEDBACK_MAX_PER_WINDOW = 10;
 
-    setInterval(() => {
-        const cutoff = Date.now() - FEEDBACK_WINDOW_MS;
-        for (const [ip, stamps] of feedbackRateLimit) {
-            const recent = stamps.filter((t) => t > cutoff);
-            if (recent.length === 0) feedbackRateLimit.delete(ip);
-            else feedbackRateLimit.set(ip, recent);
-        }
-    }, FEEDBACK_WINDOW_MS).unref?.();
+    const FEEDBACK_WINDOWS = [{ ms: FEEDBACK_WINDOW_MS, max: FEEDBACK_MAX_PER_WINDOW, label: 'hour' }];
+
+    setInterval(() => sweepRateLimit(feedbackRateLimit, FEEDBACK_WINDOW_MS), FEEDBACK_WINDOW_MS).unref?.();
 
     router.post('/request/:requestId/feedback', async (req, res) => {
         const { requestId } = req.params;
@@ -303,18 +374,9 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 return res.status(400).json({ error: `Feedback must be under ${config.USER_FEEDBACK_MAX_BYTES} bytes.` });
             }
 
-            // This app sits behind Cloudflare and a tunnel, so req.ip is the proxy's
-            // address and is identical for every visitor — keying on it alone would make
-            // one global 10/hour bucket that any single user could exhaust for everyone.
-            // Prefer the real client address the proxy forwards.
-            const ip = req.headers['cf-connecting-ip']
-                || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-                || req.ip
-                || req.socket?.remoteAddress
-                || 'unknown';
-            const cutoff = Date.now() - FEEDBACK_WINDOW_MS;
-            const recent = (feedbackRateLimit.get(ip) || []).filter((t) => t > cutoff);
-            if (recent.length >= FEEDBACK_MAX_PER_WINDOW) {
+            const ip = clientIp(req);
+            const gate = withinLimit(feedbackRateLimit, ip, FEEDBACK_WINDOWS);
+            if (!gate.ok) {
                 return res.status(429).json({ error: 'Too many feedback submissions. Please try again later.' });
             }
 
@@ -332,8 +394,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 [trimmed, new Date().toISOString(), requestId]
             );
 
-            recent.push(Date.now());
-            feedbackRateLimit.set(ip, recent);
+            gate.record();
 
             console.log(`[API] Customer feedback recorded for failed request ${requestId} (${trimmed.length} chars).`);
             notifier.notifyCustomerMessage({ requestId, feedback: trimmed }, config);

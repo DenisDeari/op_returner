@@ -447,11 +447,23 @@ async function findUtxoForAddress(txId, address, config) {
  * Total satoshis ever received by an address. Used to guarantee the cleanup job
  * never deletes a request that a customer has actually paid.
  */
-async function getAddressStats(address, config) {
-    const result = await tryProviders(config, 'getAddressStats', [address], { label: `address-stats ${address.slice(0, 12)}` });
+async function getAddressStats(address, config, options = {}) {
+    const result = await tryProviders(config, 'getAddressStats', [address], {
+        label: `address-stats ${address.slice(0, 12)}`,
+        ...options,
+    });
     if (!result.ok) return { ok: false, reason: result.reason };
     return { ok: true, ...result.value, provider: result.provider };
 }
+
+/**
+ * The Esplora hosts, in the order the wallet view uses them. Callers that sweep many
+ * addresses on a timer pass this so they cannot spend the BlockCypher allowance the
+ * webhooks and broadcasts depend on — the same rule `getAddressSummary` enforces for the
+ * wallet scan. Never use it for a broadcast: see the note in `tryProviders` about who
+ * gets to declare a transaction invalid.
+ */
+const ESPLORA_ONLY = Object.freeze(['blockstream.info', 'mempool.space']);
 
 /**
  * Resolves the payer's address by reading the funding transaction's inputs from a
@@ -577,6 +589,7 @@ module.exports = {
     broadcastTransaction,
     findUtxoForAddress,
     getAddressStats,
+    ESPLORA_ONLY,
     getAddressSummary,
     getAddressSummaries,
     getUnspent,

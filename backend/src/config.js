@@ -53,6 +53,22 @@ const REFUND_ENABLED = process.env.REFUND_ENABLED !== 'false'; // opt-out, on by
 // Customer feedback on failed requests
 const USER_FEEDBACK_MAX_BYTES = 1000;
 
+// Intake throttling.
+//
+// Creating a request is not free: it burns a wallet index permanently (queue.js), writes
+// a row, and registers two BlockCypher webhooks against a free-tier allowance the money
+// paths depend on. The endpoint is public — `optionalApiKey` lets a caller through when
+// no key is presented — and until now the 48-hour cleanup delete was the only thing
+// bounding that table at all. Requests are archived rather than deleted now, so the only
+// bound left is here.
+//
+// Sized against real behaviour rather than guessed: the heaviest genuine user so far made
+// four orders in ninety minutes (2026-08-06), and a customer repricing a fee rate makes
+// two within a minute. Ten an hour leaves generous headroom for both; the daily cap stops
+// a slow drip from adding up. A caller presenting a valid API key is exempt.
+const INTAKE_MAX_PER_HOUR = 10;
+const INTAKE_MAX_PER_DAY = 40;
+
 // Wallet view (read-only; nothing here can spend).
 // A branch is scanned until this many consecutive never-used addresses are seen. 20 is
 // the BIP44 convention and what Electrum and Sparrow use, so a scan here finds the same
@@ -114,6 +130,9 @@ module.exports = {
     REFUND_ENABLED,
     // Customer feedback
     USER_FEEDBACK_MAX_BYTES,
+    // Intake throttling
+    INTAKE_MAX_PER_HOUR,
+    INTAKE_MAX_PER_DAY,
     // Wallet view
     WALLET_GAP_LIMIT,
     WALLET_MAX_SCAN_INDICES,
