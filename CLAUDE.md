@@ -101,7 +101,7 @@ An output is `8 + 1 + script.length` vBytes. The sizes that matter:
 | P2SH (`3…`) | 32 | 546 |
 | P2WPKH (`bc1q…`, 42 chars) | 31 | 546 |
 | P2WSH (`bc1q…`, 62 chars) | 43 | **573** |
-| P2TR (`bc1p…`) | 43 | **573**, but see below |
+| P2TR (`bc1p…`) | 43 | **573** |
 
 The dust limit is Bitcoin Core's `GetDustThreshold`: 3 sat/vB against the cost of making
 the output plus the cost of spending it. **Core discounts the witness part of that spend;
@@ -116,15 +116,17 @@ causing trouble buys nothing.
 The change output is always P2WPKH, so the flat 546 is the right limit for it. The
 *recipient* output is whatever the customer gave us.
 
-**Taproot recipients do not work today, and the P2TR row above is theory.** bitcoinjs
-routes a bech32m v1 address through `payments.p2tr()`, which needs an ECC backend
-registered via `initEccLib`. The only call is in `wallet_scan.js`, deliberately lazy and
-scoped to its own address derivation, so the payment path has none: `toOutputScript`
-throws and intake reports a perfectly valid `bc1p…` address as *not a valid Bitcoin
-address for this network*. It fails closed — no money is taken — but a customer paying
-to taproot is simply turned away, and a taproot payer cannot be auto-refunded either.
-Fixing it is a one-line global `initEccLib`; the unit harness asserts the current
-behaviour so the day it changes is a deliberate one.
+**Taproot works, and it only works because `config.js` registers an ECC backend.**
+bitcoinjs routes a bech32m v1 address through `payments.p2tr()`, which refuses to decode
+one until `initEccLib` has been called. `wallet_scan.js` had the only call, lazy and
+scoped to its own derivation, so until 2026-08-07 the payment path had none:
+`toOutputScript` threw and intake reported a valid `bc1p…` address as *not a valid Bitcoin
+address for this network*. It failed closed, so no money was ever at risk, but a Taproot
+customer was turned away and a Taproot payer could not be auto-refunded.
+
+The registration lives in `config.js` because every module on a money path requires
+config, so there is no import order in which a Taproot address reaches `toOutputScript`
+first. **Do not move it into a module that only some paths import.**
 
 `frontend/js/app.js` mirrors this arithmetic to preview the cost and to name the minimum
 next to the amount field. It recognises types by address prefix rather than decoding —
@@ -173,6 +175,21 @@ Two deadlines, on purpose:
 | 62h (`WEBHOOK_RETIRE_AFTER_MS`) | webhooks retired — two open hooks per abandoned order spend a quota the money paths need |
 | 7 days (`REQUEST_ARCHIVE_AFTER_MS`) | one final chain check, then archive |
 | 180 days (`REDACT_ARCHIVED_AFTER_MS`) | another chain check, then the content is dropped |
+
+### Hooks you cannot see
+
+`deleteWebhook` returns `undefined` on every path, so the database's idea of which hooks
+are gone is a hope, not a fact. `listWebhooks` reads what BlockCypher actually holds.
+
+`GET /api/admin/webhooks` reconciles the two and calls a hook **orphaned** when nothing
+still needs it: no row claims its id, or the row that does is retired, archived or
+settled. `POST /api/admin/webhooks/prune` deletes exactly those, re-deriving the judgement
+itself rather than trusting the caller, and distinguishes deleted from already-gone from
+failed so it never claims a cleanup it could not reach.
+
+Worth running occasionally. The first run on 2026-08-07 found **24 hooks registered, 2 in
+use, 22 orphaned** — all belonging to rows hard-deleted before archiving existed. A prune
+is rate-limited by BlockCypher at roughly 20 deletes; run it twice.
 
 Settled orders — published or refunded — are swept at any age by the same retirement pass.
 `deleteWebhook` is unawaited and returns `undefined` on every path, so whether the hooks
@@ -298,9 +315,10 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **212 assertions across five files**, all offline:
+`/home/admin/op_returner_tests/` — **218 assertions across five files**, all offline:
 
-- `unit_harness.js` — 85. Intake validation, builder guards, sizing, dust, classification.
+- `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
+  classification.
 - `provider_fallback.js` — 12. Broadcast fallback, with `axios.post` stubbed.
 - `webhook_forgery.js` — 28. Proves a forged notification cannot drive a row.
 - `intake_rate_limit.js` — 13. Throttling, per-client buckets, API-key exemption.
@@ -317,11 +335,6 @@ test the deployed tree directly. They previously lived in a session scratchpad u
 An end-to-end suite also exists (20 API tests against a real server on a throwaway
 database). Rehearse any schema change against a *copy* of the production database before
 deploying.
-
-**Known gaps, deliberately open.** Taproot recipients do not work (see *Sizing and dust*)
-— a one-line global `initEccLib` fixes it, and the harness asserts the current behaviour
-so the day it changes is a deliberate one. Nothing else from the 2026-08-07 retention
-audit is outstanding.
 
 **Prove a guard actually fires before trusting it.** Copy `backend/src` to a temp dir,
 symlink `node_modules` next to it, reintroduce the bug there, point a copy of the harness
