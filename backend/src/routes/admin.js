@@ -8,7 +8,7 @@ const { computeAlerts } = require('../alerts');
 const { requireAdmin } = require('./auth');
 const eventLog = require('../event_log');
 const requestEvents = require('../request_events');
-const webhookManager = require('../webhook_manager');
+const webhookReconcile = require('../webhook_reconcile');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -74,51 +74,16 @@ function createAdminRouter(db, rootNode, config) {
     /**
      * What is actually registered at BlockCypher, reconciled against the database.
      *
-     * A hook is "orphaned" when nothing in `requests` still needs it: either no row claims
-     * its id at all (the row was hard-deleted before archiving existed, and the unawaited
-     * delete that fired may never have landed), or the row that claims it has already been
-     * retired, archived or settled. Those are pure waste against a free-tier allowance the
-     * payment path depends on.
+     * The judgement lives in webhook_reconcile.js, shared with the scheduled sweep in
+     * cleanup.js so the manual and automatic views can never disagree about what is waste.
      *
      * Read-only. Deleting is a separate, deliberate POST.
      */
     router.get('/webhooks', protect, async (req, res) => {
         try {
-            const listed = await webhookManager.listWebhooks(config);
-            if (!listed.ok) return res.status(502).json({ error: `Could not list webhooks: ${listed.reason}` });
-
-            const rows = await dbAll(db, `SELECT id, address, status, blockcypherHookId, webhooksRetiredAt,
-                                                 archivedAt, opReturnTxId, refundTxId FROM requests
-                                          WHERE blockcypherHookId IS NOT NULL`);
-            // hookId -> the request that registered it
-            const owner = new Map();
-            for (const r of rows) {
-                for (const hookId of String(r.blockcypherHookId).split(',')) owner.set(hookId.trim(), r);
-            }
-
-            const annotated = listed.hooks.map((h) => {
-                const r = owner.get(h.id);
-                const stillNeeded = !!r
-                    && !r.webhooksRetiredAt && !r.archivedAt && !r.opReturnTxId && !r.refundTxId;
-                return {
-                    ...h,
-                    requestId: r ? r.id : null,
-                    requestStatus: r ? r.status : null,
-                    reason: !r ? 'no request claims this hook'
-                        : stillNeeded ? 'in use'
-                        : r.webhooksRetiredAt ? 'request already retired'
-                        : r.archivedAt ? 'request archived'
-                        : 'request already settled',
-                    orphaned: !stillNeeded,
-                };
-            });
-
-            res.status(200).json({
-                total: annotated.length,
-                inUse: annotated.filter((h) => !h.orphaned).length,
-                orphaned: annotated.filter((h) => h.orphaned).length,
-                hooks: annotated,
-            });
+            const result = await webhookReconcile.reconcileWebhooks(db, config);
+            if (!result.ok) return res.status(502).json({ error: `Could not list webhooks: ${result.reason}` });
+            res.status(200).json(result);
         } catch (error) {
             console.error('Error listing webhooks:', error.message);
             res.status(500).json({ error: 'Failed to list webhooks' });
@@ -132,32 +97,14 @@ function createAdminRouter(db, rootNode, config) {
      */
     router.post('/webhooks/prune', protect, async (req, res) => {
         try {
-            const listed = await webhookManager.listWebhooks(config);
-            if (!listed.ok) return res.status(502).json({ error: `Could not list webhooks: ${listed.reason}` });
-
-            const rows = await dbAll(db, `SELECT id, blockcypherHookId, webhooksRetiredAt, archivedAt,
-                                                 opReturnTxId, refundTxId FROM requests
-                                          WHERE blockcypherHookId IS NOT NULL`);
-            const owner = new Map();
-            for (const r of rows) {
-                for (const hookId of String(r.blockcypherHookId).split(',')) owner.set(hookId.trim(), r);
-            }
-
-            const results = { deleted: 0, alreadyGone: 0, failed: 0, skipped: 0, errors: [] };
-            for (const hook of listed.hooks) {
-                const r = owner.get(hook.id);
-                const stillNeeded = !!r
-                    && !r.webhooksRetiredAt && !r.archivedAt && !r.opReturnTxId && !r.refundTxId;
-                if (stillNeeded) { results.skipped++; continue; }
-
-                const out = await webhookManager.deleteWebhookById(hook.id, config);
-                if (out.ok && out.alreadyGone) results.alreadyGone++;
-                else if (out.ok) results.deleted++;
-                else { results.failed++; results.errors.push(`${hook.id}: ${out.reason}`); }
-            }
+            // An operator asked for this and is waiting on the answer, so there is no
+            // per-pass cap — but the rate-limit stop still applies, and `remaining` says
+            // plainly how many are left rather than reporting a cleanup that did not land.
+            const results = await webhookReconcile.pruneOrphanedWebhooks(db, config, { limit: Infinity });
+            if (results.ok === false) return res.status(502).json({ error: `Could not list webhooks: ${results.reason}` });
 
             console.log(`[Admin] Webhook prune: deleted ${results.deleted}, already gone ${results.alreadyGone}, `
-                + `still in use ${results.skipped}, failed ${results.failed}.`);
+                + `still in use ${results.skipped}, failed ${results.failed}, remaining ${results.remaining}.`);
             res.status(200).json(results);
         } catch (error) {
             console.error('Error pruning webhooks:', error.message);

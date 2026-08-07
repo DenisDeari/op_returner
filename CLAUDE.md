@@ -53,6 +53,8 @@ to a case that did not match. Size and price everything from the actual scriptPu
 | An address that holds money is never archived — it is reported to a human | `cleanup.js` `recordUnexpectedPayment` |
 | Every DDL statement lives in one place, shared with the tests | `schema.js` |
 | A row is redacted, never removed — index, address and path always survive | `cleanup.js` `redactOldArchivedRequests` |
+| A webhook teardown that could not be confirmed is never recorded as done | `cleanup.js`, `webhook_manager.js` `deleteWebhookIds` |
+| A hook is judged by address as well as id, so a registration in flight is never pruned | `webhook_reconcile.js` `judgeHook` |
 | An archived row holding money is never hidden from the operator | `routes/admin.js` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
@@ -77,6 +79,7 @@ backend/src/
   alerts.js             current problems, computed from the DB (not from logs)
   notifier.js           Telegram messages on every order event
   cleanup.js            retires webhooks at 62h, archives unfunded requests at 7 days
+  webhook_reconcile.js  what BlockCypher actually holds, vs what the database believes
   request_events.js     durable per-request history — append-only, fire-and-forget
   wallet_scan.js        read-only balance view over every branch of the seed
   qr.js                 BIP21 payment URIs rendered as SVG QR codes
@@ -181,21 +184,43 @@ Two deadlines, on purpose:
 `deleteWebhook` returns `undefined` on every path, so the database's idea of which hooks
 are gone is a hope, not a fact. `listWebhooks` reads what BlockCypher actually holds.
 
-`GET /api/admin/webhooks` reconciles the two and calls a hook **orphaned** when nothing
-still needs it: no row claims its id, or the row that does is retired, archived or
-settled. `POST /api/admin/webhooks/prune` deletes exactly those, re-deriving the judgement
-itself rather than trusting the caller, and distinguishes deleted from already-gone from
-failed so it never claims a cleanup it could not reach.
+`webhook_reconcile.js` holds the judgement, shared by the admin endpoints and the
+scheduled sweep so the manual and automatic views can never disagree. A hook is
+**orphaned** when nothing still needs it: no row claims it, or the row that does is
+retired, archived or settled.
 
-Worth running occasionally. The first run on 2026-08-07 found **24 hooks registered, 2 in
-use, 22 orphaned** — all belonging to rows hard-deleted before archiving existed. A prune
-is rate-limited by BlockCypher at roughly 20 deletes; run it twice.
+**A hook is matched by address as well as by id, and that is load-bearing.** `routes/api.js`
+inserts the row, *then* calls `registerWebhook`, which sleeps five seconds between its two
+registrations before either id is written back. For that window a live hook is claimed by
+no row's id column. An id-only rule calls it orphaned and deletes the webhook watching a
+customer who is about to pay. Addresses are `UNIQUE` per row and never reused, so matching
+on them closes the window for nothing. Do not "simplify" this back to an id lookup.
 
-Settled orders — published or refunded — are swept at any age by the same retirement pass.
-`deleteWebhook` is unawaited and returns `undefined` on every path, so whether the hooks
-fired at fulfilment and refund time actually went away was never knowable; eight rows in
-production were still holding hook ids months later. Deleting twice is harmless
-(BlockCypher answers 404, and `deleteWebhook` swallows it), so the sweep is unconditional.
+Three layers, because none of them can see everything:
+
+| Layer | Catches |
+|---|---|
+| retirement pass (62h, and settled at any age) | hooks whose row says they are finished with |
+| `sweepOrphanedWebhooks`, same 6-hourly job | hooks BlockCypher still holds that no row needs — the only layer that can see a delete which silently failed |
+| `GET`/`POST /api/admin/webhooks[/prune]` | the same thing, on demand, when a human wants to look |
+
+**A teardown that could not be confirmed is never recorded as done.** The retirement pass
+claims the row first (so a payment landing mid-pass stops it), then tears the hooks down
+with `deleteWebhookIds` — awaited, and able to answer. If any delete fails, `webhooksRetiredAt`
+is rolled back and the next pass retries. Leaving the stamp in place is precisely how a
+hook goes live forever: the row says retired, so nothing ever looks at it again. The archive
+pass stamps only on success for the same reason; the row is archived either way, and its
+hooks fall to the sweep.
+
+BlockCypher refuses deletes after roughly twenty in a burst — `"Limits reached."` — which
+is exactly when a batch is being cleaned up. The scheduled sweep caps itself at 15 and
+reports `remaining`; the manual prune is uncapped but stops the moment it sees a rate
+limit rather than burning the quota it exists to protect.
+
+The first real comparison, on 2026-08-07, found **24 hooks registered, 2 in use, 22
+orphaned** — all belonging to rows hard-deleted before archiving existed. Hard deletion is
+gone, so that source is closed; the sweep exists because the mechanism that *hid* it is
+not. `WEBHOOK_SWEEP_ENABLED=false` turns it off.
 
 **An address that turns out to hold money is not archived.** The amount, the txid and a
 resolved refund address are written and a Telegram alert fires once; nothing automatic
@@ -315,20 +340,23 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **218 assertions across five files**, all offline:
+`/home/admin/op_returner_tests/` — **263 assertions across six files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
 - `provider_fallback.js` — 12. Broadcast fallback, with `axios.post` stubbed.
 - `webhook_forgery.js` — 28. Proves a forged notification cannot drive a row.
 - `intake_rate_limit.js` — 13. Throttling, per-client buckets, API-key exemption.
-- `archive_lifecycle.js` — 74. Archive-not-delete, funded-and-kept, retirement (pending
-  and settled), events, redaction and its guards.
+- `archive_lifecycle.js` — 80. Archive-not-delete, funded-and-kept, retirement (pending
+  and settled), the rollback when a teardown cannot be confirmed, events, redaction and
+  its guards.
+- `webhook_sweep.js` — 39. Orphan classification, the registration-in-flight window, prune
+  honesty, the BlockCypher burst limit, `deleteWebhookIds`. BlockCypher stubbed at `axios`.
 
 Throwaway databases are built from `schema.js`, so a test schema can no longer drift from
 production — that drift already broke a harness once, when `archivedAt` was added.
 
-Both point at `/home/admin/webseiten/op_returner/backend/src` by absolute path, so they
+They all point at `/home/admin/webseiten/op_returner/backend/src` by absolute path, so they
 test the deployed tree directly. They previously lived in a session scratchpad under
 `/tmp`, one reboot away from being lost.
 
@@ -342,6 +370,13 @@ at it by editing its `SRC` constant, and check the assertions fail. Reintroducin
 flat 31-vByte recipient output this way reproduces the 2026-08-06 production error
 verbatim — `computed fee 458 sats is below the 476 sat minimum for a 238 vByte
 transaction`. Never do this against `backend/src` itself.
+
+Two more that have been checked this way, both worth re-checking if you touch webhooks:
+dropping the address fallback in `judgeHook` turns a hook belonging to a live
+`pending_payment` row into `"reason":"no request claims this hook","orphaned":true` — a
+prune would delete the webhook watching a customer mid-payment. Removing the
+`webhooksRetiredAt` rollback leaves `the next pass retries it — []`: nothing retries, and
+the row claims a teardown that never happened.
 
 `refund.js` exports `estimateRefundVBytes`, which the harness asserts against. It takes a
 second argument (the refund output's size) and uses a 10.5-vByte overhead rather than 10,

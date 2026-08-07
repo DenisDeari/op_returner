@@ -92,6 +92,14 @@ const REQUEST_ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REDACT_ARCHIVED_AFTER_MS = 180 * 24 * 60 * 60 * 1000; // 180 days
 const REDACTION_ENABLED = process.env.REDACTION_ENABLED !== 'false'; // opt-out, on by default
 
+// The orphaned-webhook sweep, run as part of the same retention job.
+//
+// Every other retention pass reasons from our own tables. This one cannot: `deleteWebhook`
+// has never been able to report success, so a hook that failed to delete leaves a row
+// saying "retired" and a webhook that is still live and still billing. Only BlockCypher
+// knows which is true, so the sweep asks it. Opt-out because it deletes things.
+const WEBHOOK_SWEEP_ENABLED = process.env.WEBHOOK_SWEEP_ENABLED !== 'false';
+
 // Failure handling
 const MAX_FULFILL_ATTEMPTS = 3;
 const RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -176,6 +184,7 @@ module.exports = {
     REQUEST_ARCHIVE_AFTER_MS,
     REDACT_ARCHIVED_AFTER_MS,
     REDACTION_ENABLED,
+    WEBHOOK_SWEEP_ENABLED,
     // Failure handling
     MAX_FULFILL_ATTEMPTS,
     RECONCILE_INTERVAL_MS,

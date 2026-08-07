@@ -1,4 +1,5 @@
 const webhookManager = require('./webhook_manager');
+const webhookReconcile = require('./webhook_reconcile');
 const config = require('./config');
 const chainProviders = require('./chain_providers');
 const notifier = require('./notifier');
@@ -48,6 +49,7 @@ async function retireStaleWebhooks(db) {
     // No early return when this is empty: the settled sweep below is independent of it.
     let retired = 0;
     for (const row of candidates) {
+        const stamp = new Date().toISOString();
         const claim = await dbRun(
             db,
             `UPDATE requests SET webhooksRetiredAt = ?
@@ -55,12 +57,27 @@ async function retireStaleWebhooks(db) {
                AND webhooksRetiredAt IS NULL
                AND archivedAt IS NULL
                AND ${UNTOUCHED_BY_MONEY}`,
-            [new Date().toISOString(), row.id]
+            [stamp, row.id]
         );
         if (claim.changes !== 1) continue; // paid or handled since the SELECT
 
-        // blockcypherHookId holds a comma-joined pair; deleteWebhook splits it itself.
-        webhookManager.deleteWebhook(row.blockcypherHookId, config);
+        // blockcypherHookId holds a comma-joined pair; deleteWebhookIds splits it itself.
+        const torn = await webhookManager.deleteWebhookIds(row.blockcypherHookId, config);
+        if (!torn.ok) {
+            // The stamp is a claim, not a fact, and this is the moment that distinction
+            // costs money. BlockCypher refuses deletes in bursts — precisely when a batch
+            // of stale orders is being cleaned up — and a stamp left in place would record
+            // a teardown that never happened, taking the row out of every future pass while
+            // its hooks stay live forever. Hand it back instead; the next pass retries.
+            await dbRun(
+                db,
+                'UPDATE requests SET webhooksRetiredAt = NULL WHERE id = ? AND webhooksRetiredAt = ?',
+                [row.id, stamp]
+            );
+            console.warn(`[Cleanup] Could not retire webhooks for ${row.id}: ${torn.reasons.join('; ')}. Will retry.`);
+            continue;
+        }
+
         events.record(db, row.id, events.KINDS.WEBHOOKS_RETIRED, `unpaid after ${config.WEBHOOK_RETIRE_AFTER_MS / 3600000}h`);
         retired++;
         console.log(`[Cleanup] Retired webhooks for unpaid request ${row.id} (${row.address}).`);
@@ -83,17 +100,28 @@ async function retireStaleWebhooks(db) {
     );
 
     for (const row of settled) {
+        const stamp = new Date().toISOString();
         const claim = await dbRun(
             db,
             `UPDATE requests SET webhooksRetiredAt = ?
              WHERE id = ?
                AND webhooksRetiredAt IS NULL
                AND (opReturnTxId IS NOT NULL OR refundTxId IS NOT NULL)`,
-            [new Date().toISOString(), row.id]
+            [stamp, row.id]
         );
         if (claim.changes !== 1) continue;
 
-        webhookManager.deleteWebhook(row.blockcypherHookId, config);
+        const torn = await webhookManager.deleteWebhookIds(row.blockcypherHookId, config);
+        if (!torn.ok) {
+            await dbRun(
+                db,
+                'UPDATE requests SET webhooksRetiredAt = NULL WHERE id = ? AND webhooksRetiredAt = ?',
+                [row.id, stamp]
+            );
+            console.warn(`[Cleanup] Could not retire webhooks for settled ${row.id}: ${torn.reasons.join('; ')}. Will retry.`);
+            continue;
+        }
+
         events.record(db, row.id, events.KINDS.WEBHOOKS_RETIRED, 'order settled');
         retired++;
         console.log(`[Cleanup] Retired webhooks for settled request ${row.id}.`);
@@ -256,10 +284,18 @@ async function archiveAbandonedRequests(db) {
             continue;
         }
 
+        // Stamped only if the hooks are confirmed gone. The archive itself stands either
+        // way — the row is finished with — but claiming a teardown we did not achieve
+        // would hide a live hook from every pass that follows. Left unstamped, the row is
+        // archived and its hooks are picked up by the orphan sweep instead.
         if (row.blockcypherHookId && !row.webhooksRetiredAt) {
-            webhookManager.deleteWebhook(row.blockcypherHookId, config);
-            await dbRun(db, 'UPDATE requests SET webhooksRetiredAt = ? WHERE id = ? AND webhooksRetiredAt IS NULL',
-                [new Date().toISOString(), row.id]);
+            const torn = await webhookManager.deleteWebhookIds(row.blockcypherHookId, config);
+            if (torn.ok) {
+                await dbRun(db, 'UPDATE requests SET webhooksRetiredAt = ? WHERE id = ? AND webhooksRetiredAt IS NULL',
+                    [new Date().toISOString(), row.id]);
+            } else {
+                console.warn(`[Cleanup] Archived ${row.id} but could not delete its webhooks: ${torn.reasons.join('; ')}.`);
+            }
         }
         events.record(db, row.id, events.KINDS.ARCHIVED, 'abandoned_unpaid: never funded, verified against the chain');
         archived++;
@@ -367,15 +403,53 @@ async function redactOldArchivedRequests(db) {
 }
 
 /**
+ * Asks BlockCypher what it is actually holding, and deletes what nothing needs.
+ *
+ * Every other pass above reasons from our own tables, and our own tables cannot see this
+ * failure: a delete that silently did not land leaves a row saying "retired" and a hook
+ * that is still live. Only BlockCypher knows the difference, so something has to ask it on
+ * a schedule rather than when a human happens to wonder. The 22 orphans found on
+ * 2026-08-07 had been accumulating unseen for months.
+ *
+ * In steady state this finds nothing and costs one API call. Anything it does find means
+ * the bookkeeping drifted, so it says so loudly enough to reach the admin panel's event
+ * feed via console.warn.
+ */
+async function sweepOrphanedWebhooks(db) {
+    if (!config.WEBHOOK_SWEEP_ENABLED) return { deleted: 0, skipped: 0 };
+
+    const result = await webhookReconcile.pruneOrphanedWebhooks(db, config, {
+        limit: webhookReconcile.MAX_DELETES_PER_SWEEP,
+    });
+
+    if (result.ok === false) {
+        console.warn(`[Cleanup] Could not reconcile webhooks against BlockCypher: ${result.reason}`);
+        return { deleted: 0, skipped: 0 };
+    }
+
+    const cleaned = result.deleted + result.alreadyGone;
+    if (cleaned > 0 || result.failed > 0) {
+        console.warn(`[Cleanup] Orphaned webhook sweep: deleted ${result.deleted}, already gone `
+            + `${result.alreadyGone}, in use ${result.skipped}, failed ${result.failed}`
+            + `${result.remaining ? `, ${result.remaining} left for the next pass` : ''}`
+            + `${result.rateLimited ? ' (BlockCypher rate limit reached)' : ''}.`);
+        if (result.errors.length) console.warn(`[Cleanup] Sweep errors: ${result.errors.join('; ')}`);
+    }
+    return { deleted: result.deleted, skipped: result.skipped };
+}
+
+/**
  * The scheduled retention job. Retires webhooks first so an address stops costing quota
  * as early as possible, then decides which rows are finished with, then — much later —
- * drops the content of the ones nobody ever paid.
+ * drops the content of the ones nobody ever paid. The orphan sweep runs last, so it sees
+ * this pass's own retirements and archives rather than chasing them next time.
  */
 async function cleanupOldRequests(db) {
     try {
         await retireStaleWebhooks(db);
         await archiveAbandonedRequests(db);
         await redactOldArchivedRequests(db);
+        await sweepOrphanedWebhooks(db);
     } catch (error) {
         console.error('[Cleanup] Error during cleanup:', error.message);
     }
@@ -386,4 +460,5 @@ module.exports = {
     retireStaleWebhooks,
     archiveAbandonedRequests,
     redactOldArchivedRequests,
+    sweepOrphanedWebhooks,
 };

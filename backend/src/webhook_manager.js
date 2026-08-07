@@ -115,4 +115,35 @@ async function deleteWebhookById(hookId, config) {
     }
 }
 
-module.exports = { registerWebhook, deleteWebhook, listWebhooks, deleteWebhookById };
+/**
+ * Deletes every hook in a comma-joined id pair and reports what actually happened.
+ *
+ * The awaited, answerable counterpart to `deleteWebhook`. A caller that records "these
+ * hooks are retired" needs to know whether they are, because that record is what stops
+ * anything looking at the row again — and BlockCypher refuses deletes in bursts, so the
+ * failure is real and arrives exactly when a batch is being cleaned up.
+ *
+ * No token means no hooks were ever registered, so there is nothing to fail at.
+ *
+ * @returns {Promise<{ok: boolean, deleted: number, alreadyGone: number, failed: number, reasons: string[]}>}
+ */
+async function deleteWebhookIds(hookIdString, config) {
+    const out = { ok: true, deleted: 0, alreadyGone: 0, failed: 0, reasons: [] };
+    if (!hookIdString || !config.BLOCKCYPHER_TOKEN) return out;
+
+    for (const raw of String(hookIdString).split(',')) {
+        const hookId = raw.trim();
+        if (!hookId) continue;
+        const res = await deleteWebhookById(hookId, config);
+        if (res.ok && res.alreadyGone) out.alreadyGone++;
+        else if (res.ok) out.deleted++;
+        else {
+            out.failed++;
+            out.ok = false;
+            out.reasons.push(`${hookId}: ${res.reason}`);
+        }
+    }
+    return out;
+}
+
+module.exports = { registerWebhook, deleteWebhook, listWebhooks, deleteWebhookById, deleteWebhookIds };
