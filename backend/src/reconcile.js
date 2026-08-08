@@ -96,6 +96,8 @@ async function unstickAbandonedLocks(db) {
  *   - a payment confirmed by the webhook where fulfilment never started (crash, restart).
  * Nothing else in the system polls 'payment_confirmed'; the webhook only drives a
  * request in the same execution in which it observes the payment.
+ *
+ * `archivedAt IS NULL` is load-bearing — see the note above retryFailedRequests.
  */
 async function drivePaidRequests(db, rootNode, config) {
     const maxAttempts = config.MAX_FULFILL_ATTEMPTS || 3;
@@ -106,6 +108,7 @@ async function drivePaidRequests(db, rootNode, config) {
            AND paymentTxId IS NOT NULL
            AND opReturnTxId IS NULL
            AND refundTxId IS NULL
+           AND archivedAt IS NULL
            AND COALESCE(attemptCount, 0) < ?`,
         [maxAttempts]
     );
@@ -123,6 +126,23 @@ async function drivePaidRequests(db, rootNode, config) {
     return driven;
 }
 
+/**
+ * Retries fulfilments that failed for a reason a repeat attempt could fix.
+ *
+ * AUTOMATION MUST NEVER PUBLISH A WITHDRAWN MESSAGE. `archivedAt IS NULL` is what enforces
+ * that, here and in drivePaidRequests, and it is not defensive padding — the path is real:
+ * a customer cancels an order (archived 'cancelled_by_customer', `status` deliberately left
+ * alone), pays the address anyway or late, cleanup records the payment without changing
+ * status, an operator force-fulfils it, and that attempt fails. The row is now
+ * 'op_return_failed' with paymentTxId set — an ordinary retry candidate. Without this term
+ * the scheduled pass owns it from there: it republishes a message somebody explicitly
+ * withdrew, up to MAX_FULFILL_ATTEMPTS, with no human in the loop. runReconciliation is
+ * called on startup, so it would fire on the very next deploy.
+ *
+ * refundStrandedRequests below is deliberately NOT guarded this way. Blocking the publish
+ * must not also strand the customer's money — giving it back is the right outcome for an
+ * order that was withdrawn, and it is the only automatic path left once these two skip it.
+ */
 async function retryFailedRequests(db, rootNode, config) {
     const maxAttempts = config.MAX_FULFILL_ATTEMPTS || 3;
 
@@ -133,6 +153,7 @@ async function retryFailedRequests(db, rootNode, config) {
            AND opReturnTxId IS NULL
            AND refundTxId IS NULL
            AND paymentTxId IS NOT NULL
+           AND archivedAt IS NULL
            AND COALESCE(attemptCount, 0) < ?`,
         [maxAttempts]
     );
@@ -184,6 +205,14 @@ async function retryFailedRequests(db, rootNode, config) {
     return retried;
 }
 
+/**
+ * Returns the money on requests that took it and can no longer deliver.
+ *
+ * No `archivedAt` guard, and that is deliberate — the opposite of the two publishing
+ * passes above. An archived order that holds funds is precisely one that should get its
+ * money back: refusing to publish a withdrawn message must not turn into quietly keeping
+ * the payment for it.
+ */
 async function refundStrandedRequests(db, rootNode, config) {
     const maxAttempts = config.MAX_FULFILL_ATTEMPTS || 3;
 
