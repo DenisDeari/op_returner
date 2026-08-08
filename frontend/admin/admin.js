@@ -178,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
-                    ${onWall ? `<span class="wall-flag${hidden ? ' hidden' : ''}" title="${hidden ? 'Hidden from the public wall' : 'Shown on the public wall'}">${hidden ? 'HIDDEN' : 'ON WALL'}</span>` : ''}
+                    ${onWall ? `<span class="wall-flag${hidden ? ' hidden' : ''}" title="${hidden ? 'Hidden from the public wall' : (req.publicSource === 'operator' ? 'On the public wall — put there by you, not opted into by the customer' : 'On the public wall — the customer opted in')}">${hidden ? 'HIDDEN' : (req.publicSource === 'operator' ? 'ON WALL*' : 'ON WALL')}</span>` : ''}
                 </td>
                 <td>${note}</td>
                 <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.opReturnTxId)}" target="_blank">${escapeHtml(req.opReturnTxId.substring(0, 10))}...</a>` : 'N/A'}</td>

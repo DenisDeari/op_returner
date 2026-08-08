@@ -45,6 +45,11 @@ const KINDS = Object.freeze({
     WALL_OPT_IN: 'wall_opt_in',
     WALL_HIDDEN: 'wall_hidden',
     WALL_SHOWN: 'wall_shown',
+    // The operator putting a message on the wall that its author never opted in to —
+    // messages published before the wall existed. Kept distinct from WALL_OPT_IN so the
+    // history never implies a consent that was not given, and from WALL_SHOWN, which
+    // means restoring something after a hide.
+    WALL_PUBLISHED_BY_OPERATOR: 'wall_published_by_operator',
 });
 
 const MAX_DETAIL_CHARS = 2000;

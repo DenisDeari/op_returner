@@ -8,6 +8,7 @@
 // underlying row is actually resolved.
 
 const { dbAll } = require('./db_utils');
+const confirmWatch = require('./confirm_watch');
 
 // How long a request may sit mid-fulfilment or mid-refund before it counts as stuck.
 const STUCK_AFTER_MS = 30 * 60 * 1000;
@@ -90,6 +91,46 @@ async function computeAlerts(db, config = {}) {
             title: `Order stuck in "${r.status.replace(/_/g, ' ')}" for over 30 minutes`,
             detail: 'Probably interrupted by a restart. The reconciliation job should release it on its next pass.',
             since: r.lastAttemptAt || r.createdAt,
+        });
+    }
+
+    // --- Broadcast, but never mined --------------------------------------
+    //
+    // The one failure mode this service had no detector for. Every reconcile pass filters
+    // `opReturnTxId IS NULL`, so once a transaction is broadcast nothing ever looks at it
+    // again — and the default fee rate is the 2 sat/vB relay floor, which is exactly the
+    // tier that gets evicted from the mempool when it fills. The customer's money was
+    // taken, the order reads delivered, and the message is nowhere. confirm_watch.js
+    // supplies opReturnConfirmedAt; this turns its absence into something visible.
+    // Bounded at BOTH ends, and the older bound matters as much as the newer one. The
+    // watcher stops asking after confirm_watch.GIVE_UP_AFTER_MS, so anything older than
+    // that is not "unconfirmed" — it is unchecked, and alerting on it would be a warning
+    // nobody can act on and nothing can ever clear. Alerts have to stay clearable or the
+    // panel becomes noise the operator learns to skip past.
+    const unconfirmedCutoff = new Date(Date.now() - (config.OP_RETURN_UNCONFIRMED_ALERT_MS || 24 * 60 * 60 * 1000)).toISOString();
+    const stillWatchedSince = new Date(Date.now() - confirmWatch.GIVE_UP_AFTER_MS).toISOString();
+    const unmined = await dbAll(
+        db,
+        `SELECT id, opReturnTxId, feeRate, COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS broadcastAt
+           FROM requests
+          WHERE opReturnTxId IS NOT NULL
+            AND opReturnConfirmedAt IS NULL
+            AND COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) < ?
+            AND COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) > ?
+          ORDER BY broadcastAt ASC`,
+        [unconfirmedCutoff, stillWatchedSince]
+    );
+    for (const r of unmined) {
+        const hours = Math.floor((Date.now() - new Date(r.broadcastAt).getTime()) / 3600000);
+        alerts.push({
+            severity: 'warning',
+            kind: 'unconfirmed_op_return',
+            requestId: r.id,
+            title: `Published ${hours}h ago but still not in a block`,
+            detail: `Broadcast at ${r.feeRate || '?'} sat/vB and not mined since. It may simply be slow, or it may have been `
+                + `dropped from the mempool — in which case the customer paid and the message is not on-chain. `
+                + `Check ${r.opReturnTxId}.`,
+            since: r.broadcastAt,
         });
     }
 

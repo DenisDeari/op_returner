@@ -54,6 +54,8 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | Automation never publishes a message the customer withdrew | `reconcile.js`, `archivedAt IS NULL` on both publishing passes |
 | An archived request is never on the public wall | `wall.js` `WALL_SELECT_SQL` |
 | A public response is a whitelist, never a row spread | `wall.js`, `PUBLIC_REQUEST_FIELDS` in `routes/api.js` |
+| A confirmation that could not be read is never recorded as "unconfirmed" | `confirm_watch.js` |
+| `opReturnConfirmedAt` is a UI signal — no money path may read it | asserted in `confirmations.js` |
 | A refund never runs twice — conditional `UPDATE` acts as the lock | `refund.js` |
 | Never auto-refund when the payment UTXO is already spent | `NO_REFUND_FAILURES`, `reconcile.js` |
 | The refund address comes from the chain, never from the webhook body | `routes/webhook.js` |
@@ -97,6 +99,7 @@ backend/src/
   request_events.js     durable per-request history — append-only, fire-and-forget
   wallet_scan.js        read-only balance view over every branch of the seed
   wall.js               the public message wall query, its cache, and why each term exists
+  confirm_watch.js      notices when a published OP_RETURN actually reaches a block
   qr.js                 BIP21 payment URIs rendered as SVG QR codes
   routes/wallet.js      admin-only, strictly read-only wallet API
   routes/auth.js        the admin bearer check, shared by admin.js and wallet.js
@@ -219,6 +222,37 @@ a request id and reads the address, amount and label from the row. Do not add an
 generator and an address oracle against the seed. It refuses once `archivedAt` **or**
 `webhooksRetiredAt` is set: hooks retire at 62h and archiving is at 7 days, and in the
 4.4 days between, nothing is watching that address except the customer's own open tab.
+
+## Confirmation, and the failure nobody could see
+
+Every reconcile pass filters `opReturnTxId IS NULL`, so until 2026-08-08 nothing in the
+service ever looked at a transaction again once it was broadcast. `DEFAULT_FEE_RATE` is
+2 sat/vB — the relay floor, and exactly the tier a full mempool evicts. So "we took the
+money, broadcast, and it vanished" was an outcome the operator could not have detected.
+
+`confirm_watch.js` runs every 5 minutes, asks Esplora whether published transactions have
+been mined, and records `opReturnConfirmedAt` / `opReturnBlockHeight`. `alerts.js` turns
+a prolonged absence into a warning.
+
+Three rules hold it in place:
+
+- **Esplora only, structurally.** There is deliberately no BlockCypher implementation of
+  `getTxStatus`, so `tryProviders` filters BlockCypher out on method presence alone. A
+  view path cannot spend the webhooks' allowance even by accident.
+- **An unreadable answer is not a negative.** On any provider failure the row is left
+  exactly as it was. Recording "not mined" because a host timed out is the same mistake as
+  showing an unreadable balance as zero.
+- **It is a UI signal and never a money decision.** A one-block reorg un-mines a
+  transaction; if `refund.js` or `reconcile.js` ever branched on this column, a reorg would
+  become a refund. `confirmations.js` asserts that no money path reads it.
+
+The alert is bounded at **both** ends — older than the watcher's give-up window and it is
+not "unconfirmed", it is unchecked, and a warning nothing can ever clear teaches the
+operator to skip the panel.
+
+It is deliberately **not** a new status value: `wall.js` filters on
+`status = 'op_return_broadcasted'`, so an `op_return_confirmed` status would silently empty
+the public wall of every message the moment it got mined.
 
 ## Error classification
 
@@ -424,7 +458,7 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **354 assertions across seven files**, all offline:
+`/home/admin/op_returner_tests/` — **390 assertions across eight files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -439,6 +473,10 @@ There is no test runner in the repo. Verification lives outside it, in
 - `wall.js` — 91. What the wall shows and what it must never show, the public field
   whitelists, intake opt-in, moderation, the payment QR's refusals, and the ALTER-based
   upgrade path on a database that already exists.
+
+- `confirmations.js` — 36. The confirmation watch, its bounds, the "unreadable is not
+  unconfirmed" rule, the operator alert for a transaction that never got mined, and the
+  invariant that no money path reads `opReturnConfirmedAt`.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real

@@ -89,7 +89,7 @@ const PUBLIC_REQUEST_FIELDS = [
     'address', 'requiredAmountSatoshis',
     'targetAddress', 'amountToSend', 'feeRate',
     'paymentTxId', 'paymentReceivedSatoshis', 'paymentConfirmationCount', 'paymentConfirmedAt',
-    'opReturnTxId',
+    'opReturnTxId', 'opReturnConfirmedAt', 'opReturnBlockHeight',
     'failureReason', 'attemptCount',
     'refundTxId', 'refundedAt', 'refundFailureReason',
     'userFeedback', 'userFeedbackAt',
@@ -388,8 +388,13 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             // says yes would publish everyone who said no.
             await dbRun(
                 db,
-                'UPDATE requests SET isPublic = ?, publicAt = ? WHERE id = ?',
-                [wantsPublic ? 1 : 0, wantsPublic ? new Date().toISOString() : null, result.newRequestId]
+                'UPDATE requests SET isPublic = ?, publicAt = ?, publicSource = ? WHERE id = ?',
+                [
+                    wantsPublic ? 1 : 0,
+                    wantsPublic ? new Date().toISOString() : null,
+                    wantsPublic ? 'customer' : null,
+                    result.newRequestId,
+                ]
             );
             if (wantsPublic) {
                 events.record(db, result.newRequestId, events.KINDS.WALL_OPT_IN, 'customer chose to show this on the wall');
@@ -446,6 +451,14 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             //
             // The address and the amount are withheld for the same reason.
             if (row.archivedAt) {
+                // An archived request is USUALLY dead — but not always. An operator can
+                // force-fulfil one (routes/admin.js, with a second confirmation), and the
+                // refund pass deliberately still covers archived rows. Withholding the
+                // outcome here left a customer whose withdrawn order was published, or
+                // refunded, staring at "Cancelled" forever with no way to learn either.
+                //
+                // The address and the amount stay withheld — those are what this branch
+                // exists to suppress, so the order can never be presented as payable.
                 return res.status(200).json({
                     id: row.id,
                     status: 'archived',
@@ -453,9 +466,16 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                     archivedReason: row.archivedReason,
                     createdAt: row.createdAt,
                     message: row.message,
-                    error: row.archivedReason === 'cancelled_by_customer'
-                        ? 'This request was cancelled.'
-                        : 'This request expired without payment. Please create a new one.',
+                    opReturnTxId: row.opReturnTxId,
+                    opReturnConfirmedAt: row.opReturnConfirmedAt,
+                    refundTxId: row.refundTxId,
+                    error: row.opReturnTxId
+                        ? 'This request was withdrawn, but it had already been paid and was published.'
+                        : row.refundTxId
+                            ? 'This request was cancelled and your payment was refunded.'
+                            : row.archivedReason === 'cancelled_by_customer'
+                                ? 'This request was cancelled.'
+                                : 'This request expired without payment. Please create a new one.',
                 });
             }
 

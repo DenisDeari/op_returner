@@ -22,9 +22,17 @@
 //       "duplicate column name" and the default stays 1, so:
 //         - every row that existed before this feature reads isPublic = 1, and
 //         - every new row is born isPublic = 1, because queue.js's INSERT omits the column.
-//       Consent is proved by `publicAt`, which is a genuinely new column: NULL unless the
-//       intake handler stamped it because the customer ticked the box. Anything that
-//       inherited a 1 from the legacy default has no stamp and stays off the wall.
+//       `publicAt` is what makes this safe, because it is a genuinely new column and so
+//       cannot have inherited anything. The invariant is not "the customer consented" —
+//       it is narrower and stronger: **publicAt is only ever set by a deliberate act.**
+//       Either the intake handler stamped it because the customer ticked the box, or an
+//       operator put the message on the wall on purpose. Nothing sets it by default, so
+//       anything carrying a 1 it merely inherited has no stamp and stays off.
+//
+//       `publicSource` records which of those two it was. It does not affect this query
+//       — an operator-published message is as public as a customer-published one — but it
+//       keeps "did this person agree to appear on our website?" an answerable question.
+//       Messages published before the wall existed were never offered the choice.
 //
 //   archivedAt IS NULL
 //       Not decoration. Archiving deliberately does NOT overwrite `status`, so a request

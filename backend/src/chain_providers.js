@@ -226,6 +226,26 @@ function buildProviders(config) {
                 if (!Array.isArray(vin)) throw new Error('malformed tx response');
                 return vin.map((v) => v?.prevout?.scriptpubkey_address).filter(Boolean);
             },
+            // Whether a transaction has been mined. Esplora only — there is deliberately
+            // no BlockCypher implementation, so `tryProviders` filters it out of the
+            // candidate list entirely and this can never spend the webhooks' allowance.
+            //
+            // NOTE: `/tx/:id/status` answers HTTP 200 {"confirmed": false} for a txid that
+            // does not exist at all, exactly as it does for one sitting in the mempool.
+            // The two are indistinguishable here, so a false means "not mined", never
+            // "dropped". Only ever widen this to a real absence check via GET /tx/:id,
+            // which 404s — and think hard first, because we only ever ask about txids our
+            // own broadcast returned.
+            async getTxStatus(txId) {
+                const res = await axios.get(`${base}/tx/${txId}/status`, { timeout: HTTP_TIMEOUT_MS });
+                const d = res.data;
+                if (!d || typeof d.confirmed !== 'boolean') throw new Error('malformed status response');
+                return {
+                    confirmed: d.confirmed,
+                    blockHeight: Number.isFinite(d.block_height) ? d.block_height : null,
+                    blockTime: Number.isFinite(d.block_time) ? d.block_time : null,
+                };
+            },
             async getAddressStats(address) {
                 const res = await axios.get(`${base}/address/${address}`, { timeout: HTTP_TIMEOUT_MS });
                 const cs = res.data?.chain_stats || {};
@@ -483,6 +503,37 @@ async function getPayerAddress(txId, config) {
     return { ok: true, address: addresses[0], provider: result.provider };
 }
 
+/**
+ * Has this transaction been mined?
+ *
+ * Esplora only and cooldown-aware, because this runs on a timer over a table that grows
+ * forever — the same rule the wallet scan follows, for the same reason.
+ *
+ * A failed read returns `{ok: false}` and NEVER a synthesised `confirmed: false`. The
+ * caller must leave its record untouched in that case: "a balance that could not be read
+ * is never shown as 0" applies here verbatim, and painting an order as unconfirmed
+ * because a host timed out would be the same mistake in a different column.
+ *
+ * @returns {Promise<{ok: true, confirmed: boolean, blockHeight: number|null} | {ok: false, reason: string}>}
+ */
+async function getTxStatus(txId, config) {
+    if (!/^[0-9a-f]{64}$/i.test(String(txId || ''))) {
+        return { ok: false, reason: 'not a txid' };
+    }
+    const result = await tryProviders(config, 'getTxStatus', [txId], {
+        label: `tx-status ${String(txId).slice(0, 12)}`,
+        onlyProviders: ESPLORA_ONLY,
+        useCooldown: true,
+    });
+    if (!result.ok) return { ok: false, reason: result.reason };
+    return {
+        ok: true,
+        confirmed: !!result.value.confirmed,
+        blockHeight: result.value.blockHeight ?? null,
+        provider: result.provider,
+    };
+}
+
 /** Maps a BlockCypher /balance payload onto the shape the wallet view expects. */
 function normalizeBlockcypherBalance(d) {
     return {
@@ -596,5 +647,6 @@ module.exports = {
     SUMMARY_BATCH_SIZE,
     isOutputSpent,
     getPayerAddress,
+    getTxStatus,
     classifyError,
 };

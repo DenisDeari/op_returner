@@ -483,6 +483,20 @@ input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
 .rail li:first-child::after { left: 0; transform: none; }
 .rail li:last-child::after  { left: auto; right: 0; transform: none; }
 
+/* Five steps do not fit as horizontal labels on a phone. Rather than truncate, the
+   labels drop away below 560px and the dots alone carry the progress — the status line
+   underneath already says in words where the order is, so nothing is lost. */
+.rail li span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+@media (max-width: 560px) {
+    .rail li span { display: none; }
+    .rail li { padding-top: 14px; }
+}
+
 .rail li.done::before { background: var(--green); }
 .rail li.done::after  { background: var(--green); border-color: var(--green); }
 .rail li.done         { color: var(--dim); }

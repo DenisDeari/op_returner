@@ -171,20 +171,40 @@ document.addEventListener('DOMContentLoaded', () => {
     // here: the row is final, and without it the browser polls a dead request forever.
     const TERMINAL_STATUSES = ['op_return_broadcasted', 'refunded', 'refund_failed', 'archived'];
 
-    // [quoted, paid, on-chain] -> '' | 'done' | 'now' | 'bad'
-    function railFor(status) {
-        switch (status) {
-            case 'pending_payment':       return ['done', 'now', ''];
-            case 'payment_detected':      return ['done', 'now', ''];
-            case 'payment_confirmed':     return ['done', 'done', 'now'];
-            case 'processing_op_return':  return ['done', 'done', 'now'];
-            case 'op_return_broadcasted': return ['done', 'done', 'done'];
-            case 'op_return_failed':      return ['done', 'done', 'bad'];
-            case 'refund_processing':     return ['done', 'done', 'bad'];
-            case 'refunded':              return ['done', 'done', 'bad'];
-            case 'refund_failed':         return ['done', 'done', 'bad'];
-            case 'archived':              return ['bad', '', ''];
-            default:                      return ['done', 'now', ''];
+    // Five steps: Created, Paid, Confirmed, Published, In a block.
+    //
+    // Always returns five entries. An earlier version returned a shorter array for some
+    // statuses and the renderer skipped the empty ones, which made an archived order draw
+    // as a single dot pinned to the right with no track at all — the CSS sizes the last
+    // step to its content and strips its connector.
+    //
+    // '' | 'done' | 'now' | 'bad'
+    const RAIL_LABELS = ['Created', 'Paid', 'Confirmed', 'Published', 'In a block'];
+
+    function railFor(order) {
+        const s = order.status;
+        const mined = !!order.opReturnConfirmedAt;
+
+        switch (s) {
+            case 'pending_payment':       return ['done', 'now', '', '', ''];
+            case 'payment_detected':      return ['done', 'done', 'now', '', ''];
+            // payment_confirmed and processing_op_return are the same thing to a customer:
+            // the money is in and we are building. processing_op_return is a mutex, not a
+            // stage, and reconcile flips it back after 30 minutes.
+            case 'payment_confirmed':
+            case 'processing_op_return':  return ['done', 'done', 'done', 'now', ''];
+            case 'op_return_broadcasted': return ['done', 'done', 'done', 'done', mined ? 'done' : 'now'];
+            case 'refunded':              return ['done', 'done', 'done', 'bad', ''];
+            case 'refund_processing':
+            case 'refund_failed':
+            case 'op_return_failed':      return ['done', 'done', 'done', 'bad', ''];
+            // Withdrawn. Usually it stops there — but an operator can still publish or
+            // refund an archived order, so follow the evidence rather than the status.
+            case 'archived':
+                if (order.txId) return ['done', 'done', 'done', 'done', mined ? 'done' : 'now'];
+                if (order.refundTxId) return ['done', 'done', 'done', 'bad', ''];
+                return ['bad', '', '', '', ''];
+            default:                      return ['done', 'now', '', '', ''];
         }
     }
 
@@ -194,7 +214,10 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'payment_detected':      return 'Payment seen, waiting for a confirmation';
             case 'payment_confirmed':     return 'Paid — publishing';
             case 'processing_op_return':  return 'Publishing';
-            case 'op_return_broadcasted': return 'On-chain';
+            case 'op_return_broadcasted':
+                return order.opReturnConfirmedAt
+                    ? 'In a block — permanent'
+                    : 'Published. Waiting for a miner to include it, which can take a while at a low fee rate.';
             case 'op_return_failed':      return 'Could not publish';
             case 'refund_processing':     return 'Refunding';
             case 'refunded':              return 'Refunded';
@@ -233,6 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
         set('refundTxId', data.refundTxId);
         set('failureReason', data.failureReason);
         set('archivedReason', data.archivedReason);
+        set('opReturnConfirmedAt', data.opReturnConfirmedAt);
+        set('opReturnBlockHeight', data.opReturnBlockHeight);
         // The server explains a retired request in `error`. Keep it — the customer
         // otherwise sees a bare status and no reason.
         if (data.status === 'archived') set('archivedNote', data.error);
@@ -259,10 +284,10 @@ document.addEventListener('DOMContentLoaded', () => {
             el.className = `order${failed ? ' is-failed' : ''}${done ? ' is-done' : ''}`;
             el.style.animationDelay = `${Math.min(i, 6) * 0.03}s`;
 
-            const rail = railFor(order.status);
-            const railLabels = order.status === 'archived'
-                ? ['Cancelled', '', '']
-                : ['Quoted', 'Paid', 'On-chain'];
+            const rail = railFor(order);
+            const railLabels = (order.status === 'archived' && !order.txId && !order.refundTxId)
+                ? ['Withdrawn', '', '', '', '']
+                : RAIL_LABELS;
 
             // Feedback box: only once the request has actually failed, and only until sent.
             let feedbackHtml = '';
@@ -287,10 +312,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span>${escapeHtml(ago(order.createdAt))}</span>
                 </div>
                 <div class="order-msg">${escapeHtml(order.message)}${order.isPublic ? '<span class="tag">on the wall</span>' : ''}</div>
+                ${/* ALWAYS five <li>. Skipping the unlabelled ones collapses the flex row
+                      and the rail renders as one stray dot with no track — the last step
+                      is sized to its content and has its connector removed by design. */ ''}
                 <ol class="rail">
-                    ${rail.map((c, n) => railLabels[n] ? `<li class="${c}">${railLabels[n]}</li>` : '').join('')}
+                    ${rail.map((c, n) => `<li class="${c}"><span>${escapeHtml(railLabels[n] || '')}</span></li>`).join('')}
                 </ol>
-                <div class="order-note" style="${order.status === 'pending_payment' || done ? 'display:none' : ''}">${escapeHtml(labelFor(order))}</div>
+                <div class="order-note" style="${order.status === 'pending_payment' || (done && order.opReturnConfirmedAt) ? 'display:none' : ''}">${escapeHtml(labelFor(order))}</div>
                 ${order.archivedNote ? `<div class="order-note bad">${escapeHtml(order.archivedNote)}</div>` : ''}
                 ${order.refundTxId ? `<div class="order-note good">Your payment was refunded — <a href="https://mempool.space/tx/${encodeURIComponent(order.refundTxId)}" target="_blank" rel="noopener">view transaction ↗</a></div>` : ''}
                 ${failed && order.supportEmail ? `<div class="order-note">Need help? <a href="mailto:${escapeHtml(order.supportEmail)}?subject=SatWire%20request%20${encodeURIComponent(order.requestId)}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
@@ -429,15 +457,46 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // A broadcast order is no longer finished the moment it broadcasts — it still has to
+    // reach a block, and the server learns that separately. So it stays pollable until
+    // it does, but on a much slower cadence: a confirmation takes ~10 minutes at best,
+    // and at the 2 sat/vB floor it can take days. Polling that every 5 seconds would be
+    // thousands of pointless requests per order.
+    const CONFIRM_POLL_MS = 60 * 1000;
+    const lastConfirmPoll = {};
+
+    function needsPolling(order) {
+        if (!TERMINAL_STATUSES.includes(order.status)) return true;
+        if (order.status !== 'op_return_broadcasted' || order.opReturnConfirmedAt) return false;
+        // Stamped BEFORE the request, not after: a slow or failed fetch would otherwise
+        // leave the mark unset and the order would fire again on every single tick.
+        const now = Date.now();
+        if (now - (lastConfirmPoll[order.requestId] || 0) < CONFIRM_POLL_MS) return false;
+        lastConfirmPoll[order.requestId] = now;
+        return true;
+    }
+
+    // poll() awaits one request per order in sequence, while setInterval fires regardless.
+    // Without this guard a slow connection stacks overlapping passes on top of each other,
+    // each one re-requesting everything. Pre-existing; it only gets worse as the polled
+    // set grows.
+    let polling = false;
+
     async function poll() {
-        if (!orders.length) return;
-        for (const order of [...orders]) {
-            if (TERMINAL_STATUSES.includes(order.status)) continue;
-            try {
-                const res = await fetch(`/api/request-status/${encodeURIComponent(order.requestId)}`);
-                if (!res.ok) continue;
-                applyStatus(order.requestId, await res.json());
-            } catch { /* silent — the next tick tries again */ }
+        if (polling || !orders.length) return;
+        if (typeof document.visibilityState === 'string' && document.visibilityState !== 'visible') return;
+        polling = true;
+        try {
+            for (const order of [...orders]) {
+                if (!needsPolling(order)) continue;
+                try {
+                    const res = await fetch(`/api/request-status/${encodeURIComponent(order.requestId)}`);
+                    if (!res.ok) continue;
+                    applyStatus(order.requestId, await res.json());
+                } catch { /* silent — the next tick tries again */ }
+            }
+        } finally {
+            polling = false;
         }
     }
 

@@ -103,6 +103,17 @@ const WEBHOOK_SWEEP_ENABLED = process.env.WEBHOOK_SWEEP_ENABLED !== 'false';
 // Failure handling
 const MAX_FULFILL_ATTEMPTS = 3;
 const RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+// How often to ask whether published OP_RETURN transactions have reached a block.
+// Purely a view/reporting concern (confirm_watch.js), and Esplora-only, so it spends none
+// of the BlockCypher allowance. Five minutes is well under a block interval and the pass
+// is capped, so it stays cheap on a table that grows forever.
+const CONFIRM_WATCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// How long an OP_RETURN may sit unconfirmed before the operator is told. At the 2 sat/vB
+// floor a slow confirmation is normal, so this is deliberately past "just slow" — it is
+// the threshold for "this probably fell out of the mempool and nobody would ever know".
+const OP_RETURN_UNCONFIRMED_ALERT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const REFUND_ENABLED = process.env.REFUND_ENABLED !== 'false'; // opt-out, on by default
 
 // Customer feedback on failed requests
@@ -188,6 +199,8 @@ module.exports = {
     // Failure handling
     MAX_FULFILL_ATTEMPTS,
     RECONCILE_INTERVAL_MS,
+    CONFIRM_WATCH_INTERVAL_MS,
+    OP_RETURN_UNCONFIRMED_ALERT_MS,
     REFUND_ENABLED,
     // Customer feedback
     USER_FEEDBACK_MAX_BYTES,

@@ -7,6 +7,7 @@ const { initializeWallet } = require('./src/wallet');
 const requestQueue = require('./src/queue');
 const { cleanupOldRequests } = require('./src/cleanup');
 const { runReconciliation } = require('./src/reconcile');
+const { checkPendingConfirmations } = require('./src/confirm_watch');
 const eventLog = require('./src/event_log');
 
 // Start capturing warnings and errors before anything else runs, so the admin panel's
@@ -87,4 +88,15 @@ function startScheduledJobs() {
     runReconciliation(db, rootNode, config);
     setInterval(() => runReconciliation(db, rootNode, config), RECONCILE_INTERVAL_MS);
     console.log(`[Server] Reconciliation job scheduled to run every ${RECONCILE_INTERVAL_MS / (1000 * 60)} minutes.`);
+
+    // Notices when a published OP_RETURN reaches a block. Read-only and Esplora-only —
+    // it moves no money and cannot touch the BlockCypher allowance. Unlike reconcile it
+    // is NOT run on startup: nothing depends on it being fresh at boot, and a deploy
+    // should not fire a burst of provider requests before the service is even serving.
+    const CONFIRM_WATCH_INTERVAL_MS = config.CONFIRM_WATCH_INTERVAL_MS;
+    setInterval(() => {
+        checkPendingConfirmations(db, config).catch((e) =>
+            console.warn(`[ConfirmWatch] Pass failed: ${e.message}`));
+    }, CONFIRM_WATCH_INTERVAL_MS);
+    console.log(`[Server] Confirmation watch scheduled to run every ${CONFIRM_WATCH_INTERVAL_MS / (1000 * 60)} minutes.`);
 }

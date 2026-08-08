@@ -94,6 +94,29 @@ const REQUEST_COLUMN_MIGRATIONS = [
     'ADD COLUMN isPublic INTEGER DEFAULT 0',
     'ADD COLUMN hiddenByAdmin INTEGER DEFAULT 0',
     'ADD COLUMN publicAt TEXT',
+    // WHO decided this message goes on the wall: 'customer' (they ticked the box at
+    // intake) or 'operator' (we put it there).
+    //
+    // Not decoration. Messages published before the wall existed were never offered the
+    // choice, and some of them are on the wall now because the operator decided they
+    // should be. That is a legitimate call — the text is already permanently public on
+    // the chain — but it is a different fact from a customer consenting, and the two must
+    // not become indistinguishable. "Did this person agree to appear on our website?" is
+    // a question worth being able to answer years later.
+    'ADD COLUMN publicSource TEXT',
+    // When the OP_RETURN transaction was seen in a block, and which one.
+    //
+    // A UI SIGNAL ONLY. Nothing in refund.js, reconcile.js or cleanup.js may branch on
+    // it, and nothing may treat it as final: a one-block reorg un-mines a transaction,
+    // and a column that quietly became a money decision would turn a reorg into a refund.
+    // Its two legitimate readers are the customer's progress rail and the operator alert
+    // for "broadcast days ago and still not mined".
+    //
+    // Deliberately NOT a new status value: wall.js filters on
+    // `status = 'op_return_broadcasted'`, so an 'op_return_confirmed' status would empty
+    // the public wall of every message the moment it got mined.
+    'ADD COLUMN opReturnConfirmedAt TEXT',
+    'ADD COLUMN opReturnBlockHeight INTEGER',
 ];
 
 // The only index on `requests`.
