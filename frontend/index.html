@@ -2,137 +2,195 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SatWire</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Publish a message permanently in a Bitcoin block.">
+    <title>SatWire — Immortalize your Message</title>
+    <link rel="stylesheet" href="css/styles.css?v=3">
 </head>
 <body>
-    <div class="app-container">
-        <header class="app-header">
-            <h1>SatWire</h1>
-            <span class="subtitle">Bitcoin Message Embedder</span>
-        </header>
 
-        <main class="app-main">
-            <!-- Left: New Message -->
-            <section class="card">
-                <h2>Embed Message</h2>
+<div class="wrap">
 
-                <div class="field">
-                    <label for="message-input">MESSAGE</label>
-                    <textarea id="message-input" placeholder="Text to embed on-chain..."></textarea>
-                    <span id="byte-counter" class="hint">0 / 1000 bytes</span>
-                </div>
+    <header class="top">
+        <a class="brand" href="/">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect width="24" height="24" rx="7" fill="url(#g)"/>
+                <path d="M5 12.5h3.2l1.6-4.2 2.4 7.4 1.7-3.2H19" stroke="#17130a" stroke-width="1.7"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+                <defs>
+                    <linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
+                        <stop stop-color="#ffb64d"/><stop offset="1" stop-color="#f7931a"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            satwire
+        </a>
+        <div class="top-right">
+            <span class="live" id="live"><i></i> live</span>
+            <a class="top-link" href="#api" id="api-link">API</a>
+        </div>
+    </header>
 
-                <div class="field">
-                    <label for="target-address-input">RECIPIENT ADDRESS <span class="hint">(optional)</span></label>
-                    <input type="text" id="target-address-input" placeholder="bc1q...">
-                </div>
+    <section class="hero">
+        <h1><em>Immortalize</em> your Message</h1>
+        <p>In a Bitcoin block, in minutes.</p>
+    </section>
 
-                <div class="field-row">
-                    <div class="field">
-                        <label for="amount-input">SATS TO SEND <span class="hint" id="amount-hint">(optional)</span></label>
-                        <input type="number" id="amount-input" min="0" placeholder="0">
-                    </div>
-                    <div class="field">
-                        <label for="fee-rate-slider">FEE RATE: <strong id="fee-rate-display">2</strong> sat/vB</label>
-                        <input type="range" id="fee-rate-slider" min="1" max="10" value="2">
-                    </div>
-                </div>
+    <!-- ============================ Compose ============================== -->
+    <section class="compose">
+        <textarea id="msg" placeholder="Say it once, and let it outlive you&hellip;" aria-label="Your message"></textarea>
 
-                <div class="cost-box">
-                    <div class="cost-row"><span>Network fee</span><span id="cost-network-fee">~220 sats</span></div>
-                    <div class="cost-row"><span>Service fee</span><span>2,000 sats</span></div>
-                    <div class="cost-row"><span>Recipient</span><span id="cost-recipient-amount">0 sats</span></div>
-                    <div class="cost-row total"><span>Total</span><span id="cost-total">~2,220 sats</span></div>
-                </div>
-
-                <button id="execute-button" class="btn-primary">BROADCAST</button>
-            </section>
-
-            <!-- Right: Active Requests -->
-            <section class="card">
-                <h2>Active Requests</h2>
-                <div id="active-orders-list" class="orders-list">
-                    <p class="placeholder">No active requests.</p>
-                </div>
-            </section>
-        </main>
-
-        <!-- API Docs -->
-        <section class="card docs-card">
-            <h2>API Reference</h2>
-
-            <h3 class="docs-section-title">Public API</h3>
-            <p class="hint">No authentication required. User funds the returned address to trigger the transaction.</p>
-
-            <div class="endpoint">
-                <span class="method post">POST</span>
-                <code>/api/message-request</code>
-                <p>Create an OP_RETURN request. Returns a payment address and required amount.</p>
-                <pre>{
-  "message": "Hello Bitcoin!",
-  "targetAddress": "bc1q...",   // optional
-  "feeRate": 2,                 // optional, default 2
-  "amountToSend": 0             // optional, sats to recipient
-}</pre>
+        <div class="recip">
+            <div class="field grow">
+                <input type="text" id="addr-in" placeholder="Also pay a Bitcoin address &mdash; optional"
+                       spellcheck="false" autocomplete="off" aria-label="Recipient address">
             </div>
-
-            <div class="endpoint">
-                <span class="method get">GET</span>
-                <code>/api/request-status/:requestId</code>
-                <p>Poll status of a request.</p>
-            </div>
-
-            <div class="endpoint">
-                <span class="method delete">DELETE</span>
-                <code>/api/request/:requestId</code>
-                <p>Cancel a pending request.</p>
-            </div>
-
-            <h3 class="docs-section-title">Internal API</h3>
-            <p class="hint">Requires <code>X-API-Key</code> header. Funded from the SatWire treasury — no user payment needed.</p>
-
-            <div class="endpoint">
-                <span class="method post">POST</span>
-                <code>/api/internal/embed</code>
-                <p>Immediately broadcasts an OP_RETURN tx from the treasury wallet.</p>
-                <pre>{
-  "message": "Hello Bitcoin!",
-  "targetAddress": "bc1q...",   // optional
-  "feeRate": 2,                 // optional
-  "amountToSend": 0             // optional
-}</pre>
-            </div>
-
-            <div class="endpoint">
-                <span class="method get">GET</span>
-                <code>/api/internal/treasury</code>
-                <p>Returns treasury address and current confirmed balance.</p>
-            </div>
-        </section>
-
-        <footer class="app-footer">
-            SatWire &middot; Bitcoin Blockchain Messaging
-        </footer>
-    </div>
-
-    <!-- Payment Modal -->
-    <div id="payment-modal" class="modal" style="display: none;">
-        <div class="modal-box">
-            <button id="close-payment-modal" class="modal-close">&times;</button>
-            <h2>Payment Required</h2>
-            <p>Send the exact amount to this address:</p>
-            <div class="payment-info">
-                <div class="amount-label">TOTAL: <strong id="modal-required-amount">...</strong></div>
-                <div class="address-row">
-                    <code id="modal-payment-address">...</code>
-                    <button id="modal-copy-address-button" class="btn-small">COPY</button>
-                </div>
+            <div class="field amt">
+                <input type="number" id="amt-in" min="0" placeholder="0" aria-label="Amount to send">
+                <span class="unit">sats</span>
             </div>
         </div>
-    </div>
+        <div class="recip-note"><span class="note" id="amt-note">Leave empty to just publish the message.</span></div>
 
-    <script src="js/app.js?v=2"></script>
+        <div class="strip">
+            <div class="ring" id="ring">
+                <svg width="34" height="34" aria-hidden="true">
+                    <circle class="track" cx="17" cy="17" r="15"/>
+                    <circle class="fill" cx="17" cy="17" r="15"/>
+                </svg>
+                <b id="ring-n">0</b>
+            </div>
+
+            <label class="switch">
+                <input type="checkbox" id="public-toggle" checked>
+                <span class="track"></span>
+                <span class="switch-label">Show on the wall</span>
+            </label>
+
+            <span class="spacer"></span>
+
+            <button class="chip" id="opt-btn" type="button" aria-expanded="false" aria-controls="drawer">
+                Fee <b id="fee-n">2</b> sat/vB
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+        </div>
+
+        <div class="drawer" id="drawer"><div>
+            <div class="drawer-inner">
+                <span class="tick">slower</span>
+                <!-- min is 2, not 1: config.js MIN_FEE_RATE rejects 1 at intake, so a
+                     slider that offered it would produce a guaranteed 400. -->
+                <input type="range" id="fee-in" min="2" max="10" value="2" aria-label="Fee rate">
+                <span class="tick">faster</span>
+            </div>
+        </div></div>
+
+        <div class="pay">
+            <div class="total" id="total-btn" role="button" tabindex="0" aria-expanded="false">
+                <div class="total-row">
+                    <strong id="total-n">2,220</strong>
+                    <span>sats</span>
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+                <div class="breakdown" id="breakdown"><div>
+                    <dl>
+                        <dt>Network fee</dt><dd id="bd-net">220</dd>
+                        <dt>Service fee</dt><dd id="bd-svc">2,000</dd>
+                        <dt>To recipient</dt><dd id="bd-rec">0</dd>
+                    </dl>
+                </div></div>
+            </div>
+
+            <button class="btn-go" id="go" type="button">
+                Broadcast
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+        </div>
+    </section>
+
+    <!-- ============================ Your requests ======================== -->
+    <section class="sec" id="mine" hidden>
+        <div class="sec-head">
+            <h2>Your requests</h2>
+            <span class="meta">kept on this device</span>
+        </div>
+        <div class="orders" id="orders"></div>
+    </section>
+
+    <!-- ============================ The wall ============================= -->
+    <section class="sec" id="wall-sec">
+        <div class="sec-head">
+            <h2>On the wire</h2>
+            <span class="meta" id="wall-n"></span>
+        </div>
+        <div class="wall" id="wall"></div>
+    </section>
+
+    <!-- ============================ API ================================== -->
+    <details class="api" id="api">
+        <summary>
+            API
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </summary>
+        <div class="api-body">
+            <div class="ep">
+                <span class="verb post">POST</span>
+                <div>
+                    <code>/api/message-request</code>
+                    <small>Returns an address to pay. Body: <code>message</code>, and optionally <code>targetAddress</code>, <code>amountToSend</code>, <code>feeRate</code>, <code>isPublic</code>.</small>
+                </div>
+            </div>
+            <div class="ep">
+                <span class="verb get">GET</span>
+                <div><code>/api/request-status/:id</code><small>Poll a request.</small></div>
+            </div>
+            <div class="ep">
+                <span class="verb del">DEL</span>
+                <div><code>/api/request/:id</code><small>Cancel, while unpaid.</small></div>
+            </div>
+            <div class="ep">
+                <span class="verb get">GET</span>
+                <div><code>/api/wall</code><small>Messages customers chose to show publicly.</small></div>
+            </div>
+            <div class="ep">
+                <span class="verb get">GET</span>
+                <div><code>/api/payment-qr.svg?requestId=</code><small>A BIP21 code for an open order.</small></div>
+            </div>
+            <div class="ep">
+                <span class="verb post">POST</span>
+                <div>
+                    <code>/api/internal/embed</code><span class="key">X-API-Key</span>
+                    <small>Publishes straight from the treasury. No payment step.</small>
+                </div>
+            </div>
+            <div class="ep">
+                <span class="verb get">GET</span>
+                <div><code>/api/internal/treasury</code><span class="key">X-API-Key</span><small>Address and balance.</small></div>
+            </div>
+        </div>
+    </details>
+
+    <footer class="foot">
+        <span>SatWire</span>
+        <span><a href="#api">API</a></span>
+    </footer>
+
+</div>
+
+<!-- ============================ Payment modal =========================== -->
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-label="Payment">
+    <div class="modal-box">
+        <button class="modal-x" id="modal-x" type="button" aria-label="Close">&times;</button>
+        <div class="qr" id="qr-box"><img id="qr-img" alt="Payment QR code"></div>
+        <div class="amt-big"><span id="modal-amount">0</span><span>sats</span></div>
+        <div class="addr">
+            <code id="modal-address"></code>
+            <button class="btn-s" id="copy-btn" type="button">Copy</button>
+        </div>
+        <div class="waiting"><i></i> Waiting for payment</div>
+    </div>
+</div>
+
+<script src="js/app.js?v=3"></script>
 </body>
 </html>

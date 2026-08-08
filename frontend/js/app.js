@@ -1,85 +1,78 @@
 // frontend/js/app.js
 document.addEventListener('DOMContentLoaded', () => {
+    'use strict';
+
+    const SERVICE_FEE = 2000;   // config.js SERVICE_FEE_SATS
+    const RING_CIRC = 94.25;    // 2 * pi * r, r = 15
     let MAX_BYTES = 1000;
 
-    // Fetch dynamic limits
-    fetch('/api/config/limits')
-        .then(res => res.json())
-        .then(data => {
-            if (data.maxPayloadSize) {
-                MAX_BYTES = data.maxPayloadSize;
-                updateByteCounter();
-            }
-        })
-        .catch(() => {});
+    // --- DOM ---------------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
 
-    // State
-    let activeOrders = JSON.parse(localStorage.getItem('opr_orders')) || [];
+    const msg = $('msg');
+    const ring = $('ring'), ringN = $('ring-n');
+    const publicToggle = $('public-toggle');
+    const addrIn = $('addr-in'), amtIn = $('amt-in'), amtNote = $('amt-note');
+    const feeIn = $('fee-in'), feeN = $('fee-n');
+    const optBtn = $('opt-btn'), drawer = $('drawer');
+    const totalBtn = $('total-btn'), totalN = $('total-n'), breakdown = $('breakdown');
+    const bdNet = $('bd-net'), bdSvc = $('bd-svc'), bdRec = $('bd-rec');
+    const go = $('go');
+    const mine = $('mine'), ordersEl = $('orders');
+    const wallEl = $('wall'), wallN = $('wall-n');
+    const api = $('api'), apiLink = $('api-link');
+    const live = $('live');
+    const modal = $('modal'), modalX = $('modal-x'), copyBtn = $('copy-btn');
+    const qrBox = $('qr-box'), qrImg = $('qr-img');
+    const modalAmount = $('modal-amount'), modalAddress = $('modal-address');
 
-    // DOM
-    const messageInput = document.getElementById('message-input');
-    const targetAddressInput = document.getElementById('target-address-input');
-    const amountInput = document.getElementById('amount-input');
-    const amountHint = document.getElementById('amount-hint');
-    const feeRateSlider = document.getElementById('fee-rate-slider');
-    const feeRateDisplay = document.getElementById('fee-rate-display');
-    const costNetworkFee = document.getElementById('cost-network-fee');
-    const costRecipientAmount = document.getElementById('cost-recipient-amount');
-    const costTotal = document.getElementById('cost-total');
-    const byteCounter = document.getElementById('byte-counter');
-    const executeButton = document.getElementById('execute-button');
-    const activeOrdersList = document.getElementById('active-orders-list');
+    // --- State -------------------------------------------------------------
+    // One key, unchanged from the previous build so orders already in flight in a
+    // customer's browser survive this deploy. New fields are additive; an older entry
+    // simply lacks them.
+    const STORE = 'opr_orders';
+    let orders = [];
+    try { orders = JSON.parse(localStorage.getItem(STORE)) || []; } catch { orders = []; }
+    const save = () => { try { localStorage.setItem(STORE, JSON.stringify(orders)); } catch { /* quota */ } };
 
-    // Modal
-    const paymentModal = document.getElementById('payment-modal');
-    const closePaymentModal = document.getElementById('close-payment-modal');
-    const modalRequiredAmount = document.getElementById('modal-required-amount');
-    const modalPaymentAddress = document.getElementById('modal-payment-address');
-    const modalCopyAddressButton = document.getElementById('modal-copy-address-button');
-
-    // --- Helpers ---
-    function saveOrders() {
-        localStorage.setItem('opr_orders', JSON.stringify(activeOrders));
-    }
-
-    // Escapes quotes as well as angle brackets: these values are interpolated into
-    // attribute values (href, title), where a bare quote would break out of the attribute.
+    // --- Helpers -----------------------------------------------------------
     const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     function escapeHtml(text) {
         if (text === null || text === undefined) return '';
         return String(text).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
     }
 
-    function updateByteCounter() {
-        const message = messageInput.value;
-        const byteLength = new TextEncoder().encode(message).length;
+    const bytesOf = (s) => new TextEncoder().encode(s || '').length;
+    const fmt = (n) => Number(n || 0).toLocaleString();
 
-        if (byteLength > MAX_BYTES) {
-            let current = message;
-            while (new TextEncoder().encode(current).length > MAX_BYTES) {
-                current = current.slice(0, -1);
-            }
-            messageInput.value = current;
-            updateByteCounter();
-            return;
-        }
-
-        byteCounter.textContent = `${byteLength} / ${MAX_BYTES} bytes`;
-        byteCounter.style.color = byteLength >= MAX_BYTES ? '#f85149' : '';
+    function ago(iso) {
+        const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+        if (!Number.isFinite(mins) || mins < 0) return 'just now';
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins}m ago`;
+        const h = Math.floor(mins / 60);
+        if (h < 24) return `${h}h ago`;
+        return `${Math.floor(h / 24)}d ago`;
     }
 
-    // Size of the output paying `address`, mirroring backend/src/tx_sizing.js. The
-    // preview used to assume every recipient was P2WPKH (31 bytes); a P2WSH output is
-    // 43, so the quote the server came back with was higher than the figure shown here.
+    // Size of the output paying `address`, mirroring backend/src/tx_sizing.js.
+    //
+    // CARRIED ACROSS VERBATIM — do not "simplify" the prefix tests. Collapsing bc1q and
+    // bc1p into one branch under-quotes both P2WSH and P2TR by 12 vBytes and understates
+    // their dust floor by 27 sats, which is precisely the arithmetic that cost four
+    // customers refund fees on 2026-08-06. The bc1q length test must stay AFTER the bc1p
+    // test, because a P2TR address is also 62 characters. Taproot is live now, so this is
+    // a real path rather than the dead code it used to be.
+    //
     // Recognised by prefix rather than by decoding — this only drives a preview, and the
     // server is the authority on what is actually charged.
     function recipientOutputVBytes(address) {
         const a = (address || '').trim().toLowerCase();
-        if (a.startsWith('bc1p')) return 43;                 // P2TR
+        if (a.startsWith('bc1p')) return 43;                      // P2TR
         if (a.startsWith('bc1q')) return a.length > 50 ? 43 : 31; // P2WSH : P2WPKH
-        if (a.startsWith('3')) return 32;                    // P2SH
-        if (a.startsWith('1')) return 34;                    // P2PKH
-        return 43;                                           // unknown: quote the largest
+        if (a.startsWith('3')) return 32;                         // P2SH
+        if (a.startsWith('1')) return 34;                         // P2PKH
+        return 43;                                                // unknown: quote the largest
     }
 
     // The dust limit for that output, again mirroring tx_sizing.js: 3 sat/vB against the
@@ -88,382 +81,492 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.max(546, 3 * (recipientOutputVBytes(address) + 148));
     }
 
-    function updateCostBreakdown() {
-        const feeRate = parseInt(feeRateSlider.value);
-        const amountToSend = parseInt(amountInput.value) || 0;
-        const message = messageInput.value || '';
-        const recipient = targetAddressInput.value;
+    // --- Live limits -------------------------------------------------------
+    fetch('/api/config/limits')
+        .then((r) => r.json())
+        .then((d) => { if (d.maxPayloadSize) { MAX_BYTES = d.maxPayloadSize; recalc(); } })
+        .catch(() => {});
 
-        feeRateDisplay.textContent = feeRate;
+    fetch('/api/health')
+        .then((r) => { if (!r.ok) throw new Error(); })
+        .catch(() => { live.classList.add('down'); live.lastChild.textContent = ' offline'; });
 
-        let vBytes = 10.5 + 68;
-        const messageBytes = new TextEncoder().encode(message).length;
-        vBytes += (11 + messageBytes);
-        vBytes += 31;
-        if (recipient) vBytes += recipientOutputVBytes(recipient);
-        vBytes = Math.ceil(vBytes);
+    // --- Cost --------------------------------------------------------------
+    let shownTotal = 0, raf = null;
+    function animateTotal(target) {
+        if (raf) cancelAnimationFrame(raf);
+        const from = shownTotal;
+        let start = null;
+        const step = (ts) => {
+            if (start === null) start = ts;
+            let k = Math.min(1, (ts - start) / 260);
+            k = 1 - Math.pow(1 - k, 3);
+            shownTotal = Math.round(from + (target - from) * k);
+            totalN.textContent = fmt(shownTotal);
+            if (k < 1) raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+    }
 
-        const networkFee = vBytes * feeRate;
-        const serviceFee = 2000;
-        const total = networkFee + serviceFee + amountToSend;
+    function recalc() {
+        let bytes = bytesOf(msg.value);
+        if (bytes > MAX_BYTES) {
+            let cut = msg.value;
+            while (bytesOf(cut) > MAX_BYTES) cut = cut.slice(0, -1);
+            msg.value = cut;
+            bytes = MAX_BYTES;
+        }
 
-        costNetworkFee.textContent = `~${networkFee.toLocaleString()} sats`;
-        costRecipientAmount.textContent = `${amountToSend.toLocaleString()} sats`;
-        costTotal.textContent = `~${total.toLocaleString()} sats`;
+        ringN.textContent = bytes >= 1000 ? `${Math.floor(bytes / 1000)}k` : bytes;
+        ring.querySelector('.fill').style.strokeDashoffset = RING_CIRC - RING_CIRC * (bytes / MAX_BYTES);
+        ring.className = bytes >= MAX_BYTES ? 'ring full' : 'ring';
 
-        // Say the minimum out loud, before any money moves. The server refuses a
-        // sub-dust amount, but a customer who only finds that out after paying has
-        // learned it the expensive way — which is exactly what happened on 2026-08-06.
+        // Fall back rather than let a NaN through: fmt() would render it as "0", and a
+        // quote reading "0 sats" is worse than a wrong one, because it looks deliberate.
+        const fee = parseInt(feeIn.value, 10) || 2;
+        feeN.textContent = fee;
+
+        const recipient = addrIn.value.trim();
+        let amount = parseInt(amtIn.value, 10) || 0;
+        if (!recipient) amount = 0;
+
+        // Mirrors queue.js: 10.5 overhead + 68 input + (11 + message) OP_RETURN + 31 change.
+        let vb = 10.5 + 68 + (11 + bytes) + 31;
+        if (recipient) vb += recipientOutputVBytes(recipient);
+        vb = Math.ceil(vb);
+
+        const network = vb * fee;
+        bdNet.textContent = fmt(network);
+        bdSvc.textContent = fmt(SERVICE_FEE);
+        bdRec.textContent = fmt(amount);
+        animateTotal(network + SERVICE_FEE + amount);
+
+        // Say the minimum out loud, before any money moves. The server refuses a sub-dust
+        // amount, but a customer who only finds that out after paying has learned it the
+        // expensive way — which is exactly what happened on 2026-08-06.
         if (recipient) {
-            const minimum = recipientDustLimit(recipient);
-            amountInput.min = String(minimum);
-            amountHint.textContent = `(0, or at least ${minimum} for this address)`;
-            const tooSmall = amountToSend > 0 && amountToSend < minimum;
-            amountInput.style.borderColor = tooSmall ? '#f85149' : '';
-            amountHint.style.color = tooSmall ? '#f85149' : '';
+            const min = recipientDustLimit(recipient);
+            amtIn.min = String(min);
+            const tooSmall = amount > 0 && amount < min;
+            amtNote.textContent = tooSmall
+                ? `Below ${min} sats the network drops this output as dust.`
+                : `0, or at least ${min} for this address.`;
+            amtNote.className = tooSmall ? 'note warn' : 'note';
+            amtIn.style.borderColor = tooSmall ? 'var(--red)' : '';
         } else {
-            amountInput.min = '0';
-            amountHint.textContent = '(optional)';
-            amountInput.style.borderColor = '';
-            amountHint.style.color = '';
+            amtIn.min = '0';
+            amtNote.textContent = 'Leave empty to just publish the message.';
+            amtNote.className = 'note';
+            amtIn.style.borderColor = '';
         }
     }
 
-    // --- Orders ---
+    // --- Order status ------------------------------------------------------
+    // Every status the backend can produce. Nine are stored; `archived` is synthesised by
+    // routes/api.js for a request it has retired.
+    const FAILURE_STATUSES = ['op_return_failed', 'refund_failed', 'refund_processing', 'refunded'];
+    const isFailure = (s) => FAILURE_STATUSES.includes(s);
+
+    // Statuses where nothing further can change, so polling stops. `archived` belongs
+    // here: the row is final, and without it the browser polls a dead request forever.
+    const TERMINAL_STATUSES = ['op_return_broadcasted', 'refunded', 'refund_failed', 'archived'];
+
+    // [quoted, paid, on-chain] -> '' | 'done' | 'now' | 'bad'
+    function railFor(status) {
+        switch (status) {
+            case 'pending_payment':       return ['done', 'now', ''];
+            case 'payment_detected':      return ['done', 'now', ''];
+            case 'payment_confirmed':     return ['done', 'done', 'now'];
+            case 'processing_op_return':  return ['done', 'done', 'now'];
+            case 'op_return_broadcasted': return ['done', 'done', 'done'];
+            case 'op_return_failed':      return ['done', 'done', 'bad'];
+            case 'refund_processing':     return ['done', 'done', 'bad'];
+            case 'refunded':              return ['done', 'done', 'bad'];
+            case 'refund_failed':         return ['done', 'done', 'bad'];
+            case 'archived':              return ['bad', '', ''];
+            default:                      return ['done', 'now', ''];
+        }
+    }
+
+    function labelFor(order) {
+        switch (order.status) {
+            case 'pending_payment':       return 'Awaiting payment';
+            case 'payment_detected':      return 'Payment seen, waiting for a confirmation';
+            case 'payment_confirmed':     return 'Paid — publishing';
+            case 'processing_op_return':  return 'Publishing';
+            case 'op_return_broadcasted': return 'On-chain';
+            case 'op_return_failed':      return 'Could not publish';
+            case 'refund_processing':     return 'Refunding';
+            case 'refunded':              return 'Refunded';
+            case 'refund_failed':         return 'Refund needs manual review';
+            case 'archived':              return order.archivedReason === 'cancelled_by_customer' ? 'Cancelled' : 'Expired';
+            default:                      return String(order.status || '').replace(/_/g, ' ');
+        }
+    }
+
+    // --- Orders ------------------------------------------------------------
+    const drafts = {};   // in-progress feedback text, kept out of the DOM across re-renders
+
     function addOrder(data) {
-        if (!activeOrders.find(o => o.requestId === data.requestId)) {
-            activeOrders.unshift({
-                ...data,
-                status: 'pending_payment',
-                createdAt: new Date().toISOString()
-            });
-            saveOrders();
-            renderOrders();
-        }
-    }
-
-    function removeOrder(requestId) {
-        activeOrders = activeOrders.filter(o => o.requestId !== requestId);
-        saveOrders();
+        if (orders.some((o) => o.requestId === data.requestId)) return;
+        orders.unshift({ ...data, status: 'pending_payment', createdAt: new Date().toISOString() });
+        save();
         renderOrders();
     }
 
-    // Statuses that mean the request did not succeed. The customer can leave a message
-    // for the operator from any of these.
-    const FAILURE_STATUSES = ['op_return_failed', 'refund_failed', 'refund_processing', 'refunded'];
-    const isFailure = (status) => FAILURE_STATUSES.includes(status);
-
-    // Statuses where nothing further will change, so polling can stop.
-    const TERMINAL_STATUSES = ['op_return_broadcasted', 'refunded', 'refund_failed'];
-
-    function updateOrderStatus(requestId, data) {
-        const order = activeOrders.find(o => o.requestId === requestId);
-        if (!order) return;
-
-        let changed = false;
-        const apply = (key, value) => {
-            if (value !== undefined && value !== null && order[key] !== value) {
-                order[key] = value;
-                changed = true;
-            }
-        };
-
-        apply('status', data.status);
-        apply('txId', data.opReturnTxId);
-        apply('supportEmail', data.supportEmail);
-        apply('refundTxId', data.refundTxId);
-        apply('failureReason', data.failureReason);
-        // Feedback may have been submitted from another device/session.
-        if (data.userFeedback && !order.feedbackSent) {
-            order.feedbackSent = true;
-            changed = true;
-        }
-
-        if (changed) {
-            saveOrders();
-            renderOrders();
-        }
+    function removeOrder(id) {
+        orders = orders.filter((o) => o.requestId !== id);
+        save();
+        renderOrders();
     }
 
-    // In-progress feedback text, kept outside the DOM so a re-render (which happens on
-    // every status poll) does not discard what the customer is part-way through typing.
-    const feedbackDrafts = {};
+    function applyStatus(id, data) {
+        const order = orders.find((o) => o.requestId === id);
+        if (!order) return;
+        let changed = false;
+        const set = (k, v) => {
+            if (v !== undefined && v !== null && order[k] !== v) { order[k] = v; changed = true; }
+        };
+        set('status', data.status);
+        set('txId', data.opReturnTxId);
+        set('supportEmail', data.supportEmail);
+        set('refundTxId', data.refundTxId);
+        set('failureReason', data.failureReason);
+        set('archivedReason', data.archivedReason);
+        // The server explains a retired request in `error`. Keep it — the customer
+        // otherwise sees a bare status and no reason.
+        if (data.status === 'archived') set('archivedNote', data.error);
+        if (data.userFeedback && !order.feedbackSent) { order.feedbackSent = true; changed = true; }
+        if (changed) { save(); renderOrders(); }
+    }
 
     function renderOrders() {
-        // Remember which feedback box had focus so it can be restored after the rebuild.
+        mine.hidden = orders.length === 0;
+        if (!orders.length) { ordersEl.innerHTML = ''; return; }
+
+        // Remember where the cursor was — a poll re-renders every 5 seconds.
         const active = document.activeElement;
-        const focusedFeedbackId = active && active.classList && active.classList.contains('feedback-input')
-            ? active.dataset.id
-            : null;
-        const selectionStart = focusedFeedbackId ? active.selectionStart : null;
+        const focusedId = active && active.classList && active.classList.contains('feedback-input')
+            ? active.dataset.id : null;
+        const caret = focusedId ? active.selectionStart : null;
 
-        activeOrdersList.innerHTML = '';
+        ordersEl.innerHTML = '';
 
-        if (activeOrders.length === 0) {
-            activeOrdersList.innerHTML = '<p class="placeholder">No active requests.</p>';
-            return;
-        }
-
-        activeOrders.forEach(order => {
+        orders.forEach((order, i) => {
             const failed = isFailure(order.status);
-            const el = document.createElement('div');
-            el.className = `order-item${failed ? ' failed' : ''}`;
+            const done = order.status === 'op_return_broadcasted';
+            const el = document.createElement('article');
+            el.className = `order${failed ? ' is-failed' : ''}${done ? ' is-done' : ''}`;
+            el.style.animationDelay = `${Math.min(i, 6) * 0.03}s`;
 
-            let statusText = order.status.replace(/_/g, ' ').toUpperCase();
-            let statusClass = 'order-status';
-
-            if (order.status === 'op_return_broadcasted') {
-                statusClass += ' confirmed';
-            } else if (order.status === 'payment_confirmed') {
-                statusClass += ' confirmed';
-            } else if (order.status === 'op_return_failed') {
-                statusClass += ' failed';
-                statusText = 'FAILED';
-            } else if (order.status === 'refunded') {
-                statusClass += ' confirmed';
-                statusText = 'REFUNDED';
-            } else if (order.status === 'refund_processing') {
-                statusClass += ' failed';
-                statusText = 'FAILED — refunding<span class="loading-dots"></span>';
-            } else if (order.status === 'refund_failed') {
-                statusClass += ' failed';
-                statusText = 'FAILED — refund needs manual review';
-            } else if (order.status === 'payment_detected') {
-                statusClass += ' confirmed';
-                statusText = 'Payment detected, awaiting confirmation<span class="loading-dots"></span>';
-            }
-
-            const mins = Math.floor((new Date() - new Date(order.createdAt)) / 60000);
-
-            const isTerminal = order.status === 'op_return_broadcasted' || failed;
-            const btnLabel = isTerminal ? 'REMOVE' : 'CANCEL';
+            const rail = railFor(order.status);
+            const railLabels = order.status === 'archived'
+                ? ['Cancelled', '', '']
+                : ['Quoted', 'Paid', 'On-chain'];
 
             // Feedback box: only once the request has actually failed, and only until sent.
             let feedbackHtml = '';
             if (failed) {
                 feedbackHtml = order.feedbackSent
-                    ? `<div class="order-feedback-sent">Your message was sent to the operator. Thank you.</div>`
-                    : `
-                <div class="order-feedback">
-                    <label for="fb-${order.requestId}">Something went wrong with this request. Leave a message for the operator:</label>
-                    <textarea id="fb-${order.requestId}" class="feedback-input" data-id="${order.requestId}" maxlength="1000" placeholder="What happened, and how can we reach you?">${escapeHtml(feedbackDrafts[order.requestId] || '')}</textarea>
-                    <div class="feedback-row">
-                        <button class="order-btn feedback" data-id="${order.requestId}">SEND MESSAGE</button>
-                        <span class="feedback-counter">0 / 1000</span>
-                    </div>
-                </div>`;
+                    ? '<div class="feedback-sent">Your message was sent to the operator. Thank you.</div>'
+                    : `<div class="feedback">
+                         <label for="fb-${escapeHtml(order.requestId)}">Something went wrong. Leave a message for the operator:</label>
+                         <textarea id="fb-${escapeHtml(order.requestId)}" class="feedback-input" data-id="${escapeHtml(order.requestId)}"
+                                   maxlength="1000" placeholder="What happened, and how can we reach you?">${escapeHtml(drafts[order.requestId] || '')}</textarea>
+                         <div class="feedback-row">
+                           <button class="btn-s act-feedback" type="button" data-id="${escapeHtml(order.requestId)}">Send</button>
+                           <span class="feedback-counter">0 / 1000</span>
+                         </div>
+                       </div>`;
             }
 
             el.innerHTML = `
-                <div class="order-header">
-                    <span>${order.requestId.substring(0, 8)}...</span>
-                    <span>${mins}m ago</span>
+                <div class="order-top">
+                    <span>${escapeHtml(order.requestId.substring(0, 8))}</span>
+                    <span>·</span>
+                    <span>${escapeHtml(ago(order.createdAt))}</span>
                 </div>
-                <div class="order-message">${escapeHtml(order.message)}</div>
-                <div class="order-footer">
-                    <div class="${statusClass}">${statusText}</div>
-                    ${order.txId ? `<a href="https://mempool.space/tx/${order.txId}" target="_blank" class="order-link">VIEW TX</a>` : ''}
-                </div>
-                ${order.refundTxId ? `<div class="order-refund">Your payment was refunded — <a href="https://mempool.space/tx/${escapeHtml(order.refundTxId)}" target="_blank">view refund transaction</a></div>` : ''}
-                ${failed && order.supportEmail ? `<div class="order-support">Need help? Contact <a href="mailto:${escapeHtml(order.supportEmail)}?subject=OP_RETURN%20failed%20request%20${order.requestId}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
+                <div class="order-msg">${escapeHtml(order.message)}${order.isPublic ? '<span class="tag">on the wall</span>' : ''}</div>
+                <ol class="rail">
+                    ${rail.map((c, n) => railLabels[n] ? `<li class="${c}">${railLabels[n]}</li>` : '').join('')}
+                </ol>
+                <div class="order-note" style="${order.status === 'pending_payment' || done ? 'display:none' : ''}">${escapeHtml(labelFor(order))}</div>
+                ${order.archivedNote ? `<div class="order-note bad">${escapeHtml(order.archivedNote)}</div>` : ''}
+                ${order.refundTxId ? `<div class="order-note good">Your payment was refunded — <a href="https://mempool.space/tx/${encodeURIComponent(order.refundTxId)}" target="_blank" rel="noopener">view transaction ↗</a></div>` : ''}
+                ${failed && order.supportEmail ? `<div class="order-note">Need help? <a href="mailto:${escapeHtml(order.supportEmail)}?subject=SatWire%20request%20${encodeURIComponent(order.requestId)}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
                 ${feedbackHtml}
-                <div class="order-actions">
-                    ${order.status === 'pending_payment' ? `<button class="order-btn pay" data-id="${order.requestId}">PAY</button>` : ''}
-                    <button class="order-btn ${isTerminal ? 'remove' : 'cancel'}" data-id="${order.requestId}">${btnLabel}</button>
-                </div>
-            `;
+                <div class="order-foot">
+                    ${/* An ALLOWLIST, and it must stay one. The server relies on it: reporting
+                          'archived' removes the PAY button from an already-open tab with no
+                          frontend deploy, and that only works because the button renders for
+                          known-live statuses rather than "anything not terminal". Inverting it
+                          gives a retired order a working PAY button pointing at a dead address,
+                          because the amount and address come from localStorage. */ ''}
+                    ${order.status === 'pending_payment' ? `<button class="btn-s primary act-pay" type="button" data-id="${escapeHtml(order.requestId)}">Pay ${fmt(order.requiredAmountSatoshis)} sats</button>` : ''}
+                    ${order.txId ? `<a class="btn-s" href="https://mempool.space/tx/${encodeURIComponent(order.txId)}" target="_blank" rel="noopener">View on-chain ↗</a>` : ''}
+                    <button class="btn-s act-drop" type="button" data-id="${escapeHtml(order.requestId)}">${(done || failed || order.status === 'archived') ? 'Remove' : 'Cancel'}</button>
+                </div>`;
 
-            const payBtn = el.querySelector('.order-btn.pay');
-            if (payBtn) payBtn.addEventListener('click', () => openPaymentModal(order));
+            ordersEl.appendChild(el);
 
-            const cancelBtn = el.querySelector('.order-btn.cancel');
-            if (cancelBtn) cancelBtn.addEventListener('click', () => cancelOrder(order.requestId));
-
-            const removeBtn = el.querySelector('.order-btn.remove');
-            if (removeBtn) removeBtn.addEventListener('click', () => removeOrder(order.requestId));
-
-            const feedbackBtn = el.querySelector('.order-btn.feedback');
-            const feedbackInput = el.querySelector('.feedback-input');
-            const feedbackCounter = el.querySelector('.feedback-counter');
-            if (feedbackInput && feedbackCounter) {
-                const syncCounter = () => {
-                    const used = new TextEncoder().encode(feedbackInput.value).length;
-                    feedbackCounter.textContent = `${used} / 1000`;
-                };
-                syncCounter();
-                feedbackInput.addEventListener('input', () => {
-                    feedbackDrafts[order.requestId] = feedbackInput.value;
-                    syncCounter();
-                });
+            const fbInput = el.querySelector('.feedback-input');
+            const fbCount = el.querySelector('.feedback-counter');
+            if (fbInput && fbCount) {
+                const sync = () => { fbCount.textContent = `${bytesOf(fbInput.value)} / 1000`; };
+                sync();
+                fbInput.addEventListener('input', () => { drafts[order.requestId] = fbInput.value; sync(); });
             }
-            if (feedbackBtn && feedbackInput) {
-                feedbackBtn.addEventListener('click', () => submitFeedback(order.requestId, feedbackInput, feedbackBtn));
-            }
-
-            activeOrdersList.appendChild(el);
         });
 
-        // Put the cursor back where the customer left it.
-        if (focusedFeedbackId) {
-            const restored = activeOrdersList.querySelector(`.feedback-input[data-id="${focusedFeedbackId}"]`);
+        if (focusedId) {
+            const restored = ordersEl.querySelector(`.feedback-input[data-id="${CSS.escape(focusedId)}"]`);
             if (restored) {
                 restored.focus();
-                if (selectionStart !== null) {
-                    try { restored.setSelectionRange(selectionStart, selectionStart); } catch { /* ignore */ }
-                }
+                if (caret !== null) { try { restored.setSelectionRange(caret, caret); } catch { /* ignore */ } }
             }
         }
     }
 
-    // --- API Calls ---
-    async function executeProtocol() {
-        const message = messageInput.value;
-        if (!new TextEncoder().encode(message).length) {
-            alert('Please enter a message.');
-            return;
-        }
+    // One delegated listener rather than per-card bindings, so a re-render cannot leak them.
+    ordersEl.addEventListener('click', (e) => {
+        const pay = e.target.closest('.act-pay');
+        const drop = e.target.closest('.act-drop');
+        const fb = e.target.closest('.act-feedback');
+        if (pay) openPayment(orders.find((o) => o.requestId === pay.dataset.id));
+        if (drop) dropOrder(drop.dataset.id);
+        if (fb) sendFeedback(fb.dataset.id, fb);
+    });
 
-        executeButton.disabled = true;
-        executeButton.textContent = 'PROCESSING...';
+    // --- API ---------------------------------------------------------------
+    async function broadcast() {
+        if (!bytesOf(msg.value)) { msg.focus(); return; }
+
+        go.disabled = true;
+        const label = go.innerHTML;
+        go.textContent = 'Working…';
 
         try {
-            const body = {
-                message,
-                targetAddress: targetAddressInput.value.trim() || undefined,
-                feeRate: parseInt(feeRateSlider.value),
-                amountToSend: parseInt(amountInput.value) || 0
-            };
-
-            const response = await fetch('/api/message-request', {
+            const res = await fetch('/api/message-request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
+                body: JSON.stringify({
+                    message: msg.value,
+                    targetAddress: addrIn.value.trim() || undefined,
+                    feeRate: parseInt(feeIn.value, 10),
+                    amountToSend: parseInt(amtIn.value, 10) || 0,
+                    isPublic: !!publicToggle.checked,
+                }),
             });
+            const data = await res.json();
 
-            const data = await response.json();
-
-            if (response.ok) {
+            if (res.ok) {
                 addOrder({
                     requestId: data.requestId,
                     address: data.address,
                     requiredAmountSatoshis: data.requiredAmountSatoshis,
-                    message
+                    // What the SERVER recorded, not what we asked for.
+                    isPublic: !!data.isPublic,
+                    message: msg.value,
                 });
-                messageInput.value = '';
-                updateByteCounter();
+                msg.value = '';
+                recalc();
+                const fresh = orders[0];
+                if (fresh) openPayment(fresh);
             } else {
-                alert(`Error: ${data.error}`);
+                // Covers the 429 from intake throttling, whose body explains the limit.
+                alert(data.error || 'Something went wrong. Please try again.');
             }
-        } catch (error) {
-            alert('Network error. Check your connection.');
-            console.error(error);
+        } catch {
+            alert('Network error. Check your connection and try again.');
         } finally {
-            executeButton.disabled = false;
-            executeButton.textContent = 'BROADCAST';
+            go.disabled = false;
+            go.innerHTML = label;
         }
     }
 
-    async function cancelOrder(requestId) {
+    async function dropOrder(id) {
+        const order = orders.find((o) => o.requestId === id);
+        if (!order) return;
+        const settled = order.status !== 'pending_payment' && order.status !== 'payment_detected';
+        if (settled) { removeOrder(id); return; }
         if (!confirm('Cancel this request?')) return;
-
         try {
-            const res = await fetch(`/api/request/${requestId}`, {
-                method: 'DELETE'
-            });
-            if (res.ok || res.status === 404) {
-                removeOrder(requestId);
-            } else {
-                const data = await res.json();
-                alert(`Failed: ${data.error}`);
-            }
+            const res = await fetch(`/api/request/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            if (res.ok || res.status === 404) { removeOrder(id); return; }
+            const data = await res.json();
+            alert(data.error || 'Could not cancel this request.');
         } catch {
             alert('Network error.');
         }
     }
 
-    async function submitFeedback(requestId, inputEl, buttonEl) {
-        const text = inputEl.value.trim();
-        if (!text) {
-            alert('Please write a message first.');
-            return;
-        }
+    async function sendFeedback(id, button) {
+        const box = ordersEl.querySelector(`.feedback-input[data-id="${CSS.escape(id)}"]`);
+        const text = (box && box.value.trim()) || '';
+        if (!text) { if (box) box.focus(); return; }
 
-        buttonEl.disabled = true;
-        const originalLabel = buttonEl.textContent;
-        buttonEl.textContent = 'SENDING...';
-
+        button.disabled = true;
+        button.textContent = 'Sending…';
         try {
-            const res = await fetch(`/api/request/${encodeURIComponent(requestId)}/feedback`, {
+            const res = await fetch(`/api/request/${encodeURIComponent(id)}/feedback`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text })
+                body: JSON.stringify({ message: text }),
             });
             const data = await res.json();
-
             if (res.ok) {
-                const order = activeOrders.find(o => o.requestId === requestId);
-                if (order) {
-                    order.feedbackSent = true;
-                    delete feedbackDrafts[requestId];
-                    saveOrders();
-                    renderOrders();
-                }
+                const order = orders.find((o) => o.requestId === id);
+                if (order) { order.feedbackSent = true; delete drafts[id]; save(); renderOrders(); }
             } else {
-                alert(`Could not send message: ${data.error}`);
-                buttonEl.disabled = false;
-                buttonEl.textContent = originalLabel;
+                alert(data.error || 'Could not send that.');
+                button.disabled = false;
+                button.textContent = 'Send';
             }
         } catch {
             alert('Network error. Please try again.');
-            buttonEl.disabled = false;
-            buttonEl.textContent = originalLabel;
+            button.disabled = false;
+            button.textContent = 'Send';
         }
     }
 
-    async function pollActiveOrders() {
-        if (activeOrders.length === 0) return;
-
-        // Iterate a snapshot: updateOrderStatus re-renders and can mutate order objects.
-        for (const order of [...activeOrders]) {
-            // Keep polling failed orders — an automatic refund may still land.
+    async function poll() {
+        if (!orders.length) return;
+        for (const order of [...orders]) {
             if (TERMINAL_STATUSES.includes(order.status)) continue;
-
             try {
-                const res = await fetch(`/api/request-status/${order.requestId}`);
+                const res = await fetch(`/api/request-status/${encodeURIComponent(order.requestId)}`);
                 if (!res.ok) continue;
-
-                const data = await res.json();
-                updateOrderStatus(order.requestId, data);
-            } catch {
-                // silent
-            }
+                applyStatus(order.requestId, await res.json());
+            } catch { /* silent — the next tick tries again */ }
         }
     }
 
-    function openPaymentModal(order) {
-        modalPaymentAddress.textContent = order.address;
-        modalRequiredAmount.textContent = `${order.requiredAmountSatoshis.toLocaleString()} sats`;
-        paymentModal.style.display = 'flex';
+    // --- The wall ----------------------------------------------------------
+    async function loadWall() {
+        try {
+            const res = await fetch('/api/wall');
+            if (!res.ok) throw new Error('wall');
+            const data = await res.json();
+            renderWall(data.messages || []);
+        } catch {
+            wallEl.innerHTML = '';
+            const p = document.createElement('p');
+            p.className = 'wall-empty';
+            p.textContent = 'Could not load the wall just now.';
+            wallEl.appendChild(p);
+        }
     }
 
-    // --- Event Listeners ---
-    messageInput.addEventListener('input', () => { updateByteCounter(); updateCostBreakdown(); });
-    targetAddressInput.addEventListener('input', updateCostBreakdown);
-    amountInput.addEventListener('input', updateCostBreakdown);
-    feeRateSlider.addEventListener('input', updateCostBreakdown);
-    executeButton.addEventListener('click', executeProtocol);
+    function renderWall(messages) {
+        wallEl.innerHTML = '';
+        wallN.textContent = messages.length ? `${fmt(messages.length)} published` : '';
 
-    closePaymentModal.addEventListener('click', () => { paymentModal.style.display = 'none'; });
-    window.addEventListener('click', (e) => { if (e.target === paymentModal) paymentModal.style.display = 'none'; });
+        if (!messages.length) {
+            const p = document.createElement('p');
+            p.className = 'wall-empty';
+            p.textContent = 'Nothing here yet. Yours could be first.';
+            wallEl.appendChild(p);
+            return;
+        }
 
-    modalCopyAddressButton.addEventListener('click', () => {
-        navigator.clipboard.writeText(modalPaymentAddress.textContent);
-        modalCopyAddressButton.textContent = 'COPIED';
-        setTimeout(() => { modalCopyAddressButton.textContent = 'COPY'; }, 2000);
+        messages.forEach((m, i) => {
+            const card = document.createElement('article');
+            card.className = 'note-card';
+            card.style.animationDelay = `${Math.min(i, 12) * 0.04}s`;
+
+            // textContent, not innerHTML. This is text written by strangers, rendered on
+            // the same origin that serves /admin. The escaper would very probably be
+            // enough; not depending on it is cheaper than being sure.
+            const p = document.createElement('p');
+            p.textContent = m.message;
+
+            const foot = document.createElement('footer');
+            const when = document.createElement('span');
+            when.textContent = m.publishedAt ? ago(m.publishedAt) : '';
+            foot.appendChild(when);
+
+            if (m.opReturnTxId) {
+                const link = document.createElement('a');
+                link.href = `https://mempool.space/tx/${encodeURIComponent(m.opReturnTxId)}`;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = 'tx ↗';
+                foot.appendChild(link);
+            }
+
+            card.appendChild(p);
+            card.appendChild(foot);
+            wallEl.appendChild(card);
+        });
+    }
+
+    // --- Payment modal -----------------------------------------------------
+    function openPayment(order) {
+        if (!order) return;
+        modalAmount.textContent = fmt(order.requiredAmountSatoshis);
+        modalAddress.textContent = order.address;
+
+        qrBox.className = 'qr';
+        qrImg.style.display = '';
+        qrImg.src = `/api/payment-qr.svg?requestId=${encodeURIComponent(order.requestId)}`;
+        qrImg.onerror = () => {
+            // 410 once the order is archived or its webhooks are retired, 409 once it is
+            // no longer awaiting payment. The address below stays readable either way.
+            qrImg.style.display = 'none';
+            qrBox.className = 'qr failed';
+            qrBox.textContent = 'This request is no longer open for payment.';
+        };
+
+        modal.hidden = false;
+    }
+    const closePayment = () => { modal.hidden = true; };
+
+    // --- Disclosures -------------------------------------------------------
+    optBtn.addEventListener('click', () => {
+        optBtn.setAttribute('aria-expanded', drawer.classList.toggle('open') ? 'true' : 'false');
     });
 
-    // --- Init ---
+    const toggleBreakdown = () => {
+        totalBtn.setAttribute('aria-expanded', breakdown.classList.toggle('open') ? 'true' : 'false');
+    };
+    totalBtn.addEventListener('click', toggleBreakdown);
+    totalBtn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBreakdown(); }
+    });
+
+    function openApiIfHashed() {
+        if (location.hash === '#api') {
+            api.open = true;
+            api.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+    apiLink.addEventListener('click', () => setTimeout(openApiIfHashed, 0));
+    window.addEventListener('hashchange', openApiIfHashed);
+
+    // --- Wiring ------------------------------------------------------------
+    [msg, addrIn, amtIn, feeIn].forEach((el) => {
+        el.addEventListener('input', recalc);
+        el.addEventListener('change', recalc);
+    });
+    go.addEventListener('click', broadcast);
+
+    modalX.addEventListener('click', closePayment);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closePayment(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePayment(); });
+
+    copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(modalAddress.textContent).then(() => {
+            copyBtn.textContent = 'Copied';
+            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
+        }).catch(() => {});
+    });
+
+    // --- Init --------------------------------------------------------------
+    recalc();
     renderOrders();
-    updateCostBreakdown();
-    setInterval(pollActiveOrders, 5000);
+    loadWall();
+    openApiIfHashed();
+    poll();
+    setInterval(poll, 5000);
+    setInterval(loadWall, 60000);
 });

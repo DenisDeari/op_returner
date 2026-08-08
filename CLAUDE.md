@@ -31,6 +31,16 @@ This is not theoretical. It has now cost customers money twice:
 The pattern in both: an economic assumption that was true for the *common* case, applied
 to a case that did not match. Size and price everything from the actual scriptPubKey.
 
+**2026-08-07 — a latent one, found by audit and fixed before it fired.** Archiving does not
+overwrite `status`, and `reconcile.js` was the only read path in the service with no
+`archivedAt` guard anywhere in it. A request the customer *cancelled* that was later paid
+and force-fulfilled once would land at `op_return_failed` with a payment recorded — an
+ordinary retry candidate. From there the scheduled pass owned it: it would republish a
+message somebody had explicitly withdrawn, up to `MAX_FULFILL_ATTEMPTS`, with no human in
+the loop, and `runReconciliation` runs on startup so the next deploy would have triggered
+it. No customer hit this. The guard now sits on both publishing passes and deliberately
+*not* on the refund pass — refusing to publish must not turn into keeping the money.
+
 ## Invariants — do not break these
 
 | Invariant | Enforced in |
@@ -41,10 +51,14 @@ to a case that did not match. Size and price everything from the actual scriptPu
 | The built transaction's fee clears the relay minimum for its *actual* signed size | `op_return_creator.js`, checked after `extractTransaction` |
 | Outputs never exceed inputs — checked *before* signing | `op_return_creator.js` |
 | A request that has any sign of payment is never deleted | `cleanup.js`, `routes/api.js` DELETE |
+| Automation never publishes a message the customer withdrew | `reconcile.js`, `archivedAt IS NULL` on both publishing passes |
+| An archived request is never on the public wall | `wall.js` `WALL_SELECT_SQL` |
+| A public response is a whitelist, never a row spread | `wall.js`, `PUBLIC_REQUEST_FIELDS` in `routes/api.js` |
 | A refund never runs twice — conditional `UPDATE` acts as the lock | `refund.js` |
 | Never auto-refund when the payment UTXO is already spent | `NO_REFUND_FAILURES`, `reconcile.js` |
 | The refund address comes from the chain, never from the webhook body | `routes/webhook.js` |
 | Nothing user-supplied reaches `innerHTML` unescaped | `frontend/admin/admin.js`, `frontend/js/app.js` |
+| Wall messages are rendered with `textContent`, never through the escaper | `frontend/js/app.js` `renderWall` |
 | The wallet view never spends BlockCypher's quota | `chain_providers.js` `getAddressSummaries` |
 | A balance that could not be read is never shown as 0 | `wallet_scan.js`, `incomplete` / `stale` flags |
 | Nothing in a webhook body is acted on until the chain confirms it | `routes/webhook.js` `verifyPaymentOnChain` |
@@ -65,7 +79,7 @@ out of the service fee, never out of what the customer is charged.
 
 ```
 backend/src/
-  routes/api.js         intake validation, status polling, customer feedback endpoint
+  routes/api.js         intake validation, status polling, feedback, the wall, payment QR
   routes/webhook.js     BlockCypher payment callbacks — UNAUTHENTICATED, every value re-read from the chain
   routes/admin.js       Bearer-token admin API (fulfil, refund, alerts)
   routes/internal.js    API-key-only, treasury-funded publishing
@@ -82,6 +96,7 @@ backend/src/
   webhook_reconcile.js  what BlockCypher actually holds, vs what the database believes
   request_events.js     durable per-request history — append-only, fire-and-forget
   wallet_scan.js        read-only balance view over every branch of the seed
+  wall.js               the public message wall query, its cache, and why each term exists
   qr.js                 BIP21 payment URIs rendered as SVG QR codes
   routes/wallet.js      admin-only, strictly read-only wallet API
   routes/auth.js        the admin bearer check, shared by admin.js and wallet.js
@@ -135,6 +150,75 @@ first. **Do not move it into a module that only some paths import.**
 next to the amount field. It recognises types by address prefix rather than decoding —
 it only drives a preview, and the server remains the authority — but if you change
 `tx_sizing.js`, change it there too or the quote will not match what was displayed.
+
+Two details in that mirror are load-bearing and survived the 2026-08-08 rebuild verbatim:
+the `bc1p` test must come **before** the `bc1q` one (a P2TR address is also 62 characters,
+so a single "bc1" branch under-quotes both P2WSH and P2TR by 12 vBytes), and the amount
+hint must keep naming the real minimum out loud. Parity was checked against
+`tx_sizing.js` across all six address types after the rebuild; re-run that check if you
+touch either side.
+
+## The public wall
+
+`wall.js` serves the messages customers chose to show on satwire.io. It is the only place
+in the service where one customer's words are handed to strangers, so read the comment
+block at the top of that file before changing the query — every term in the `WHERE` clause
+is load-bearing and one of them is not obvious.
+
+The non-obvious one: **`archivedAt IS NULL`**. Archiving deliberately does not overwrite
+`status`, so a request the customer *cancelled* still reads `op_return_broadcasted` if it
+was later paid and force-fulfilled. Without that term, a message somebody explicitly
+withdrew appears on the homepage.
+
+**`isPublic` already existed in the production database** as `INTEGER DEFAULT 1`, left from
+the pre-2.0 schema — the code went in `a116ced`, the column could not follow, because
+`ADD COLUMN` cannot be undone. Our migration therefore no-ops there with "duplicate column
+name" and **the live default is still 1**, while a fresh database gets 0. All 25 existing
+rows read `isPublic = 1`. Deploying against that naively would have published nineteen
+customers' messages that nobody ever asked. Two things stop it, and both must stay:
+
+- `routes/api.js` writes `isPublic` explicitly on **every** intake, 0 or 1 — never relying
+  on the column default, because `queue.js`'s INSERT does not name the column and a row is
+  therefore born `1`.
+- `wall.js` additionally requires **`publicAt IS NOT NULL`**. That column is genuinely new,
+  so it cannot have inherited anything: consent is the stamp, not the flag.
+
+The 25 legacy rows were normalised to `isPublic = 0` on deploy. Do not "fix" the default in
+`schema.js` — SQLite cannot alter one without rebuilding the table, and that is not worth
+doing to a money database.
+
+Three columns carry it, all defaulting to 0 on a *fresh* database:
+
+| Column | Who sets it |
+|---|---|
+| `isPublic` | the customer, once, at intake — never changed afterwards |
+| `hiddenByAdmin` | the operator, via `POST /api/admin/requests/:requestId/visibility` |
+| `publicAt` | stamped alongside the opt-in |
+
+They are separate on purpose. Hiding must not overwrite what the customer asked for, so
+un-hiding restores their actual intent instead of guessing at it. **Everything published
+before the wall existed stays private** — those customers were never offered the choice.
+
+`isPublic` is written by a post-insert `UPDATE` in `routes/api.js`, placed immediately
+after `requestQueue.add` and **before** `registerWebhook`. That ordering matters:
+`webhook_manager.js` sleeps a deliberate 5 seconds between its two registrations, and a
+crash on the far side of that await would lose the customer's choice silently — the order
+completes, the message publishes, and it simply never reaches the wall.
+
+It is deliberately *not* validated in `validateRequestParams`. That function guards the
+money; wall visibility cannot make a transaction unbroadcastable, and mixing it in blurs
+what that guard is for. It is type-checked at intake instead, and **rejected rather than
+coerced** — `"false"` is a thing a caller might send meaning no.
+
+Treasury-funded and free messages published through `routes/internal.js` create no
+`requests` row at all, so they can never appear on the wall whatever `isPublic` says.
+
+`GET /api/payment-qr.svg?requestId=…` is the one public use of `qr.js`. It takes **only**
+a request id and reads the address, amount and label from the row. Do not add an
+`?address=` parameter the way the admin route has one — public, that is an open QR
+generator and an address oracle against the seed. It refuses once `archivedAt` **or**
+`webhooksRetiredAt` is set: hooks retire at 62h and archiving is at 7 days, and in the
+4.4 days between, nothing is watching that address except the customer's own open tab.
 
 ## Error classification
 
@@ -340,7 +424,7 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **263 assertions across six files**, all offline:
+`/home/admin/op_returner_tests/` — **354 assertions across seven files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -352,6 +436,13 @@ There is no test runner in the repo. Verification lives outside it, in
   its guards.
 - `webhook_sweep.js` — 39. Orphan classification, the registration-in-flight window, prune
   honesty, the BlockCypher burst limit, `deleteWebhookIds`. BlockCypher stubbed at `axios`.
+- `wall.js` — 91. What the wall shows and what it must never show, the public field
+  whitelists, intake opt-in, moderation, the payment QR's refusals, and the ALTER-based
+  upgrade path on a database that already exists.
+
+`wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
+restating it. A restated copy keeps passing after somebody deletes the guard from the real
+module, which is the one failure that section exists to catch.
 
 Throwaway databases are built from `schema.js`, so a test schema can no longer drift from
 production — that drift already broke a harness once, when `archivedAt` was added.
