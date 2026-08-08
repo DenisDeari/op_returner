@@ -68,7 +68,49 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // about the message worth studying after the text itself is gone.
     'ADD COLUMN redactedAt TEXT',
     'ADD COLUMN messageBytes INTEGER',
+    // The public message wall.
+    //
+    // WARNING — `isPublic` ALREADY EXISTS IN PRODUCTION, as `INTEGER DEFAULT 1`, left over
+    // from the pre-2.0 schema (the code went in a116ced; the column could not follow,
+    // because ADD COLUMN cannot be undone). This migration therefore no-ops there with
+    // "duplicate column name" and THE LIVE DEFAULT REMAINS 1, not the 0 written below.
+    // A fresh database gets 0; the live one does not. Do not trust this default.
+    //
+    // Two things compensate, and both must stay:
+    //   - routes/api.js writes isPublic explicitly on every intake, 0 or 1.
+    //   - wall.js additionally requires `publicAt IS NOT NULL`, which is a genuinely new
+    //     column and so cannot have inherited anything.
+    // Changing the default here fixes nothing: SQLite cannot alter a column default
+    // without rebuilding the table, and that is not worth doing to a money database.
+    //
+    // isPublic is the customer's own choice, taken at intake and never changed afterwards.
+    // hiddenByAdmin is the operator's moderation override and is deliberately a SEPARATE
+    // column: hiding a message must not overwrite what the customer asked for, so that
+    // un-hiding restores their intent rather than guessing at it.
+    //
+    // Both default to 0, so every row that already exists stays off the wall. Messages
+    // published before the wall existed were never offered the choice, and inferring
+    // consent from silence is not a choice.
+    'ADD COLUMN isPublic INTEGER DEFAULT 0',
+    'ADD COLUMN hiddenByAdmin INTEGER DEFAULT 0',
+    'ADD COLUMN publicAt TEXT',
 ];
+
+// The only index on `requests`.
+//
+// Every other query in this service is either keyed on the primary key or runs from a
+// scheduled job where a table scan is fine. The wall is neither: it is public, it is
+// unauthenticated, it is hit on every homepage render, and `requests` grows forever now
+// that rows are archived rather than deleted. Left unindexed it is a full scan of a
+// monotonically growing table on the same serialized handle the money paths use.
+//
+// Column order matches the wall's WHERE clause so SQLite can use the whole index.
+// MUST be created after REQUEST_COLUMN_MIGRATIONS have run — three of these four columns
+// arrive via ALTER TABLE.
+const CREATE_REQUESTS_WALL_INDEX_SQL = `
+    CREATE INDEX IF NOT EXISTS idx_requests_wall
+        ON requests (status, isPublic, hiddenByAdmin, archivedAt);
+`;
 
 // Durable, append-only history of what happened to each request.
 //
@@ -119,6 +161,8 @@ function allStatements() {
     return [
         CREATE_REQUESTS_SQL,
         ...REQUEST_COLUMN_MIGRATIONS.map((m) => `ALTER TABLE requests ${m}`),
+        // After the ALTERs: it indexes columns three of which they add.
+        CREATE_REQUESTS_WALL_INDEX_SQL,
         CREATE_REQUEST_EVENTS_SQL,
         CREATE_REQUEST_EVENTS_INDEX_SQL,
         CREATE_WALLET_STATE_SQL,
@@ -129,6 +173,7 @@ function allStatements() {
 module.exports = {
     CREATE_REQUESTS_SQL,
     REQUEST_COLUMN_MIGRATIONS,
+    CREATE_REQUESTS_WALL_INDEX_SQL,
     CREATE_REQUEST_EVENTS_SQL,
     CREATE_REQUEST_EVENTS_INDEX_SQL,
     CREATE_WALLET_STATE_SQL,

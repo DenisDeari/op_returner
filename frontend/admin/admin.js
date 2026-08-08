@@ -164,6 +164,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? `<span class="customer-note" title="${escapeHtml(req.userFeedback)}">${escapeHtml(truncate(req.userFeedback, 60))}</span>`
                 : '<span class="muted">—</span>';
 
+            // Wall moderation. Only meaningful once the customer opted in AND the message
+            // actually reached the chain — before that there is nothing on the wall to
+            // moderate, and the server refuses the flip anyway.
+            const onWall = !!req.isPublic && req.status === 'op_return_broadcasted';
+            const hidden = !!req.hiddenByAdmin;
+
             return `
             <tr${req.userFeedback ? ' class="has-note"' : ''}>
                 <td>${escapeHtml(req.id.substring(0, 8))}...</td>
@@ -172,6 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
+                    ${onWall ? `<span class="wall-flag${hidden ? ' hidden' : ''}" title="${hidden ? 'Hidden from the public wall' : 'Shown on the public wall'}">${hidden ? 'HIDDEN' : 'ON WALL'}</span>` : ''}
                 </td>
                 <td>${note}</td>
                 <td>${req.opReturnTxId ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.opReturnTxId)}" target="_blank">${escapeHtml(req.opReturnTxId.substring(0, 10))}...</a>` : 'N/A'}</td>
@@ -179,6 +186,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button class="button-details" data-id="${escapeHtml(req.id)}" style="background-color: #5bc0de; margin-right: 5px;">Details</button>
                     ${canFulfill ? `<button class="button-fulfill" data-id="${escapeHtml(req.id)}">Manually Fulfill</button>` : ''}
                     ${canRefund ? `<button class="button-refund" data-id="${escapeHtml(req.id)}" style="background-color: #f0ad4e; margin-left: 5px;">Refund</button>` : ''}
+                    ${onWall ? `<button class="button-wall" data-id="${escapeHtml(req.id)}" data-hidden="${hidden ? '1' : '0'}" style="background-color: #6f42c1; margin-left: 5px;">${hidden ? 'Show on wall' : 'Hide from wall'}</button>` : ''}
                     <button class="button-delete" data-id="${escapeHtml(req.id)}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
                 </td>
             </tr>
@@ -352,6 +360,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const fulfillButton = event.target.closest('.button-fulfill');
         const refundButton = event.target.closest('.button-refund');
         const deleteButton = event.target.closest('.button-delete');
+        const wallButton = event.target.closest('.button-wall');
+
+        if (wallButton) {
+            const requestId = wallButton.dataset.id;
+            const hide = wallButton.dataset.hidden !== '1';
+            const question = hide
+                ? `Hide this message from the public wall?\n\nIt stays on the Bitcoin blockchain either way — this only controls whether satwire.io repeats it.`
+                : `Put this message back on the public wall?`;
+            if (confirm(question)) {
+                wallButton.disabled = true;
+                wallButton.textContent = hide ? 'Hiding...' : 'Showing...';
+                try {
+                    const response = await fetch(`${API_BASE_URL}/requests/${encodeURIComponent(requestId)}/visibility`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${adminPassword}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ hidden: hide }),
+                    });
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        fetchRequests();
+                    } else {
+                        throw new Error(result.error || 'Could not change visibility.');
+                    }
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                    wallButton.disabled = false;
+                    wallButton.textContent = hide ? 'Hide from wall' : 'Show on wall';
+                }
+            }
+        }
 
         if (detailsButton) {
             showDetails(detailsButton.dataset.id);
@@ -389,14 +430,33 @@ document.addEventListener('DOMContentLoaded', () => {
             if (confirm(`Are you sure you want to manually fulfill request ${requestId}?`)) {
                 button.disabled = true;
                 button.textContent = 'Fulfilling...';
+
+                // The server refuses an archived request — one the customer cancelled, or
+                // one abandoned unpaid — unless the operator says so a second time.
+                // Publishing it puts a withdrawn message on-chain permanently, so the
+                // second confirmation names exactly that.
+                const send = (confirmArchived) => fetch(`${API_BASE_URL}/fulfill/${encodeURIComponent(requestId)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${adminPassword}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(confirmArchived ? { confirmArchived: true } : {}),
+                });
+
                 try {
-                    const response = await fetch(`${API_BASE_URL}/fulfill/${encodeURIComponent(requestId)}`, {
-                        method: 'POST',
-                        headers: {
-                           'Authorization': `Bearer ${adminPassword}`
+                    let response = await send(false);
+                    let result = await response.json();
+
+                    if (response.status === 409 && result.needsConfirmation === 'confirmArchived') {
+                        if (!confirm(`${result.error}\n\nPublish it anyway? This cannot be undone.`)) {
+                            button.disabled = false;
+                            button.textContent = 'Manually Fulfill';
+                            return;
                         }
-                    });
-                    const result = await response.json();
+                        response = await send(true);
+                        result = await response.json();
+                    }
 
                     if (response.ok && result.success) {
                         alert(`Successfully fulfilled request! TXID: ${result.txId}`);

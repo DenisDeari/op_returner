@@ -9,6 +9,7 @@ const { requireAdmin } = require('./auth');
 const eventLog = require('../event_log');
 const requestEvents = require('../request_events');
 const webhookReconcile = require('../webhook_reconcile');
+const wall = require('../wall');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -161,6 +162,34 @@ function createAdminRouter(db, rootNode, config) {
                 return res.status(409).json({ error: 'A refund is currently in progress for this request. Try again once it settles.' });
             }
 
+            // An archived row is one the customer cancelled, or one abandoned unpaid for a
+            // week. Publishing it is publishing a message that was withdrawn — and it is
+            // reachable, because a payment can still arrive at an archived address and
+            // cleanup records it (recordUnexpectedPayment) without changing `status`.
+            //
+            // Not forbidden: delivering what a late payer paid for is sometimes exactly
+            // right. But it must be a decision somebody makes on purpose, so it needs
+            // saying twice. This is also what keeps the automatic machinery out of it —
+            // once a forced attempt fails, the row becomes an ordinary retry candidate for
+            // reconcile.js, which is how a withdrawn message could otherwise get published
+            // by a scheduled job with no human in the loop at all.
+            const { confirmArchived } = req.body || {};
+            if (request.archivedAt && confirmArchived !== true) {
+                return res.status(409).json({
+                    error: request.archivedReason === 'cancelled_by_customer'
+                        ? 'This request was CANCELLED by the customer. Publishing it now would put a withdrawn message on-chain. Re-send with confirmArchived to override.'
+                        : 'This request was archived as abandoned. Re-send with confirmArchived to override.',
+                    archivedAt: request.archivedAt,
+                    archivedReason: request.archivedReason,
+                    needsConfirmation: 'confirmArchived',
+                });
+            }
+            if (request.archivedAt) {
+                console.warn(`[Admin] Forcing fulfilment of ARCHIVED request ${requestId} (${request.archivedReason}) — operator confirmed.`);
+                requestEvents.record(db, requestId, requestEvents.KINDS.FULFIL_ATTEMPT,
+                    `operator forced fulfilment of an archived request (${request.archivedReason})`);
+            }
+
             // Claim the request so the automatic path cannot pick it up concurrently.
             // The operator is deliberately forcing this, so any non-final status is
             // allowed, but the claim itself is still conditional.
@@ -192,6 +221,68 @@ function createAdminRouter(db, rootNode, config) {
         } catch (error) {
             console.error(`Manual fulfillment failed for ${requestId}:`, error);
             res.status(500).json({ error: 'An error occurred during manual fulfillment.' });
+        }
+    });
+
+    /**
+     * POST /api/admin/requests/:requestId/visibility  { hidden: true|false }
+     *
+     * Takes a message off the public wall, or puts it back.
+     *
+     * Writes `hiddenByAdmin` and never touches `isPublic`: the customer's choice is theirs,
+     * and keeping the two separate means un-hiding restores what they actually asked for
+     * instead of guessing. A message the customer never opted in to cannot be "shown" here.
+     *
+     * The message stays on-chain regardless — that is what they paid for and it is not
+     * ours to remove. This governs one thing: whether satwire.io repeats it.
+     */
+    router.post('/requests/:requestId/visibility', protect, async (req, res) => {
+        const { requestId } = req.params;
+        const { hidden } = req.body || {};
+
+        try {
+            if (typeof hidden !== 'boolean') {
+                return res.status(400).json({ error: 'hidden must be true or false.' });
+            }
+
+            const row = await dbGet(
+                db,
+                'SELECT id, status, isPublic, hiddenByAdmin FROM requests WHERE id = ?',
+                [requestId]
+            );
+            if (!row) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+            if (!row.isPublic) {
+                return res.status(409).json({ error: 'This customer did not choose to show this message, so it is not on the wall.' });
+            }
+
+            // Conditional UPDATE as the write, per the house pattern: idempotent, and
+            // immune to the row changing between the read above and this statement.
+            const flip = await dbRun(
+                db,
+                'UPDATE requests SET hiddenByAdmin = ? WHERE id = ? AND isPublic = 1',
+                [hidden ? 1 : 0, requestId]
+            );
+            if (flip.changes === 0) {
+                return res.status(409).json({ error: 'Could not update — the request changed. Refresh and retry.' });
+            }
+
+            // Moderation must be visible immediately, so this is the one caller that
+            // cannot wait out the wall's 10-second cache.
+            wall.invalidate();
+
+            requestEvents.record(
+                db, requestId,
+                hidden ? requestEvents.KINDS.WALL_HIDDEN : requestEvents.KINDS.WALL_SHOWN,
+                hidden ? 'hidden from the public wall by the operator' : 'restored to the public wall by the operator'
+            );
+            console.log(`[Admin] Wall visibility for ${requestId}: ${hidden ? 'hidden' : 'shown'}.`);
+
+            res.status(200).json({ success: true, requestId, hiddenByAdmin: hidden });
+        } catch (error) {
+            console.error(`Failed to set wall visibility for ${requestId}:`, error.message);
+            res.status(500).json({ error: 'Failed to update visibility.' });
         }
     });
 

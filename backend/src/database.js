@@ -65,7 +65,19 @@ function initializeDatabase(onReady) {
                 }
                 if (--remaining === 0) {
                     console.log('Schema migrations applied.');
-                    markStepDone('requests');
+                    // Only after every ALTER: the index covers columns they add, so
+                    // creating it earlier would fail with "no such column".
+                    //
+                    // markStepDone is called on BOTH paths. An index is a performance
+                    // detail; onReady is the sole caller of app.listen, so a failure here
+                    // that skipped it would leave the whole service unbound over a missing
+                    // index. Log it and boot.
+                    db.run(schema.CREATE_REQUESTS_WALL_INDEX_SQL, (indexErr) => {
+                        if (indexErr) {
+                            console.error('Error creating requests wall index:', indexErr.message);
+                        }
+                        markStepDone('requests');
+                    });
                 }
             });
         }

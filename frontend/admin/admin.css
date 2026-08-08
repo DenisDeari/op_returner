@@ -142,7 +142,7 @@ h1 { font-size: 1.4rem; }
 .status-op_return_failed { background-color: rgba(248, 81, 73, 0.15); color: var(--red); }
 .status-expired { background-color: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
 
-.button-details, .button-fulfill, .button-delete {
+.button-details, .button-fulfill, .button-delete, .button-wall {
     border: none;
     padding: 5px 10px;
     border-radius: 4px;
@@ -600,3 +600,22 @@ tr.has-note .customer-note {
 .event-msg  { word-break: break-word; }
 .event-error .event-msg { color: #ff7b72; }
 .event-warn  .event-msg { color: #f0ad4e; }
+
+/* Wall moderation. Purple for "published on satwire.io", grey once hidden — the flag has
+   to read differently at a glance from the red UNDERPAID one next to it, which is money. */
+.wall-flag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #6f42c1;
+    color: #fff;
+    font-size: 0.7em;
+    font-weight: 700;
+    cursor: help;
+}
+
+.wall-flag.hidden {
+    background: #4a4a4a;
+    color: #bbb;
+}

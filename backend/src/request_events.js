@@ -39,6 +39,12 @@ const KINDS = Object.freeze({
     ARCHIVED: 'archived',
     UNEXPECTED_PAYMENT: 'unexpected_payment',
     REDACTED: 'redacted',
+    // The customer's wall opt-in at intake, and the operator's moderation decisions
+    // afterwards. A hide is a judgement about someone's published words, so the record of
+    // who did it and when has to outlive the boolean it flipped.
+    WALL_OPT_IN: 'wall_opt_in',
+    WALL_HIDDEN: 'wall_hidden',
+    WALL_SHOWN: 'wall_shown',
 });
 
 const MAX_DETAIL_CHARS = 2000;

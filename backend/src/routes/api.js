@@ -7,6 +7,8 @@ const { fulfillRequest, deleteRequest } = require('../request_service');
 const notifier = require('../notifier');
 const txSizing = require('../tx_sizing');
 const events = require('../request_events');
+const wall = require('../wall');
+const qr = require('../qr');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -66,6 +68,43 @@ function validateRequestParams({ targetAddress, feeRate, amountToSend }, config)
     }
 
     return null;
+}
+
+/**
+ * The fields GET /request-status/:requestId may return.
+ *
+ * This endpoint is public — `optionalApiKey` lets any caller through — and the request id
+ * is therefore a bearer capability. It used to answer with `{ ...row }` over a
+ * `SELECT *`, which handed anyone holding that id the wallet's `derivationPath` and
+ * `index` (the seed's structure), the raw signed `opReturnTxHex`, the BlockCypher hook id,
+ * and the payer's `refundAddress`.
+ *
+ * A whitelist rather than a blacklist, so a column added later is private by default. That
+ * matters immediately: `hiddenByAdmin` is a moderation judgement about a customer's words
+ * and would otherwise have become publicly readable the moment the column existed, with no
+ * code written to expose it.
+ */
+const PUBLIC_REQUEST_FIELDS = [
+    'id', 'status', 'createdAt', 'message',
+    'address', 'requiredAmountSatoshis',
+    'targetAddress', 'amountToSend', 'feeRate',
+    'paymentTxId', 'paymentReceivedSatoshis', 'paymentConfirmationCount', 'paymentConfirmedAt',
+    'opReturnTxId',
+    'failureReason', 'attemptCount',
+    'refundTxId', 'refundedAt', 'refundFailureReason',
+    'userFeedback', 'userFeedbackAt',
+    // The customer's own choice, so they can see it was recorded. `hiddenByAdmin` is
+    // deliberately absent — see above.
+    'isPublic', 'publicAt',
+    'archivedAt', 'archivedReason',
+];
+
+function publicRequestView(row) {
+    const view = {};
+    for (const field of PUBLIC_REQUEST_FIELDS) {
+        if (row[field] !== undefined) view[field] = row[field];
+    }
+    return view;
 }
 
 /**
@@ -163,6 +202,102 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         });
     });
 
+    /**
+     * GET /api/wall?limit=50 — the messages customers chose to show publicly.
+     *
+     * Public, unauthenticated, and the only endpoint that serves one stranger's words to
+     * another. The query and the reasoning behind every term in it live in wall.js.
+     *
+     * Not rate limited, deliberately. The intake limiter exists to bound permanent wallet
+     * -index burn and BlockCypher webhook allowance; sharing its bucket would let a
+     * visitor who merely loaded the homepage lock themselves out of creating an order.
+     * This endpoint burns nothing: it is a cached read of at most 100 indexed rows and
+     * never touches the chain. The 10-second cache is the bound.
+     */
+    router.get('/wall', async (req, res) => {
+        try {
+            const { messages, cachedAt } = await wall.listPublicMessages(db, req.query.limit);
+            // Public and cached, so let the browser and Cloudflare hold it too.
+            res.setHeader('Cache-Control', 'public, max-age=10');
+            res.status(200).json({ messages, cachedAt });
+        } catch (error) {
+            console.error('Error building the public wall:', error.message);
+            res.status(500).json({ error: 'Could not load the wall.' });
+        }
+    });
+
+    /**
+     * GET /api/payment-qr.svg?requestId=… — a scannable BIP21 code for an open order.
+     *
+     * Deliberately NOT modelled on the admin /api/admin/wallet/qr.svg, which accepts an
+     * arbitrary `?address=` matching a loose shape check. That is safe only because it
+     * sits behind requireAdmin. Copied to a public route it would be two things we must
+     * not ship: an open QR generator serving codes from satwire.io, and an address oracle
+     * — anyone could test candidate addresses against our wallet and cluster the seed.
+     *
+     * So: the request id only, which the customer already holds, and the address, amount
+     * and label all come from the row. A caller-supplied amount would let someone hand a
+     * victim a correct-address/wrong-amount code, and a short payment never satisfies the
+     * `>= requiredAmountSatoshis` check — the order would simply never fulfil. A
+     * caller-supplied label is text the payer's wallet displays at signing time.
+     *
+     * Pure DB read plus a CPU render. No chain lookup: this is fetched on every render of
+     * a pending order, and the BlockCypher quota belongs to the webhooks.
+     */
+    router.get('/payment-qr.svg', async (req, res) => {
+        const requestId = String(req.query.requestId || '').trim();
+        try {
+            if (!requestId) {
+                return res.status(400).json({ error: 'A requestId is required.' });
+            }
+
+            const row = await dbGet(
+                db,
+                'SELECT id, address, requiredAmountSatoshis, status, archivedAt, webhooksRetiredAt FROM requests WHERE id = ?',
+                [requestId]
+            );
+            if (!row) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+
+            // Never render a payable code for an address nothing is watching.
+            //
+            // Both guards are needed and they fire at different times. Webhooks are
+            // retired at 62 hours; archiving happens at 7 days. In the 4.4 days between,
+            // the row still reads 'pending_payment' with archivedAt NULL, and the only
+            // thing that would notice a payment is the customer's own status polling —
+            // which requires the customer to still have the tab open. A QR code is
+            // precisely the artifact you hand to somebody else to pay, and that person is
+            // not the one whose browser is polling.
+            if (row.archivedAt || row.webhooksRetiredAt) {
+                return res.status(410).json({ error: 'This request is no longer open for payment.' });
+            }
+            if (row.status !== 'pending_payment' && row.status !== 'payment_detected') {
+                return res.status(409).json({ error: 'This request is not awaiting payment.' });
+            }
+
+            const uri = qr.buildPaymentUri(row.address, {
+                amountSats: row.requiredAmountSatoshis,
+                label: 'SatWire',
+            });
+            // toSvg clamps scale itself (2..20), so the query value can pass straight in.
+            const svg = qr.toSvg(uri, { scale: req.query.scale });
+
+            res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+            // Immutable for a given request: the address and amount never change once
+            // quoted. Served as an <img src>, so without this it is re-rendered on every
+            // repaint — the endpoint would be its own amplifier.
+            res.setHeader('Cache-Control', 'public, max-age=300');
+            res.setHeader('X-Payment-Uri', uri);
+            res.send(svg);
+        } catch (error) {
+            // Fixed string, unlike the admin route, which interpolates error.message. On a
+            // public endpoint that leaks internals; the detail goes to the log instead.
+            console.error(`[API] Payment QR failed for ${requestId}:`, error.message);
+            res.status(500).json({ error: 'Could not draw the QR code.' });
+        }
+    });
+
     // Intake throttling. Creating a request permanently burns a wallet index and
     // registers two BlockCypher webhooks, and rows are archived rather than deleted, so
     // nothing else bounds this table. See the note in config.js for how the limits were
@@ -177,7 +312,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
     // --- Authenticated Endpoints ---
     router.post('/message-request', optionalApiKey, async (req, res) => {
-        const { message, targetAddress, feeRate, amountToSend } = req.body;
+        const { message, targetAddress, feeRate, amountToSend, isPublic } = req.body;
 
         try {
             const limitRow = await new Promise((resolve) => {
@@ -201,6 +336,19 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 return res.status(400).json({ error: paramError });
             }
 
+            // Deliberately NOT in validateRequestParams. That function guards the money:
+            // everything it checks changes the transaction or the quote, and it runs before
+            // an address is issued for exactly that reason. Wall visibility changes neither
+            // — it cannot make a transaction unbroadcastable — so mixing it in would blur
+            // what that guard is for. Type-checked here instead, and rejected rather than
+            // coerced: `"false"` and `0` are things a caller might send meaning "no", and
+            // quietly reading either as truthy would publish someone's words against their
+            // intent.
+            if (isPublic !== undefined && isPublic !== null && typeof isPublic !== 'boolean') {
+                return res.status(400).json({ error: 'isPublic must be true or false.' });
+            }
+            const wantsPublic = isPublic === true;
+
             // Throttled here, after validation and immediately before anything is
             // consumed. A caller presenting a valid API key is the operator or the
             // internal service and is exempt.
@@ -221,6 +369,31 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
             const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config);
             if (recordIntake) recordIntake();
+
+            // Immediately after the INSERT and BEFORE registerWebhook, which awaits two
+            // network calls with a deliberate 5-second sleep between them
+            // (webhook_manager.js). Writing the customer's choice on the far side of that
+            // await would leave a 5-10 second window in which a crash or a restart loses
+            // it silently — the order still completes, the message still publishes, and it
+            // simply never appears on the wall, with nothing to reconcile against.
+            //
+            // Kept out of queue.js rather than threaded through its 7-argument positional
+            // signature: the INSERT there is the only one in the tree and every other
+            // caller of it is a money path. A separate UPDATE keeps this feature entirely
+            // outside the quoting code.
+            // Written on BOTH branches, never only on opt-in. The production database
+            // carries a legacy `isPublic INTEGER DEFAULT 1` column that our migration
+            // cannot redefine (see wall.js), and queue.js's INSERT does not name the
+            // column — so a row is born isPublic = 1. Setting it only when the customer
+            // says yes would publish everyone who said no.
+            await dbRun(
+                db,
+                'UPDATE requests SET isPublic = ?, publicAt = ? WHERE id = ?',
+                [wantsPublic ? 1 : 0, wantsPublic ? new Date().toISOString() : null, result.newRequestId]
+            );
+            if (wantsPublic) {
+                events.record(db, result.newRequestId, events.KINDS.WALL_OPT_IN, 'customer chose to show this on the wall');
+            }
 
             events.record(db, result.newRequestId, events.KINDS.CREATED, `${Buffer.byteLength(message, 'utf8')} bytes, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}`);
 
@@ -244,6 +417,9 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 requestId: result.newRequestId,
                 address: result.address,
                 requiredAmountSatoshis: result.requiredAmountSatoshis,
+                // Echoed back so the caller can confirm what was actually recorded rather
+                // than assuming its own request body was honoured.
+                isPublic: wantsPublic,
                 message: "Send the specified amount to the address to embed your message."
             });
         } catch (error) {
@@ -360,7 +536,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 }
             }
 
-            const responseBody = { ...row };
+            const responseBody = publicRequestView(row);
             if (row.status === 'op_return_failed' && config.SUPPORT_EMAIL) {
                 responseBody.supportEmail = config.SUPPORT_EMAIL;
             }
@@ -469,3 +645,6 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 module.exports = createApiRouter;
 // Exported for unit testing of the intake rules in isolation.
 module.exports.validateRequestParams = validateRequestParams;
+// Exported so the harness can assert on exactly what a public status poll may reveal.
+module.exports.PUBLIC_REQUEST_FIELDS = PUBLIC_REQUEST_FIELDS;
+module.exports.publicRequestView = publicRequestView;
