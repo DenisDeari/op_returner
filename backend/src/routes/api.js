@@ -9,6 +9,7 @@ const txSizing = require('../tx_sizing');
 const events = require('../request_events');
 const wall = require('../wall');
 const qr = require('../qr');
+const payload = require('../payload');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -85,7 +86,10 @@ function validateRequestParams({ targetAddress, feeRate, amountToSend }, config)
  * code written to expose it.
  */
 const PUBLIC_REQUEST_FIELDS = [
-    'id', 'status', 'createdAt', 'message',
+    // payloadKind belongs with `message`: without it the caller cannot tell whether that
+    // string is text or base64 image bytes, and the customer's own status view has to
+    // render their image back to them.
+    'id', 'status', 'createdAt', 'message', 'payloadKind',
     'address', 'requiredAmountSatoshis',
     'targetAddress', 'amountToSend', 'feeRate',
     'paymentTxId', 'paymentReceivedSatoshis', 'paymentConfirmationCount', 'paymentConfirmedAt',
@@ -152,6 +156,31 @@ function sweepRateLimit(store, maxAgeMs) {
     }
 }
 
+/**
+ * The two payload ceilings, both measured in ON-CHAIN bytes.
+ *
+ * Read together and from one place so the intake guard and the limits endpoint the
+ * frontend budgets against can never quote different numbers — a customer whose encoder
+ * was told 4000 and whose order is refused at 2000 has been given a broken product.
+ *
+ * The fallbacks match database.js's seeds. They are only reached if the settings row is
+ * missing, which on a healthy database it never is.
+ */
+async function readPayloadLimits(db) {
+    const [text, image] = await Promise.all([
+        dbGet(db, "SELECT value FROM system_settings WHERE key = 'max_payload_size'"),
+        dbGet(db, "SELECT value FROM system_settings WHERE key = 'max_image_payload_size'"),
+    ]);
+    const parse = (row, fallback) => {
+        const n = row ? parseInt(row.value, 10) : NaN;
+        return Number.isFinite(n) && n > 0 ? n : fallback;
+    };
+    return {
+        maxTextBytes: parse(text, 1000),
+        maxImageBytes: parse(image, 2000),
+    };
+}
+
 // Cache for self-heal checks to prevent API spam
 const selfHealCache = {};
 const CACHE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
@@ -191,15 +220,25 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
     });
 
-    router.get('/config/limits', (req, res) => {
-        db.get("SELECT value FROM system_settings WHERE key = 'max_payload_size'", (err, row) => {
-            if (err) {
-                console.error("Error fetching max_payload_size:", err);
-                return res.status(500).json({ error: "Internal server error" });
-            }
-            const limit = row ? parseInt(row.value, 10) : 1000;
-            res.json({ maxPayloadSize: limit });
-        });
+    router.get('/config/limits', async (req, res) => {
+        try {
+            const limits = await readPayloadLimits(db);
+            res.json({
+                maxPayloadSize: limits.maxTextBytes,
+                // What the client-side image encoder targets. Zero would be a coherent way
+                // to say "images are off", and the frontend hides the button on it.
+                maxImagePayloadSize: limits.maxImageBytes,
+                // The frontend mirrors the quote arithmetic to preview a cost and to run
+                // its sat-budget search. Sending these rather than hardcoding them a
+                // second time removes one of the two places that could drift.
+                serviceFeeSats: config.SERVICE_FEE_SATS,
+                minFeeRate: config.MIN_FEE_RATE,
+                maxFeeRate: config.MAX_FEE_RATE,
+            });
+        } catch (error) {
+            console.error('Error fetching payload limits:', error.message);
+            res.status(500).json({ error: 'Internal server error' });
+        }
     });
 
     /**
@@ -219,10 +258,62 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             const { messages, cachedAt } = await wall.listPublicMessages(db, req.query.limit);
             // Public and cached, so let the browser and Cloudflare hold it too.
             res.setHeader('Cache-Control', 'public, max-age=10');
-            res.status(200).json({ messages, cachedAt });
+            // cachedAt is a HEADER, not a body field. In the body it changed every 10
+            // seconds even when the wall itself had not, so Express's ETag differed on
+            // every request and each open tab re-downloaded the whole listing once a
+            // minute forever. Out here the JSON is byte-identical while nothing is
+            // published, the ETag matches, and the poll costs a 304.
+            res.setHeader('X-Wall-Cached-At', cachedAt);
+            res.status(200).json({ messages });
         } catch (error) {
             console.error('Error building the public wall:', error.message);
             res.status(500).json({ error: 'Could not load the wall.' });
+        }
+    });
+
+    /**
+     * GET /api/wall/payload/:opReturnTxId — the bytes of one published image.
+     *
+     * Serves the DECODED image, not base64, with a Content-Type from our own closed enum.
+     * That is a third fewer bytes on the wire than base64 and it lets the browser cache it
+     * as an ordinary image — which is the entire point: the listing used to inline every
+     * payload, so a page of 50 images was over a megabyte of JSON on every homepage visit,
+     * unauthenticated and uncompressed.
+     *
+     * It is also a better security posture than the `data:` URL it replaces. The media type
+     * is set here, server-side, from the same allowlist that validated the bytes at intake;
+     * the frontend no longer builds a URL out of customer-supplied content at all.
+     *
+     * The guard is wall.findPublicPayload, which runs the LISTING'S OWN predicate. A row
+     * the wall would not mention cannot have its bytes served either — hidden, archived,
+     * withdrawn, redacted or never public.
+     *
+     * Every refusal is an identical 404. Distinguishing "no such transaction" from "hidden
+     * by the operator" would turn this into an oracle for exactly the moderation decisions
+     * that are nobody's business.
+     */
+    router.get('/wall/payload/:opReturnTxId', async (req, res) => {
+        try {
+            const found = await wall.findPublicPayload(db, req.params.opReturnTxId);
+            if (!found) {
+                return res.status(404).json({ error: 'Not found.' });
+            }
+
+            res.setHeader('Content-Type', found.kind);
+            // The bytes for a given transaction id can never change — the transaction is on
+            // the chain. Immutable, and long, so a returning visitor never refetches.
+            res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+            // Never let the browser second-guess the type we just set. Without this a
+            // payload that somehow slipped past intake could be sniffed as something
+            // active; with it, the declared type is the only one in play.
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            // Belt and braces: rendered inline as an image, never treated as a document.
+            res.setHeader('Content-Disposition', 'inline');
+            res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+            res.status(200).send(found.bytes);
+        } catch (error) {
+            console.error('[API] Wall payload failed:', error.message);
+            res.status(500).json({ error: 'Could not load that image.' });
         }
     });
 
@@ -312,20 +403,22 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
     // --- Authenticated Endpoints ---
     router.post('/message-request', optionalApiKey, async (req, res) => {
-        const { message, targetAddress, feeRate, amountToSend, isPublic } = req.body;
+        const { message, targetAddress, feeRate, amountToSend, isPublic, payloadKind } = req.body;
 
         try {
-            const limitRow = await new Promise((resolve) => {
-                db.get("SELECT value FROM system_settings WHERE key = 'max_payload_size'", (err, row) => {
-                    resolve(row);
-                });
-            });
-            const maxPayloadSize = limitRow ? parseInt(limitRow.value, 10) : 1000;
+            const limits = await readPayloadLimits(db);
 
-            // Buffer.byteLength throws a TypeError on a non-string, which would surface
-            // as a 500 from the catch below instead of a 400 for malformed input.
-            if (typeof message !== 'string' || !message || Buffer.byteLength(message, 'utf8') > maxPayloadSize) {
-                return res.status(400).json({ error: `Message is required, must be a string, and must be under ${maxPayloadSize} bytes.` });
+            // payload.validate is the guard, not an inline byteLength check. It is the
+            // only place that knows a `message` may be base64 standing in for image bytes,
+            // and it returns the ON-CHAIN byte count — the number the quote is built from
+            // a few lines below, and therefore the number that has to be checked here,
+            // before an address is issued.
+            //
+            // It also refuses a non-string rather than letting Buffer.byteLength throw a
+            // TypeError, which would surface as a 500 for what is plainly a 400.
+            const payloadCheck = payload.validate(message, payloadKind, limits);
+            if (!payloadCheck.ok) {
+                return res.status(400).json({ error: payloadCheck.error });
             }
 
             // Reject economically impossible requests before quoting a payment address,
@@ -367,7 +460,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 recordIntake = gate.record;
             }
 
-            const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config);
+            const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config, payloadCheck.kind);
             if (recordIntake) recordIntake();
 
             // Immediately after the INSERT and BEFORE registerWebhook, which awaits two
@@ -400,7 +493,10 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 events.record(db, result.newRequestId, events.KINDS.WALL_OPT_IN, 'customer chose to show this on the wall');
             }
 
-            events.record(db, result.newRequestId, events.KINDS.CREATED, `${Buffer.byteLength(message, 'utf8')} bytes, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}`);
+            // payloadCheck.bytes, not the length of `message`: for an image the latter is
+            // the base64 string, so the event log would record a number a third larger
+            // than what went on chain and disagree with what the customer was charged.
+            events.record(db, result.newRequestId, events.KINDS.CREATED, `${payloadCheck.bytes} bytes ${payloadCheck.kind}, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}`);
 
             const webhookManager = require('../webhook_manager');
             const hookId = await webhookManager.registerWebhook(result.address, config);
@@ -411,9 +507,12 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             }
 
             // Fire-and-forget: a notification problem must never affect the order.
+            // payloadKind goes with the message — notifier.js renders an image payload as
+            // a description rather than 200 characters of base64.
             notifier.notifyNewOrder({
                 requestId: result.newRequestId,
                 message,
+                payloadKind: payloadCheck.kind,
                 requiredAmountSatoshis: result.requiredAmountSatoshis,
                 targetAddress,
             }, config);
@@ -466,6 +565,10 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                     archivedReason: row.archivedReason,
                     createdAt: row.createdAt,
                     message: row.message,
+                    // Hand-built rather than run through publicRequestView, so this list
+                    // has to name payloadKind itself — without it the customer's own
+                    // archived image renders as a wall of base64.
+                    payloadKind: row.payloadKind,
                     opReturnTxId: row.opReturnTxId,
                     opReturnConfirmedAt: row.opReturnConfirmedAt,
                     refundTxId: row.refundTxId,

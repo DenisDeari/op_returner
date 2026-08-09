@@ -10,6 +10,7 @@ const eventLog = require('../event_log');
 const requestEvents = require('../request_events');
 const webhookReconcile = require('../webhook_reconcile');
 const wall = require('../wall');
+const { MAX_ON_CHAIN_PAYLOAD_BYTES } = require('../op_return_creator');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -113,18 +114,55 @@ function createAdminRouter(db, rootNode, config) {
         }
     });
 
+    // Both payload ceilings, in ON-CHAIN bytes. Either may be sent on its own.
+    //
+    // The hard ceiling is op_return_creator.js's MAX_ON_CHAIN_PAYLOAD_BYTES: a value above
+    // it would be accepted here, quoted to a customer, and then refused by the builder
+    // after they had already paid. That is the exact shape of the failure this service
+    // exists not to repeat, so it is clamped rather than trusted.
     router.post('/config/limits', protect, (req, res) => {
-        const { maxPayloadSize } = req.body;
-        if (!maxPayloadSize || isNaN(maxPayloadSize)) {
-            return res.status(400).json({ error: 'Invalid maxPayloadSize' });
-        }
-        db.run("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('max_payload_size', ?)", [maxPayloadSize.toString()], (err) => {
-            if (err) {
-                console.error("Error updating max_payload_size:", err);
-                return res.status(500).json({ error: 'Failed to update limit' });
+        const { maxPayloadSize, maxImagePayloadSize } = req.body;
+
+        const updates = [];
+        const parse = (value, label) => {
+            const n = Number(value);
+            if (!Number.isInteger(n) || n < 0) return `${label} must be a non-negative integer number of bytes.`;
+            if (n > MAX_ON_CHAIN_PAYLOAD_BYTES) {
+                return `${label} cannot exceed ${MAX_ON_CHAIN_PAYLOAD_BYTES}, the builder's own ceiling — anything above it would be quoted and then refused after payment.`;
             }
-            res.json({ success: true, maxPayloadSize });
-        });
+            return null;
+        };
+
+        if (maxPayloadSize !== undefined) {
+            const err = parse(maxPayloadSize, 'maxPayloadSize');
+            if (err) return res.status(400).json({ error: err });
+            updates.push(['max_payload_size', String(Number(maxPayloadSize))]);
+        }
+        if (maxImagePayloadSize !== undefined) {
+            const err = parse(maxImagePayloadSize, 'maxImagePayloadSize');
+            if (err) return res.status(400).json({ error: err });
+            // 0 is meaningful: it turns image payloads off without a deploy.
+            updates.push(['max_image_payload_size', String(Number(maxImagePayloadSize))]);
+        }
+        if (!updates.length) {
+            return res.status(400).json({ error: 'Send maxPayloadSize and/or maxImagePayloadSize.' });
+        }
+
+        let pending = updates.length;
+        let failed = false;
+        for (const [key, value] of updates) {
+            db.run('INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)', [key, value], (err) => {
+                if (err && !failed) {
+                    failed = true;
+                    console.error(`Error updating ${key}:`, err);
+                    return res.status(500).json({ error: 'Failed to update limit' });
+                }
+                if (--pending === 0 && !failed) {
+                    console.log(`[Admin] Payload limits updated: ${updates.map(([k, v]) => `${k}=${v}`).join(', ')}`);
+                    res.json({ success: true, updated: Object.fromEntries(updates) });
+                }
+            });
+        }
     });
 
     router.get('/address-transactions/:address', protect, async (req, res) => {

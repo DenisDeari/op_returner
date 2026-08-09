@@ -2,14 +2,23 @@
 document.addEventListener('DOMContentLoaded', () => {
     'use strict';
 
-    const SERVICE_FEE = 2000;   // config.js SERVICE_FEE_SATS
+    let SERVICE_FEE = 2000;     // config.js SERVICE_FEE_SATS, refreshed from /api/config/limits
     const RING_CIRC = 94.25;    // 2 * pi * r, r = 15
-    let MAX_BYTES = 1000;
+    let MAX_BYTES = 1000;       // max_payload_size — text
+    let MAX_IMAGE_BYTES = 0;    // max_image_payload_size — 0 until the server says otherwise
 
     // --- DOM ---------------------------------------------------------------
     const $ = (id) => document.getElementById(id);
 
     const msg = $('msg');
+    const imgBtn = $('img-btn'), imgFile = $('img-file'), imgBox = $('imgbox');
+    const imgPreview = $('img-preview'), imgDims = $('img-dims'), imgSize = $('img-size');
+    const imgBudget = $('img-budget'), imgBudgetN = $('img-budget-n'), imgNote = $('img-note');
+    const imgClear = $('img-clear'), imgOpen = $('img-open');
+    const imgBudgetRow = $('img-budget-row'), imgBudgetHome = $('img-budget-home');
+    const imgView = $('imgview'), imgViewX = $('imgview-x'), imgViewImg = $('imgview-img');
+    const imgViewDims = $('imgview-dims'), imgViewSize = $('imgview-size');
+    const imgViewSlot = $('imgview-slot'), imgViewNote = $('imgview-note');
     const ring = $('ring'), ringN = $('ring-n');
     const publicToggle = $('public-toggle');
     const addrIn = $('addr-in'), amtIn = $('amt-in'), amtNote = $('amt-note');
@@ -44,6 +53,93 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const bytesOf = (s) => new TextEncoder().encode(s || '').length;
     const fmt = (n) => Number(n || 0).toLocaleString();
+
+    // --- Rendering someone else's payload ----------------------------------
+    //
+    // The wall is the only place this page shows one stranger's content to another, and
+    // an image payload is the first thing it shows that is not plain text. The rule that
+    // kept the text wall safe — textContent, never innerHTML — does not extend to an
+    // image on its own, so these two constants are what replaces it:
+
+    // A CLOSED allowlist of media types. The `data:` URL's type is taken from here and
+    // never from the response, so a row claiming some other type cannot get that type into
+    // a URL this page builds. Both entries are inert raster formats.
+    //
+    // NEVER add image/svg+xml. An SVG is markup: it carries <script> and <foreignObject>,
+    // and while an <img> tag does not execute either today, that is a browser behaviour to
+    // depend on rather than a property of the format. The server refuses SVG at intake for
+    // the same reason; both sides have to keep refusing it.
+    const RENDERABLE_KINDS = { 'image/webp': 'WebP', 'image/jpeg': 'JPEG' };
+
+    // Exactly what base64 may contain. The server validated this before storing, and it is
+    // checked again here because the value is about to be concatenated into a URL —
+    // anything outside this set means the string is not what we believe it is.
+    const BASE64_ONLY = /^[A-Za-z0-9+\/]+={0,2}$/;
+
+    const isImageKind = (kind) => Object.prototype.hasOwnProperty.call(RENDERABLE_KINDS, kind);
+
+    /**
+     * An <img> for a payload we hold the bytes for, or null if anything does not line up.
+     *
+     * Used for the customer's OWN orders, where the base64 is already in localStorage and
+     * there is nothing to fetch. Wall cards use wallImage() below instead.
+     *
+     * Every caller falls back to text on null. Declining to render is always safe here;
+     * guessing never is.
+     */
+    function payloadImage(message, kind, altText) {
+        if (!isImageKind(kind)) return null;
+        const b64 = String(message || '');
+        if (!b64 || !BASE64_ONLY.test(b64)) return null;
+        const img = document.createElement('img');
+        img.className = 'payload-img';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.alt = altText || 'Image published on the Bitcoin blockchain';
+        img.src = `data:${kind};base64,${b64}`;
+        return img;
+    }
+
+    /**
+     * An <img> for a wall card, fetched from the payload endpoint.
+     *
+     * The wall listing no longer carries image bytes — a page of 50 was over a megabyte of
+     * JSON on every homepage visit. The card gets a transaction id and the browser fetches
+     * the image itself, lazily, and caches it as immutable.
+     *
+     * The URL is built from a txid we validate here, and the media type now comes from the
+     * server's Content-Type rather than from anything this page assembles. That is strictly
+     * safer than the data: URL it replaces.
+     */
+    const TXID_ONLY = /^[0-9a-f]{64}$/;
+    function wallImage(opReturnTxId, kind, altText) {
+        if (!isImageKind(kind)) return null;
+        const txid = String(opReturnTxId || '').toLowerCase();
+        if (!TXID_ONLY.test(txid)) return null;
+        const img = document.createElement('img');
+        img.className = 'payload-img';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.alt = altText || 'Image published on the Bitcoin blockchain';
+        img.src = `/api/wall/payload/${txid}`;
+        // A published payload should always be there, but a card that silently renders a
+        // broken-image glyph is worse than one that says what happened.
+        img.onerror = () => {
+            const note = document.createElement('p');
+            note.className = 'wall-empty';
+            note.textContent = 'This image could not be loaded.';
+            if (img.parentNode) img.parentNode.replaceChild(note, img);
+        };
+        return img;
+    }
+
+    /** What an image payload reads as where a picture will not fit. */
+    function describePayload(message, kind) {
+        if (!isImageKind(kind)) return message;
+        const s = String(message || '');
+        const pad = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+        return `[${RENDERABLE_KINDS[kind]} image, ${fmt(Math.round((s.length / 4) * 3 - pad))} bytes]`;
+    }
 
     function ago(iso) {
         const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -81,15 +177,557 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.max(546, 3 * (recipientOutputVBytes(address) + 148));
     }
 
+    // The OP_RETURN output size, mirroring tx_sizing.js opReturnOutputVBytes().
+    //
+    // This replaced a flat `11 + bytes`, which assumed a one-byte push prefix and a
+    // one-byte script varint. Both stop being true past 75 bytes, and an image payload is
+    // thousands — the old form under-states a 2000-byte payload by 4 vBytes. Small in
+    // sats, but this function is also what the budget search inverts, and a preview that
+    // disagrees with the server is how a customer gets quoted one number and charged
+    // another.
+    function opReturnOutputVBytes(dataLength) {
+        const pushPrefix = dataLength <= 75 ? 1 : dataLength <= 255 ? 2 : 3;
+        const script = 1 + pushPrefix + dataLength;
+        const varInt = script < 253 ? 1 : script < 65536 ? 3 : 5;
+        return 8 + varInt + script;
+    }
+
+    /**
+     * What the server will quote for a payload of `bytes` on-chain bytes.
+     *
+     * The single cost model on this page: the preview, the breakdown and the image budget
+     * search all read from it, so there is one place where this arithmetic can be wrong
+     * rather than three. Mirrors queue.js.
+     */
+    function quoteSats(bytes, feeRate, recipient, amount) {
+        let vb = 10.5 + 68 + opReturnOutputVBytes(bytes) + 31;
+        if (recipient) vb += recipientOutputVBytes(recipient);
+        return Math.ceil(vb) * feeRate + SERVICE_FEE + (recipient ? amount : 0);
+    }
+
+    /**
+     * The largest payload whose quote still fits inside `budget` sats.
+     *
+     * Binary search rather than algebra: quoteSats has a Math.ceil in the middle of it and
+     * inverting that by hand is how the two sides drift apart. Searching the function the
+     * preview actually uses means the answer is right by construction.
+     */
+    function maxBytesForBudget(budget, feeRate, recipient, amount, cap) {
+        let lo = 1, hi = cap, best = 0;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (quoteSats(mid, feeRate, recipient, amount) <= budget) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return best;
+    }
+
     // --- Live limits -------------------------------------------------------
+    // The image button stays hidden until the server has told us images are allowed and
+    // how big they may be. Failing closed matters here: offering an encoder that targets
+    // a limit we guessed produces payloads the server then refuses.
     fetch('/api/config/limits')
         .then((r) => r.json())
-        .then((d) => { if (d.maxPayloadSize) { MAX_BYTES = d.maxPayloadSize; recalc(); } })
+        .then((d) => {
+            if (d.maxPayloadSize) MAX_BYTES = d.maxPayloadSize;
+            if (Number.isFinite(d.serviceFeeSats)) SERVICE_FEE = d.serviceFeeSats;
+            MAX_IMAGE_BYTES = Number.isFinite(d.maxImagePayloadSize) ? d.maxImagePayloadSize : 0;
+            // Probing runs the real encoder once, so it is async. The button stays hidden
+            // until it answers — better a button that appears a beat late than one that
+            // offers something this browser cannot actually produce.
+            if (MAX_IMAGE_BYTES > 0) detectImageMime().then((m) => { if (m) imgBtn.hidden = false; });
+            recalc();
+        })
         .catch(() => {});
 
     fetch('/api/health')
         .then((r) => { if (!r.ok) throw new Error(); })
         .catch(() => { live.classList.add('down'); live.lastChild.textContent = ' offline'; });
+
+    // --- Images ------------------------------------------------------------
+    //
+    // The whole encode happens in this browser. The server never receives the original
+    // file, only the few kilobytes that are actually going on the chain.
+    //
+    // That is a deliberate security choice, not a convenience one. Server-side image
+    // decoding means an upload endpoint, temp files, and an image decoder parsing hostile
+    // input on the machine that holds the wallet seed — decoders are one of the classic
+    // remote-code-execution surfaces. The browser's decoder is already hardened, already
+    // sandboxed, and already there.
+    //
+    // It also strips metadata for free: re-encoding through a canvas drops EXIF, which on
+    // a phone photo routinely includes GPS coordinates. This is a permanent public ledger.
+    // Nobody publishing a picture of their cat means to publish their home address.
+
+    const IMAGE_MIN_QUALITY = 0.15;
+    const IMAGE_MAX_QUALITY = 0.92;
+    // Below this, the encoder would rather drop a size than keep smearing detail.
+    const IMAGE_GOOD_QUALITY = 0.4;
+    // Longest edge, largest first. Stops at 32: smaller is a colour swatch, not a picture.
+    //
+    // The top rung is the REAL ceiling on what any budget can buy, and it used to be 512 —
+    // so above roughly 16,000 on-chain bytes more sats bought literally nothing, silently,
+    // no matter how high the service limit went. That is the same broken promise the
+    // budget slider cap exists to prevent, one level further down.
+    const IMAGE_SIZES = [1024, 800, 640, 512, 400, 320, 256, 200, 160, 128, 96, 64, 48, 32];
+    // The largest edge the ladder can offer, used to tell "your budget ran out" apart from
+    // "the encoder has nothing bigger to give you".
+    const IMAGE_MAX_EDGE = IMAGE_SIZES[0];
+    const QUALITY_STEPS = 7;
+
+    // { base64, kind, bytes, width, height } once an image is attached, null otherwise.
+    let image = null;
+    let encodeToken = 0;   // bumps on every new encode so a slow one cannot land late
+
+    // undefined = not probed yet, false = this browser cannot encode at all,
+    // otherwise the media type we will actually produce.
+    let imageMime;
+    // 'native' = canvas.toBlob, 'wasm' = the bundled libwebp build.
+    let encodeVia = null;
+    let wasmEncoder = null;
+
+    /** Can canvas.toBlob genuinely produce `type` here? */
+    async function canvasSupports(type) {
+        const probe = document.createElement('canvas');
+        if (!probe.getContext || !probe.toBlob) return false;
+        probe.width = probe.height = 8;
+        const ctx = probe.getContext('2d');
+        if (!ctx) return false;
+        // Something non-uniform, so an encoder cannot collapse it to nothing.
+        ctx.fillStyle = '#888'; ctx.fillRect(0, 0, 8, 8);
+        ctx.fillStyle = '#222'; ctx.fillRect(0, 0, 4, 4);
+        let blob = null;
+        try { blob = await canvasToBlob(probe, type, 0.8); } catch { return false; }
+        // `blob.type`, not merely "did I get a blob". A browser that cannot produce the
+        // requested format does not throw — it silently substitutes PNG. Believing that
+        // would send PNG bytes labelled image/webp, which intake rejects on the magic-byte
+        // check, and the customer would see a failed order with no reason given.
+        return !!blob && blob.type === type && blob.size > 0;
+    }
+
+    /**
+     * WEBP FOR EVERY BROWSER, one way or another.
+     *
+     * The order matters and the fallback is a last resort, not a peer:
+     *
+     *   1. Native WebP — free and fastest where it exists.
+     *   2. Bundled libwebp (WASM) — same output, costs a ~280 kB one-time download.
+     *   3. Native JPEG — only if WebAssembly is somehow unavailable.
+     *
+     * JPEG used to be step 2, and that was the bug. At these sizes JPEG is roughly TWICE
+     * the bytes for the same picture — a fixed header cost that barely shrinks as the image
+     * does — so a browser without native WebP silently cost the customer double for the
+     * same result. A browser limitation had been allowed to become a product limitation.
+     *
+     * The codec is NOT loaded here. Detection only decides which route to take; the
+     * download happens on the first real encode, so a visitor who never attaches an image
+     * never pays for it.
+     */
+    async function detectImageMime() {
+        if (imageMime !== undefined) return imageMime || null;
+
+        if (await canvasSupports('image/webp')) {
+            imageMime = 'image/webp'; encodeVia = 'native';
+            return imageMime;
+        }
+        if (typeof WebAssembly === 'object' && typeof WebAssembly.validate === 'function') {
+            imageMime = 'image/webp'; encodeVia = 'wasm';
+            return imageMime;
+        }
+        if (await canvasSupports('image/jpeg')) {
+            imageMime = 'image/jpeg'; encodeVia = 'native';
+            return imageMime;
+        }
+        imageMime = false;
+        return null;
+    }
+
+    /**
+     * Encodes a canvas to the format detected above.
+     *
+     * Absolute path for the dynamic import: this file is a classic script, where `import()`
+     * resolves against the DOCUMENT's base URL rather than the script's own, so a relative
+     * specifier would break the moment the page moved.
+     *
+     * If the codec cannot be fetched — offline, blocked, a bad deploy — this falls back to
+     * JPEG once and stays there, rather than failing every encode. Half a picture beats no
+     * picture, and the composer says which format was actually produced.
+     */
+    async function encodeCanvas(canvas, quality) {
+        if (encodeVia === 'wasm') {
+            try {
+                if (!wasmEncoder) wasmEncoder = await import('/vendor/webp/encoder.js');
+                const ctx = canvas.getContext('2d');
+                const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                return await wasmEncoder.encodeWebp(pixels, quality);
+            } catch (e) {
+                console.warn('[SatWire] WebP codec unavailable, falling back to JPEG:', e && e.message);
+                encodeVia = 'native';
+                imageMime = (await canvasSupports('image/jpeg')) ? 'image/jpeg' : false;
+                if (!imageMime) return null;
+            }
+        }
+        return canvasToBlob(canvas, imageMime, quality);
+    }
+
+    const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+            const s = String(fr.result);
+            const comma = s.indexOf(',');
+            comma < 0 ? reject(new Error('bad data url')) : resolve(s.slice(comma + 1));
+        };
+        fr.onerror = () => reject(fr.error || new Error('read failed'));
+        fr.readAsDataURL(blob);
+    });
+
+    const canvasToBlob = (canvas, mime, quality) => new Promise((resolve) => {
+        canvas.toBlob((b) => resolve(b), mime, quality);
+    });
+
+    /**
+     * Decode the chosen file.
+     *
+     * Via an <img> rather than createImageBitmap: an <img> applies EXIF orientation, and
+     * createImageBitmap only does with an option Safari was late to. A phone photo that
+     * publishes sideways forever is not a bug worth shipping to save a few milliseconds.
+     */
+    function loadImage(file) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const el = new Image();
+            el.onload = () => { URL.revokeObjectURL(url); resolve(el); };
+            el.onerror = () => { URL.revokeObjectURL(url); reject(new Error('not a readable image')); };
+            el.src = url;
+        });
+    }
+
+    function drawScaled(source, longestEdge) {
+        const w = source.naturalWidth || source.width;
+        const h = source.naturalHeight || source.height;
+        const scale = Math.min(1, longestEdge / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        // JPEG has no alpha. Without a matte, a transparent PNG composites against black
+        // and a logo drawn in dark ink disappears entirely.
+        if (imageMime === 'image/jpeg') {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+        return canvas;
+    }
+
+    /**
+     * The LARGEST image that fits in `targetBytes`, at the best quality that size allows.
+     *
+     * Resolution first, quality second. That ordering is the whole point and it was wrong
+     * before: the ladder used to require quality >= IMAGE_GOOD_QUALITY (0.4) before
+     * accepting a size, on the reasoning that a smeared big picture reads worse than a
+     * clean small one.
+     *
+     * On 2026-08-09 that cost a customer 41,890 sats. A high-resolution iPhone photo with a
+     * ~19,900-byte budget could have been 800x600 at quality 0.22; the gate rejected that,
+     * rejected 640x480 at 0.30 and 512x384 at 0.38, and returned 400x300 at 0.92 — spending
+     * the entire budget on quality nobody asked for at a quarter of the picture. The
+     * customer had asked for the smallest format and the highest resolution, and got the
+     * opposite trade.
+     *
+     * So: walk the ladder from the top and take the FIRST size that fits at all. The binary
+     * search below already maximises quality within a size, so this yields the biggest
+     * picture the budget can buy and then the sharpest version of it. When that lands on a
+     * low quality the composer says so plainly and the customer can look at the preview and
+     * spend more — which is a judgement they can make and a threshold in here cannot.
+     */
+    async function encodeWithin(source, targetBytes) {
+        let lastEdge = null;
+
+        for (const size of IMAGE_SIZES) {
+            // drawScaled never upscales, so every rung above the source's own longest edge
+            // produces an IDENTICAL canvas. Encoding it again just burns up to seven
+            // toBlob calls per duplicate rung for a result already known — on a phone with
+            // a small source that was most of the wait. Take the first such rung (which is
+            // the source at its own size) and skip the rest.
+            const edge = Math.min(size, Math.max(source.naturalWidth || source.width, source.naturalHeight || source.height));
+            if (edge === lastEdge) continue;
+            lastEdge = edge;
+
+            const canvas = drawScaled(source, size);
+            let lo = IMAGE_MIN_QUALITY, hi = IMAGE_MAX_QUALITY, fit = null;
+
+            for (let i = 0; i < QUALITY_STEPS; i++) {
+                const q = (lo + hi) / 2;
+                const blob = await encodeCanvas(canvas, q);
+                if (!blob) break;
+                if (blob.size <= targetBytes) { fit = { blob, q, canvas }; lo = q; }
+                else hi = q;
+            }
+
+            // The first size that fits at all wins, because the ladder runs largest-first.
+            // No quality gate: the binary search above has already found the best quality
+            // this size can afford, and a smaller-but-sharper alternative is a trade the
+            // customer makes by looking at the preview, not one this function makes for
+            // them. See the note above encodeWithin for what that gate cost.
+            if (fit) return fit;
+        }
+        return null;
+    }
+
+    /**
+     * Re-encode the pending file to the current budget and update the composer.
+     *
+     * `encodeToken` guards against a slow encode landing after a newer one: dragging the
+     * budget slider fires this on every step, and without the token an early, larger
+     * result could overwrite a later, smaller one — leaving the preview and the price
+     * describing different images.
+     */
+    /**
+     * Stop the budget slider where extra sats stop buying picture.
+     *
+     * Rounded up to a whole step so the top of the track is reachable, and re-applied on
+     * every encode because the saturation point moves with the fee rate and the recipient
+     * amount — the same 2000 bytes costs more at 10 sat/vB than at 2.
+     */
+    function capBudgetSlider(saturationBudget) {
+        const step = parseInt(imgBudget.step, 10) || 500;
+        const min = parseInt(imgBudget.min, 10) || 0;
+        const capped = Math.max(min + step, Math.ceil(saturationBudget / step) * step);
+        if (String(capped) === imgBudget.max) return;
+        imgBudget.max = String(capped);
+        if ((parseInt(imgBudget.value, 10) || 0) > capped) {
+            imgBudget.value = String(capped);
+            imgBudgetN.textContent = fmt(capped);
+        }
+    }
+
+    let pendingSource = null;
+    // The byte cost of the biggest picture this source can produce, learned once the
+    // ladder is seen to top out. Null while the budget is still the thing limiting us.
+    // Reset with the image, because it is a property of the source, not of the session.
+    let encoderCeiling = null;
+
+    async function reencode() {
+        if (!pendingSource) return;
+        const token = ++encodeToken;
+
+        const feeRate = parseInt(feeIn.value, 10) || 2;
+        const recipient = addrIn.value.trim();
+        const amount = recipient ? (parseInt(amtIn.value, 10) || 0) : 0;
+        const budget = parseInt(imgBudget.value, 10) || 0;
+
+        // What the budget buys, never more than the server will accept.
+        const target = Math.min(
+            MAX_IMAGE_BYTES,
+            maxBytesForBudget(budget, feeRate, recipient, amount, MAX_IMAGE_BYTES)
+        );
+
+        // Past the point where the budget saturates MAX_IMAGE_BYTES, more sats buy
+        // literally nothing — the target stops moving and so does the picture. A slider
+        // that keeps travelling there is the UI making a promise the service cannot keep,
+        // which is how somebody ends up paying 25,000 sats for the same image 6,250 would
+        // have bought. Say so, and stop the slider there.
+        // TWO ceilings, and the slider must stop at whichever bites first:
+        //   - the service limit (MAX_IMAGE_BYTES), and
+        //   - the encoder itself, which cannot draw bigger than IMAGE_MAX_EDGE and never
+        //     upscales past the source.
+        // Capping only on the first is what let the slider run to 42,000 sats for a picture
+        // that stopped changing at 16,000. `encoderCeiling` is learned from the last encode
+        // — the byte cost of the largest thing this source can produce — and is null until
+        // we have seen the ladder actually top out.
+        const budgetCeiling = encoderCeiling != null
+            ? Math.min(MAX_IMAGE_BYTES, encoderCeiling)
+            : MAX_IMAGE_BYTES;
+        capBudgetSlider(quoteSats(budgetCeiling, feeRate, recipient, amount));
+        const pinned = target >= MAX_IMAGE_BYTES;
+
+        if (target <= 0) {
+            imgNote.textContent = 'That budget does not cover the service fee yet — raise it.';
+            imgNote.className = 'note warn'; syncImageView();
+            image = null;
+            recalc();
+            return;
+        }
+
+        imgNote.textContent = 'Compressing…';
+        imgNote.className = 'note'; syncImageView();
+
+        let fit;
+        try {
+            fit = await encodeWithin(pendingSource, target);
+        } catch {
+            fit = null;
+        }
+        if (token !== encodeToken) return;
+
+        if (!fit) {
+            imgNote.textContent = 'Could not get this image under the budget. Try a larger one.';
+            imgNote.className = 'note warn'; syncImageView();
+            image = null;
+            recalc();
+            return;
+        }
+
+        // Last line of defence: the bytes must actually be the format we are about to
+        // declare. If the detection above was wrong in any way, the browser will have
+        // silently handed back PNG, and PNG labelled image/webp is refused at intake on
+        // the magic-byte check — the customer would see a failed order with no reason
+        // given. Catching it here costs nothing and turns it into a sentence.
+        if (fit.blob.type !== imageMime) {
+            imgNote.textContent = `This browser produced ${fit.blob.type || 'an unknown format'} instead of ${RENDERABLE_KINDS[imageMime] || imageMime}. Cannot publish that.`;
+            imgNote.className = 'note warn'; syncImageView();
+            image = null;
+            recalc();
+            return;
+        }
+
+        let base64;
+        try {
+            base64 = await blobToBase64(fit.blob);
+        } catch {
+            if (token === encodeToken) {
+                imgNote.textContent = 'Could not read the compressed image.';
+                imgNote.className = 'note warn'; syncImageView();
+            }
+            return;
+        }
+        if (token !== encodeToken) return;
+
+        image = {
+            base64,
+            kind: imageMime,
+            bytes: fit.blob.size,
+            width: fit.canvas.width,
+            height: fit.canvas.height,
+        };
+
+        // Built from our own freshly-encoded blob, so this is the one data: URL on the
+        // page whose contents are not in question.
+        imgPreview.src = `data:${imageMime};base64,${base64}`;
+        imgDims.textContent = `${image.width} × ${image.height}`;
+
+        // Naming the source size is not decoration. drawScaled never upscales, so an image
+        // whose longest edge is already small stays that size no matter what the budget
+        // is — and without this the composer looks broken rather than honest.
+        const sw = pendingSource.naturalWidth || pendingSource.width;
+        const sh = pendingSource.naturalHeight || pendingSource.height;
+        const atSourceSize = Math.max(image.width, image.height) >= Math.max(sw, sh);
+
+        // Naming the FORMAT matters more than it looks. JPEG is roughly twice the size of
+        // WebP at these dimensions — a fixed header cost that barely moves while the image
+        // shrinks — so a browser that cannot encode WebP silently lands about two rungs
+        // lower on the size ladder for the same money. Without this, that reads as "the
+        // encoder is bad" rather than "this browser cannot do WebP".
+        const label = RENDERABLE_KINDS[image.kind] || image.kind;
+        imgSize.textContent = `${fmt(image.bytes)} bytes on-chain · ${label} · from ${sw} × ${sh}`;
+
+        // Learn the encoder's own ceiling: we asked for `target` bytes and the ladder came
+        // back at its largest possible size without using them all, so nothing bigger
+        // exists for this source and more budget is wasted. Recording the actual byte cost
+        // lets the slider stop exactly there on the next pass.
+        const atLadderTop = Math.max(image.width, image.height) >= Math.min(IMAGE_MAX_EDGE, Math.max(sw, sh));
+        encoderCeiling = (atLadderTop && fit.blob.size < target) ? fit.blob.size : null;
+
+        if (atSourceSize) {
+            imgNote.textContent = 'This is the original size — a bigger budget cannot add detail that is not there.';
+        } else if (atLadderTop) {
+            imgNote.textContent = `${IMAGE_MAX_EDGE}px is the largest this publishes — more budget would not make it bigger.`;
+        } else if (pinned) {
+            imgNote.textContent = `Capped at the ${fmt(MAX_IMAGE_BYTES)}-byte service limit, not by your budget.`;
+        } else if (image.kind === 'image/jpeg') {
+            // Should be unreachable now that libwebp ships with the page — it means the
+            // codec could not be fetched at all. Kept, and kept honest about the cost.
+            imgNote.textContent = 'The WebP encoder could not be loaded, so this is JPEG — roughly half the picture for the same sats. Reloading usually fixes it.';
+        } else if (fit.q >= IMAGE_GOOD_QUALITY) {
+            imgNote.textContent = 'Everything above goes in the transaction, permanently.';
+        } else {
+            imgNote.textContent = 'Squeezed hard to fit. A bigger budget would look better.';
+        }
+        imgNote.className = 'note'; syncImageView();
+
+        recalc();
+    }
+
+    async function chooseImage(file) {
+        if (!file) return;
+        if (!(await detectImageMime())) return;
+
+        imgBox.hidden = false;
+        // The WASM codec is fetched on first use, so say so rather than looking stuck.
+        imgNote.textContent = (encodeVia === 'wasm' && !wasmEncoder)
+            ? 'Loading the WebP encoder…'
+            : 'Reading…';
+        imgNote.className = 'note'; syncImageView();
+
+        try {
+            pendingSource = await loadImage(file);
+        } catch {
+            pendingSource = null;
+            image = null;
+            imgNote.textContent = 'That file could not be read as an image.';
+            imgNote.className = 'note warn'; syncImageView();
+            recalc();
+            return;
+        }
+        await reencode();
+    }
+
+    /**
+     * Mirrors the composer's readout into the open preview.
+     *
+     * The dialog never computes anything of its own — it shows the same strings the small
+     * box shows, so the two cannot describe different images. Called after every encode and
+     * on open.
+     */
+    function syncImageView() {
+        if (imgView.hidden) return;
+        imgViewImg.src = imgPreview.getAttribute('src') || '';
+        imgViewDims.textContent = imgDims.textContent;
+        imgViewSize.textContent = imgSize.textContent;
+        imgViewNote.textContent = imgNote.textContent;
+        imgViewNote.className = imgNote.className;
+    }
+
+    /**
+     * Opens the larger preview and MOVES the budget slider into it.
+     *
+     * Moved, not copied. One control means the value the customer is dragging is by
+     * definition the value driving the encode; two synced inputs would be two sources of
+     * truth for one number, and the one being looked at could drift from the one in effect.
+     * Its listeners travel with the element, so nothing needs rebinding.
+     */
+    function openImageView() {
+        if (!image && !pendingSource) return;
+        imgViewSlot.appendChild(imgBudgetRow);
+        imgView.hidden = false;
+        syncImageView();
+        imgViewX.focus();
+    }
+
+    function closeImageView() {
+        if (imgView.hidden) return;
+        // Put the slider back before hiding, or it would be inside a hidden dialog and
+        // unreachable until the next open.
+        imgBudgetHome.appendChild(imgBudgetRow);
+        imgView.hidden = true;
+        imgOpen.focus();
+    }
+
+    function clearImage() {
+        closeImageView();
+        encodeToken++;           // orphan any encode still in flight
+        pendingSource = null;
+        image = null;
+        encoderCeiling = null;   // a property of the source, so it goes with it
+        imgFile.value = '';      // so re-picking the same file still fires `change`
+        imgPreview.removeAttribute('src');
+        imgBox.hidden = true;
+        recalc();
+        msg.focus();
+    }
 
     // --- Cost --------------------------------------------------------------
     let shownTotal = 0, raf = null;
@@ -109,17 +747,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function recalc() {
-        let bytes = bytesOf(msg.value);
-        if (bytes > MAX_BYTES) {
-            let cut = msg.value;
-            while (bytesOf(cut) > MAX_BYTES) cut = cut.slice(0, -1);
-            msg.value = cut;
-            bytes = MAX_BYTES;
+        // An image replaces the text — one OP_RETURN carries one payload. The textarea is
+        // disabled rather than hidden so it is obvious what happened and what removing the
+        // image will give back.
+        const imageMode = !!image || !!pendingSource;
+        msg.disabled = imageMode;
+        msg.placeholder = imageMode
+            ? 'The image below is your message.'
+            : 'Say it once, and let it outlive you…';
+
+        let bytes;
+        let limit;
+        if (imageMode) {
+            bytes = image ? image.bytes : 0;
+            limit = MAX_IMAGE_BYTES || 1;
+        } else {
+            bytes = bytesOf(msg.value);
+            limit = MAX_BYTES;
+            if (bytes > limit) {
+                let cut = msg.value;
+                while (bytesOf(cut) > limit) cut = cut.slice(0, -1);
+                msg.value = cut;
+                bytes = limit;
+            }
         }
 
         ringN.textContent = bytes >= 1000 ? `${Math.floor(bytes / 1000)}k` : bytes;
-        ring.querySelector('.fill').style.strokeDashoffset = RING_CIRC - RING_CIRC * (bytes / MAX_BYTES);
-        ring.className = bytes >= MAX_BYTES ? 'ring full' : 'ring';
+        ring.querySelector('.fill').style.strokeDashoffset = RING_CIRC - RING_CIRC * Math.min(1, bytes / limit);
+        ring.className = bytes >= limit ? 'ring full' : 'ring';
 
         // Fall back rather than let a NaN through: fmt() would render it as "0", and a
         // quote reading "0 sats" is worse than a wrong one, because it looks deliberate.
@@ -130,16 +785,11 @@ document.addEventListener('DOMContentLoaded', () => {
         let amount = parseInt(amtIn.value, 10) || 0;
         if (!recipient) amount = 0;
 
-        // Mirrors queue.js: 10.5 overhead + 68 input + (11 + message) OP_RETURN + 31 change.
-        let vb = 10.5 + 68 + (11 + bytes) + 31;
-        if (recipient) vb += recipientOutputVBytes(recipient);
-        vb = Math.ceil(vb);
-
-        const network = vb * fee;
-        bdNet.textContent = fmt(network);
+        const total = quoteSats(bytes, fee, recipient, amount);
+        bdNet.textContent = fmt(total - SERVICE_FEE - amount);
         bdSvc.textContent = fmt(SERVICE_FEE);
         bdRec.textContent = fmt(amount);
-        animateTotal(network + SERVICE_FEE + amount);
+        animateTotal(total);
 
         // Say the minimum out loud, before any money moves. The server refuses a sub-dust
         // amount, but a customer who only finds that out after paying has learned it the
@@ -251,6 +901,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (v !== undefined && v !== null && order[k] !== v) { order[k] = v; changed = true; }
         };
         set('status', data.status);
+        set('payloadKind', data.payloadKind);
         set('txId', data.opReturnTxId);
         set('supportEmail', data.supportEmail);
         set('refundTxId', data.refundTxId);
@@ -311,7 +962,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span>·</span>
                     <span>${escapeHtml(ago(order.createdAt))}</span>
                 </div>
-                <div class="order-msg">${escapeHtml(order.message)}${order.isPublic ? '<span class="tag">on the wall</span>' : ''}</div>
+                <div class="order-msg">${escapeHtml(describePayload(order.message, order.payloadKind))}${order.isPublic ? '<span class="tag">on the wall</span>' : ''}</div>
                 ${/* ALWAYS five <li>. Skipping the unlabelled ones collapses the flex row
                       and the rail renders as one stray dot with no track — the last step
                       is sized to its content and has its connector removed by design. */ ''}
@@ -336,6 +987,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>`;
 
             ordersEl.appendChild(el);
+
+            // Appended after the innerHTML above rather than interpolated into it, for the
+            // same reason as the wall: the payload never reaches the HTML parser. The
+            // text description written above stays as the fallback when this returns null.
+            const orderImg = payloadImage(order.message, order.payloadKind, 'Your image');
+            if (orderImg) {
+                const slot = el.querySelector('.order-msg');
+                slot.textContent = '';
+                slot.appendChild(orderImg);
+                if (order.isPublic) {
+                    const tag = document.createElement('span');
+                    tag.className = 'tag';
+                    tag.textContent = 'on the wall';
+                    slot.appendChild(tag);
+                }
+            }
 
             const fbInput = el.querySelector('.feedback-input');
             const fbCount = el.querySelector('.feedback-counter');
@@ -367,7 +1034,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- API ---------------------------------------------------------------
     async function broadcast() {
-        if (!bytesOf(msg.value)) { msg.focus(); return; }
+        // An image still mid-encode has no payload yet, and publishing the empty textarea
+        // underneath it would put a blank message on the chain for real money.
+        if (pendingSource && !image) { return; }
+        if (!image && !bytesOf(msg.value)) { msg.focus(); return; }
+
+        const payloadKind = image ? image.kind : 'text';
+        const payloadBody = image ? image.base64 : msg.value;
 
         go.disabled = true;
         const label = go.innerHTML;
@@ -378,7 +1051,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message: msg.value,
+                    message: payloadBody,
+                    payloadKind,
                     targetAddress: addrIn.value.trim() || undefined,
                     feeRate: parseInt(feeIn.value, 10),
                     amountToSend: parseInt(amtIn.value, 10) || 0,
@@ -394,9 +1068,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     requiredAmountSatoshis: data.requiredAmountSatoshis,
                     // What the SERVER recorded, not what we asked for.
                     isPublic: !!data.isPublic,
-                    message: msg.value,
+                    message: payloadBody,
+                    payloadKind,
                 });
                 msg.value = '';
+                if (image || pendingSource) clearImage();
                 recalc();
                 const fresh = orders[0];
                 if (fresh) openPayment(fresh);
@@ -533,11 +1209,23 @@ document.addEventListener('DOMContentLoaded', () => {
             card.className = 'note-card';
             card.style.animationDelay = `${Math.min(i, 12) * 0.04}s`;
 
-            // textContent, not innerHTML. This is text written by strangers, rendered on
-            // the same origin that serves /admin. The escaper would very probably be
+            // textContent, not innerHTML. This is content written by strangers, rendered
+            // on the same origin that serves /admin. The escaper would very probably be
             // enough; not depending on it is cheaper than being sure.
+            //
+            // An image takes the same approach one step further: built with DOM calls from
+            // a validated base64 string and an allowlisted media type, so the payload never
+            // passes through the HTML parser either. payloadImage returns null on anything
+            // unexpected and the card falls back to describing it in text.
             const p = document.createElement('p');
-            p.textContent = m.message;
+            const img = wallImage(m.opReturnTxId, m.payloadKind, 'A picture published on the Bitcoin blockchain');
+            if (img) {
+                card.classList.add('is-image');
+                p.appendChild(img);
+            } else {
+                // Text rows carry their message inline; image rows never do.
+                p.textContent = m.message || '';
+            }
 
             const foot = document.createElement('footer');
             const when = document.createElement('span');
@@ -609,9 +1297,43 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     go.addEventListener('click', broadcast);
 
+    // --- Image wiring ------------------------------------------------------
+    imgBtn.addEventListener('click', () => imgFile.click());
+    imgFile.addEventListener('change', () => chooseImage(imgFile.files && imgFile.files[0]));
+    imgClear.addEventListener('click', clearImage);
+    imgOpen.addEventListener('click', openImageView);
+    imgViewX.addEventListener('click', closeImageView);
+    imgView.addEventListener('click', (e) => { if (e.target === imgView) closeImageView(); });
+
+    // The slider is continuous and each step is a full re-encode, so coalesce: without
+    // this, dragging from one end to the other queues dozens of encodes that the token
+    // guard then throws away. The label updates immediately either way, so the control
+    // still feels direct.
+    let budgetTimer = null;
+    imgBudget.addEventListener('input', () => {
+        imgBudgetN.textContent = fmt(parseInt(imgBudget.value, 10) || 0);
+        clearTimeout(budgetTimer);
+        budgetTimer = setTimeout(reencode, 140);
+    });
+
+    // The byte budget is derived from the fee rate, the recipient and the amount, so a
+    // change to any of those changes how much picture the same sat budget buys.
+    [addrIn, amtIn, feeIn].forEach((el) => {
+        el.addEventListener('change', () => {
+            if (!pendingSource) return;
+            clearTimeout(budgetTimer);
+            budgetTimer = setTimeout(reencode, 140);
+        });
+    });
+
     modalX.addEventListener('click', closePayment);
     modal.addEventListener('click', (e) => { if (e.target === modal) closePayment(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePayment(); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        // The preview sits above the payment modal, so it closes first and alone.
+        if (!imgView.hidden) { closeImageView(); return; }
+        closePayment();
+    });
 
     copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(modalAddress.textContent).then(() => {
@@ -621,6 +1343,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Init --------------------------------------------------------------
+    imgBudgetN.textContent = fmt(parseInt(imgBudget.value, 10) || 0);
     recalc();
     renderOrders();
     loadWall();

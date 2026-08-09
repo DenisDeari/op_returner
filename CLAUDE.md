@@ -4,6 +4,34 @@ Live Bitcoin service at <https://satwire.io>. A customer pays to an address we d
 and we publish their message on-chain in an `OP_RETURN` output. **This code moves real
 customer money.** Read this before changing anything under `backend/src/`.
 
+## How to talk to the operator
+
+Plain language. Short sentences. Say the essential thing first, then the detail.
+
+The operator runs this service and makes the decisions; they do not need to be walked
+through your reasoning to approve something. Lead with what is true and what it means for
+them — "the limit is 20,000 bytes, that is about 42,000 sats for the biggest picture" —
+not with the mechanism that produced it.
+
+Concretely:
+
+- **Answer first, evidence second.** If asked why something happened, say why in one
+  sentence, then show the numbers.
+- **Numbers over adjectives.** "1,500 bytes, 5,250 sats, 160×120" beats "quite small".
+- **Name the cost in sats**, not in vBytes, whenever a person has to decide something.
+- **Tables for anything with more than three values.** They get read; paragraphs do not.
+- **Say what still needs doing, and what it would cost if skipped.** Ranked, not listed.
+- **Flag the risk once, clearly, then do the work.** Do not re-raise a concern the
+  operator has already decided on.
+- **Never bury a problem in the middle.** If something broke, or you broke it, that goes
+  at the top, in one sentence, without softening.
+
+Jargon is fine when it is the actual name of a thing (`OP_RETURN`, dust limit, P2WSH).
+It is not fine as a substitute for explaining what happened.
+
+The operator may switch languages. Follow them, and keep the same plainness — a
+translated wall of jargon is no better than the original.
+
 ## The rule everything else follows from
 
 **Never take money for a transaction we cannot broadcast.**
@@ -47,12 +75,21 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 |---|---|
 | A recipient output is 0 or ≥ the dust limit **for its own script type** | `routes/api.js`, clamped again in `op_return_creator.js` and `treasury.js` |
 | Output sizes come from the real scriptPubKey, never from an assumed address type | `tx_sizing.js`, used by `queue.js`, `op_return_creator.js`, `refund.js`, `treasury.js` |
-| The effective fee rate is never below `MIN_EFFECTIVE_FEE_RATE` (2 sat/vB) | `config.js`, applied in `op_return_creator.js` and `refund.js` |
-| The built transaction's fee clears the relay minimum for its *actual* signed size | `op_return_creator.js`, checked after `extractTransaction` |
+| The OP_RETURN output size is computed, never hand-rolled from the payload length | `tx_sizing.js` `opReturnOutputVBytes`, used by `queue.js`, `op_return_creator.js`, `treasury.js` |
+| Everything prices from the **on-chain** byte count, never the stored string | `payload.js` `byteLength`, called by `queue.js` and `routes/api.js` |
+| A payload's bytes must match the media type it declares | `payload.js` `validate`, magic-byte sniff at intake |
+| A payload is only ever rendered as an inert raster type from a closed allowlist | `frontend/js/app.js` `RENDERABLE_KINDS`, `frontend/admin/admin.js` |
+| The effective fee rate is never below `MIN_EFFECTIVE_FEE_RATE` (2 sat/vB) | `config.js`, applied in `op_return_creator.js`, `refund.js` and `treasury.js` |
+| The built transaction's fee clears the relay minimum for its *actual* signed size | `op_return_creator.js` and `treasury.js`, checked after `extractTransaction` |
 | Outputs never exceed inputs — checked *before* signing | `op_return_creator.js` |
 | A request that has any sign of payment is never deleted | `cleanup.js`, `routes/api.js` DELETE |
 | Automation never publishes a message the customer withdrew | `reconcile.js`, `archivedAt IS NULL` on both publishing passes |
 | An archived request is never on the public wall | `wall.js` `WALL_SELECT_SQL` |
+| The wall listing never carries image bytes — they are fetched one at a time | `wall.js` `WALL_SELECT_SQL` CASE |
+| The payload endpoint runs the listing's own predicate, from one shared string | `wall.js` `WALL_WHERE_SQL` |
+| A payload URL is keyed on the txid, never on the request id (a bearer capability) | `wall.js` `WALL_PAYLOAD_SQL` |
+| Every payload refusal is identical, so it cannot be used as a moderation oracle | `wall.js` `findPublicPayload` |
+| A standardness rejection is one host's policy — ask them all; only `bad-txns-*` stops the chain | `chain_providers.js` `contested` |
 | A public response is a whitelist, never a row spread | `wall.js`, `PUBLIC_REQUEST_FIELDS` in `routes/api.js` |
 | A confirmation that could not be read is never recorded as "unconfirmed" | `confirm_watch.js` |
 | `opReturnConfirmedAt` is a UI signal — no money path may read it | asserted in `confirmations.js` |
@@ -60,7 +97,7 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | Never auto-refund when the payment UTXO is already spent | `NO_REFUND_FAILURES`, `reconcile.js` |
 | The refund address comes from the chain, never from the webhook body | `routes/webhook.js` |
 | Nothing user-supplied reaches `innerHTML` unescaped | `frontend/admin/admin.js`, `frontend/js/app.js` |
-| Wall messages are rendered with `textContent`, never through the escaper | `frontend/js/app.js` `renderWall` |
+| Wall text is rendered with `textContent`; a wall image is a DOM-built `<img>` — neither ever reaches the HTML parser | `frontend/js/app.js` `renderWall`, `payloadImage` |
 | The wallet view never spends BlockCypher's quota | `chain_providers.js` `getAddressSummaries` |
 | A balance that could not be read is never shown as 0 | `wallet_scan.js`, `incomplete` / `stale` flags |
 | Nothing in a webhook body is acted on until the chain confirms it | `routes/webhook.js` `verifyPaymentOnChain` |
@@ -82,6 +119,7 @@ out of the service fee, never out of what the customer is charged.
 ```
 backend/src/
   routes/api.js         intake validation, status polling, feedback, the wall, payment QR
+  payload.js            what goes in the OP_RETURN and how big it is — text or image
   routes/webhook.js     BlockCypher payment callbacks — UNAUTHENTICATED, every value re-read from the chain
   routes/admin.js       Bearer-token admin API (fulfil, refund, alerts)
   routes/internal.js    API-key-only, treasury-funded publishing
@@ -149,17 +187,226 @@ The registration lives in `config.js` because every module on a money path requi
 config, so there is no import order in which a Taproot address reaches `toOutputScript`
 first. **Do not move it into a module that only some paths import.**
 
-`frontend/js/app.js` mirrors this arithmetic to preview the cost and to name the minimum
-next to the amount field. It recognises types by address prefix rather than decoding —
+`frontend/js/app.js` mirrors this arithmetic to preview the cost, to name the minimum next
+to the amount field, and to run the image budget search. It recognises types by address prefix rather than decoding —
 it only drives a preview, and the server remains the authority — but if you change
 `tx_sizing.js`, change it there too or the quote will not match what was displayed.
 
-Two details in that mirror are load-bearing and survived the 2026-08-08 rebuild verbatim:
+Three details in that mirror are load-bearing. `opReturnOutputVBytes` must match
+`tx_sizing.js` exactly — `image_payloads.js` asserts it across 0..12000 bytes, because the
+budget search picks a payload size from a price and a disagreement means the browser targets
+a size the server charges differently. The other two survived the 2026-08-08 rebuild verbatim:
 the `bc1p` test must come **before** the `bc1q` one (a P2TR address is also 62 characters,
 so a single "bc1" branch under-quotes both P2WSH and P2TR by 12 vBytes), and the amount
 hint must keep naming the real minimum out loud. Parity was checked against
 `tx_sizing.js` across all six address types after the rebuild; re-run that check if you
 touch either side.
+
+## Image payloads
+
+A customer can publish a picture instead of text. The browser resizes and re-encodes it to
+WebP (JPEG where WebP encoding is unavailable), the row stores **base64**, and the chain
+gets the **decoded bytes**. `payload.js` is the single source of truth for both.
+
+**The stored length is not the on-chain length.** That is new — before images, `message`
+was the payload, and `Buffer.byteLength(message)` answered both questions. For an image row
+it answers neither: base64 is 33% larger. Anything that quotes, validates or builds must go
+through `payload.byteLength()`. Pricing the stored string overcharges every image customer
+by a third; the reverse under-quotes, which is the failure the top of this file is about.
+
+**There is no envelope and no magic prefix of our own.** WebP and JPEG are self-identifying
+(`RIFF….WEBP`, `FFD8FF`), so anyone can pull the OP_RETURN data out of the transaction and
+get a complete, valid image file — verified by a byte-identical round trip through nothing
+but a hex decode. A prefix would cost the customer real sats to encode a convention only we
+understand. `payloadKind` on the row is for our own rendering, not for the chain.
+
+`payloadKind` is NULL on every row written before this existed, and NULL means text. That is
+deliberate and must not be backfilled: NULL already carries the right meaning.
+
+### Sizing, corrected
+
+`tx_sizing.js` `opReturnOutputVBytes()` is now the only place the OP_RETURN output is
+measured. Three modules used to hand-roll it and **all three were wrong past 75 bytes**:
+
+| Where | Old form | Under-counted by |
+|---|---|---|
+| `queue.js` | `11 + messageBytes` | up to 4 vBytes, no safety margin |
+| `op_return_creator.js` | `script.length + 9` | 2 vBytes, absorbed by `FEE_SAFETY_VBYTES` |
+| `treasury.js` | `script.length + 9` | 2 vBytes, **and it has no safety margin at all** |
+
+Both assume a one-byte push prefix and a one-byte script varint. Neither holds once a
+payload passes 75 bytes (the push widens) or a script passes 252 (the varint widens). At the
+64-byte messages this service had actually published, every one of them was exactly right —
+the same shape as the 2026-08-06 bug: an assumption true for the common case, silently false
+for a new one. The treasury one was live and reachable at `max_payload_size` 1000.
+
+### The wall never carries image bytes
+
+`GET /api/wall` returns **no payload for an image row** — the `CASE` in `WALL_SELECT_SQL`
+keeps it out of the result set entirely. The card gets an `opReturnTxId` and the browser
+fetches the picture from `GET /api/wall/payload/:opReturnTxId`.
+
+It used to inline the base64. At the 20,000-byte limit that is ~27 kB of JSON per image and
+over a megabyte for a full page of 50 — unauthenticated, uncompressed, and deliberately
+un-rate-limited, on every single homepage visit.
+
+Three things make the split safe, and all three must stay:
+
+- **`WALL_WHERE_SQL` is one string, used by both queries.** There are now two places that
+  decide whether a customer's picture is public, and the listing is the one a human looks
+  at. A payload endpoint with a weaker predicate would serve the bytes of a message the
+  operator had hidden or the customer had withdrawn while the listing correctly refused to
+  mention it — a silent leak behind a visible guard. `wall_image_render.js` reintroduces
+  exactly that bug and checks it fails.
+- **Keyed on `opReturnTxId`, never the request id.** A request id is a bearer capability
+  (`GET /api/request-status/:id` is public), so putting one in a URL the homepage emits
+  would hand every visitor read access to that order. A txid is already public.
+- **Every refusal is an identical 404.** Distinguishing "no such transaction" from "hidden
+  by the operator" turns the endpoint into an oracle for moderation decisions.
+
+The endpoint serves **decoded bytes with a `Content-Type` from our own enum**, plus
+`nosniff`. That is both smaller than base64 and safer than the `data:` URL it replaced —
+the frontend no longer builds a URL out of customer content at all.
+
+`cachedAt` moved from the JSON body to the `X-Wall-Cached-At` header. In the body it changed
+every 10 seconds even when nothing was published, so the ETag differed on every request and
+every open tab re-downloaded the whole listing once a minute.
+
+### Rendering somebody else's picture
+
+The rule that kept the text wall safe — `textContent`, never `innerHTML` — does not extend
+to an image. What replaces it, on both the public wall and the admin panel:
+
+- **A closed allowlist of media types.** The `data:` URL's type comes from that constant,
+  never from the row. Interpolating a server-supplied type is how `data:text/html` ends up
+  rendering on the origin that also serves `/admin`.
+- **Base64 is re-validated client-side** before the string is concatenated into a URL.
+- **The element is built with DOM calls and appended**, never interpolated into an
+  `innerHTML` template, so the payload never reaches the HTML parser.
+- **Anything unexpected renders nothing** and falls back to a text description.
+
+**Never add `image/svg+xml`.** It is tempting — SVG is already text, so it costs no base64
+overhead, and a minified logo is ~300 bytes. It is also markup carrying `<script>` and
+`<foreignObject>`. The server refuses it at intake and the frontend refuses it at render;
+both sides have to keep refusing it.
+
+### The limits, and which one actually bites
+
+Four ceilings sit on top of each other. The lowest wins.
+
+| Ceiling | Value | Where |
+|---|---|---|
+| Text | 1,000 bytes | `system_settings.max_payload_size` |
+| Image | **20,000 bytes** | `system_settings.max_image_payload_size` |
+| Builder backstop | 20,000 bytes | `op_return_creator.js` `MAX_ON_CHAIN_PAYLOAD_BYTES` |
+| Browser encoder | 1024 px longest edge | `frontend/js/app.js` `IMAGE_SIZES` |
+| Bitcoin standardness | 100,000 bytes | Core v30 default, not our constraint |
+
+`POST /api/admin/config/limits` sets the first two and **clamps both against the builder
+backstop**. That clamp is not optional: a settings value above it would be quoted to a
+customer and then refused by the builder *after they had paid*.
+
+**In practice the picture usually runs out before the bytes do.** Most photos at 1024 px
+land well under 20,000 bytes, so the encoder's ladder is the binding limit, not the setting.
+The budget slider stops at whichever bites first and says which one it was.
+
+What a budget buys, at 2 sat/vB (WebP, measured on a detailed 4000×3000 photo):
+
+| Image | Bytes | Total |
+|---|---|---|
+| 96×72 | ~850 | ~3,950 sats |
+| 160×120 | ~1,500 | ~5,250 sats |
+| 256×192 | ~2,840 | ~7,930 sats |
+| 512×384 | ~7,880 | ~18,000 sats |
+| 1024×768 | ~20,000 | ~42,250 sats |
+
+### Resolution first, quality second
+
+`encodeWithin` walks the size ladder largest-first and takes **the first size that fits at
+all**. The binary search inside a rung already finds the best quality that size can afford,
+so the result is the biggest picture the budget buys and then the sharpest version of it.
+
+There used to be a quality gate — a size was only accepted at quality >= 0.4, on the
+reasoning that a smeared big picture reads worse than a clean small one. **That gate cost a
+customer 41,890 sats on 2026-08-09.** A high-resolution iPhone photo with a ~19,900-byte
+budget could have been 800x600 at quality 0.22; the gate rejected it, rejected 640x480 at
+0.30 and 512x384 at 0.38, and returned 400x300 at 0.92 — spending the whole budget on
+quality nobody asked for, at a quarter of the picture. The customer had asked for the
+smallest format at the highest resolution and got exactly the opposite trade.
+
+Do not reintroduce it. Whether a softer 800x600 beats a crisp 400x300 is a judgement about
+someone else's picture and someone else's money; the composer shows the result and says when
+compression was heavy, and the customer decides by looking. A threshold in here cannot.
+
+The ladder tops at 1024 px and never upscales, so a small source stays its own size — rungs
+above it are skipped rather than re-encoded to the identical canvas.
+
+**Every browser gets WebP, and that took two goes to get right.** JPEG is roughly twice the
+size of WebP at these rungs — a fixed header cost that barely shrinks as the image does — so
+a browser without native WebP encoding used to cost the customer DOUBLE for the same picture.
+That happened for real on 2026-08-09: an 18,522-byte JPEG quoted at 39,292 sats, where WebP
+would have been about half. The order was stopped before publication and refunded.
+
+The mistake was not the fallback, it was the reasoning. Keeping image decoding off the server
+is correct — a decoder exploit on the machine holding the wallet seed is the worst outcome
+this service has. But "not on the server" was quietly implemented as "whatever
+`canvas.toBlob` happens to support", and a browser limitation became a product limitation.
+
+`frontend/vendor/webp/` now carries libwebp compiled to WebAssembly (@jsquash/webp 1.5.0,
+Apache-2.0, Google's Squoosh build), so the encoder no longer depends on the browser having
+one. The security property is unchanged: it runs in the customer's browser, in the WASM
+sandbox, and touches nothing of ours. Preference order is native WebP → WASM WebP → JPEG,
+and the last one should now be unreachable.
+
+Three things about that directory:
+
+- **The `.js` and its `.wasm` must stay side by side.** The emscripten module resolves its
+  own wasm relative to its own URL. Separating them fails only in a real browser.
+- **It is loaded lazily**, on the first image, not at page load — it is ~280 kB on a page
+  whose job is to show a wall of messages.
+- **The files are pinned by SHA-256** in `image_payloads.js` and in `SHA256SUMS`. It is
+  third-party binary code in a repository that moves money; its identity is checked, not
+  assumed. Only `encoder.js` is ours.
+
+`canvas.toBlob` is also what the native-support probe uses. It used to probe with
+`toDataURL` and encode with `toBlob` — two separate implementations in every engine, allowed
+to disagree — so the answer could simply be wrong. The probe checks `blob.type`, because a
+browser that cannot produce a format does not throw, it silently returns PNG.
+
+### The part that is still unproven
+
+**The largest OP_RETURN this service has ever broadcast is 64 bytes.** Every published
+message predates Core v30. Whether BlockCypher — first in the broadcast order — relays a
+multi-kilobyte OP_RETURN is untested, and it has already shown it applies stricter rules
+than the Esplora hosts.
+
+Two things reduce the blast radius, and neither replaces an actual test:
+
+- A `datacarrier` rejection is now **contested**, so all three hosts are asked before it
+  counts (see *Error classification*). Before that fix, BlockCypher alone could veto a
+  transaction the others would have taken, and it refunded.
+- `confirm_watch.js` reports a transaction that broadcast but never got mined.
+
+Knots nodes still reject payloads over 83 bytes, which costs propagation but not validity.
+A multi-kilobyte transaction at the 2 sat/vB default is also a much bigger bet on the
+mempool than a 250-byte one.
+
+**The safe way to test is the treasury**, not a customer order: `POST /api/internal/embed`
+is API-key-only and spends from `m/84'/0'/0'/2/0`, so no customer money is involved. It is
+text-only and bound by `max_payload_size` today — and raising *that* to run a probe would
+silently raise the **public text intake limit**, which is why the image limit is a separate
+key. A probe path needs its own setting, not a borrowed one.
+
+The frontend inverts this: the customer picks a sat budget and the encoder binary-searches
+quality and dimensions to fit. That search calls the same `opReturnOutputVBytes` mirror the
+cost preview uses, so **the parity requirement below is sharper than it was for addresses** —
+the browser is choosing a payload size from a price, and a mismatch means the encoder targets
+a size the server prices differently.
+
+Encoding happens entirely in the browser, and that is a security decision, not a convenience
+one: no upload endpoint, no temp files, and no image decoder parsing hostile input on the
+machine holding the wallet seed. It also strips EXIF for free — phone photos carry GPS, and
+this is a permanent public ledger.
 
 ## The public wall
 
@@ -216,6 +463,20 @@ coerced** — `"false"` is a thing a caller might send meaning no.
 Treasury-funded and free messages published through `routes/internal.js` create no
 `requests` row at all, so they can never appear on the wall whatever `isPublic` says.
 
+### The preview dialog
+
+The thumbnail opens a larger preview with the budget slider under it, so the customer judges
+the actual picture before paying rather than a 96-pixel square.
+
+**The slider is MOVED into the dialog, not copied.** `#img-budget-row` is appended to
+`#imgview-slot` on open and back to `#img-budget-home` on close, carrying its listeners with
+it. Two synced inputs would be two sources of truth for one number, and the one being
+dragged could drift from the one actually driving the encode. `closeImageView` must run
+before the dialog is hidden, or the only control ends up inside a hidden element.
+
+The dialog computes nothing: `syncImageView` copies the composer's own strings across, so
+the two can never describe different images.
+
 `GET /api/payment-qr.svg?requestId=…` is the one public use of `qr.js`. It takes **only**
 a request id and reads the address, amount and label from the row. Do not add an
 `?address=` parameter the way the admin route has one — public, that is an open QR
@@ -264,6 +525,23 @@ expensive, so check it when touching provider code:
 - **inputs already spent** → an earlier attempt probably confirmed; never auto-refund
 - **dust** → permanent, but only after every provider has been asked (see below)
 - **permanent** (malformed, bad-txns-*) → stop at the first host, refund
+
+**Consensus vs policy is the line that decides whether the fallback runs.** A `bad-txns-*`
+rejection breaks a consensus rule: every node agrees, so the first host to say so has told
+the whole truth and we stop. Everything else in `PERMANENT_ERROR_PATTERNS` is *standardness*
+— dust, `datacarrier`, `scriptpubkey` — which each node operator **configures**. One host's
+refusal there is an opinion, not a verdict, so all of them get asked and only unanimous
+refusal is final. `classifyError` returns `contested` for that case.
+
+`datacarrier` is the one that matters now. Core v30 raised the default OP_RETURN limit from
+83 bytes to 100,000 and kept it configurable; Knots keeps the old limit. So the same
+transaction is standard to one host and non-standard to the next, right now, by deliberate
+choice. Without the contested rule, a BlockCypher `datacarrier` rejection would stop the
+chain dead and auto-refund an order both Esplora hosts would have taken — 2026-08-06 exactly,
+with a different reason string. `datacarrier` and `multi-op-return` are also in the permanent
+list at all now: a bare `datacarrier` reply previously matched nothing and read as
+*transient*, so the request retried to `MAX_FULFILL_ATTEMPTS` against a limit that cannot
+change between attempts.
 
 `tryProviders` stops at the first *permanent* rejection and never consults the remaining
 hosts, so whichever host answers first gets to declare a transaction invalid — and a
@@ -458,7 +736,7 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **390 assertions across eight files**, all offline:
+`/home/admin/op_returner_tests/` — **531 assertions across ten files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -477,6 +755,15 @@ There is no test runner in the repo. Verification lives outside it, in
 - `confirmations.js` — 36. The confirmation watch, its bounds, the "unreadable is not
   unconfirmed" rule, the operator alert for a transaction that never got mined, and the
   invariant that no money path reads `opReturnConfirmedAt`.
+- `image_payloads.js` — 96. OP_RETURN sizing against bitcoinjs at every encoding boundary,
+  stored-vs-on-chain length, quote/build agreement, estimate-never-below-real-signed-size,
+  the magic-byte match, strict base64, the frontend mirror, and the treasury path's fee floor
+  and relay check.
+- `wall_image_render.js` — 45. The listing carries no image bytes; the payload endpoint
+  refuses every row the listing refuses (hidden, archived, un-stamped, redacted, text);
+  every refusal is an identical null so it is not an oracle; both queries are built from the
+  same `WALL_WHERE_SQL`; and the **shipped** `wallImage` from `frontend/js/app.js` builds the
+  right URL. Uses `fixtures/sample_200x200.webp`.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real
@@ -500,7 +787,10 @@ flat 31-vByte recipient output this way reproduces the 2026-08-06 production err
 verbatim — `computed fee 458 sats is below the 476 sat minimum for a 238 vByte
 transaction`. Never do this against `backend/src` itself.
 
-Two more that have been checked this way, both worth re-checking if you touch webhooks:
+Three more that have been checked this way. Dropping `WALL_WHERE_SQL` from `WALL_PAYLOAD_SQL`
+— leaving the payload endpoint with only `status = 'op_return_broadcasted'` — makes
+`wall_image_render.js` fail 13 assertions and print `"LEAK"` for the operator-hidden row.
+The other two are worth re-checking if you touch webhooks:
 dropping the address fallback in `judgeHook` turns a hook belonging to a live
 `pending_payment` row into `"reason":"no request claims this hook","orphaned":true` — a
 prune would delete the webhook watching a customer mid-payment. Removing the

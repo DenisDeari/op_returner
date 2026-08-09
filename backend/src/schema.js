@@ -117,6 +117,19 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // the public wall of every message the moment it got mined.
     'ADD COLUMN opReturnConfirmedAt TEXT',
     'ADD COLUMN opReturnBlockHeight INTEGER',
+    // What `message` actually holds: 'text' (UTF-8, the only thing that existed before
+    // this column) or an image mime type, in which case the column holds BASE64 and the
+    // chain gets the decoded bytes.
+    //
+    // NULL means text. Deliberately not backfilled and deliberately not NOT NULL: every
+    // row written before images existed is text, so NULL already carries the right
+    // meaning, and payload.js normalises it. A backfill would rewrite a money database to
+    // say something it already said.
+    //
+    // The consequence to keep in mind: for an image row, `Buffer.byteLength(message)` is
+    // the base64 length and NOT what goes on chain. Nothing may price from it — see
+    // payload.js byteLength().
+    'ADD COLUMN payloadKind TEXT',
 ];
 
 // The only index on `requests`.

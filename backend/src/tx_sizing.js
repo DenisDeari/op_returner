@@ -12,12 +12,60 @@
 const bitcoin = require('bitcoinjs-lib');
 
 /**
+ * The serialised size of a CompactSize integer.
+ *
+ * This used to be assumed to be 1, which was true while the only outputs measured here
+ * were recipient scripts (34 bytes at most). The OP_RETURN output is not: a payload big
+ * enough to hold an image pushes its script past 252 bytes and the varint becomes three.
+ */
+function varIntVBytes(n) {
+    if (n < 253) return 1;
+    if (n < 0x10000) return 3;
+    if (n < 0x100000000) return 5;
+    return 9;
+}
+
+/**
  * The serialised size of a transaction output: an 8-byte value, a varint script length,
- * then the script. Every scriptPubKey we can build is far below 253 bytes, so the varint
- * is always one byte.
+ * then the script.
  */
 function outputVBytes(script) {
-    return 8 + 1 + script.length;
+    return 8 + varIntVBytes(script.length) + script.length;
+}
+
+/**
+ * The scriptPubKey size of an OP_RETURN carrying `dataLength` bytes:
+ * OP_RETURN, then a push whose prefix grows with the payload.
+ *
+ *   <= 75    direct push          1 byte
+ *   <= 255   OP_PUSHDATA1 + len   2 bytes
+ *   larger   OP_PUSHDATA2 + len   3 bytes
+ */
+function opReturnScriptVBytes(dataLength) {
+    const pushPrefix = dataLength <= 75 ? 1 : dataLength <= 255 ? 2 : 3;
+    return 1 + pushPrefix + dataLength;
+}
+
+/**
+ * The full output size for an OP_RETURN carrying `dataLength` bytes.
+ *
+ * THE SINGLE SOURCE OF TRUTH for this number. queue.js quotes from it and
+ * op_return_creator.js builds from it, and the two drifting apart is how a customer pays
+ * for a transaction we cannot broadcast.
+ *
+ * Both used to hand-roll it: queue.js as `11 + messageBytes` and the builder as
+ * `script.length + 9`. Both assume a one-byte push prefix and a one-byte varint, so both
+ * under-count for any payload over 75 bytes — the queue by up to 4 vBytes, the builder by
+ * 2. At the 64-byte messages this service had actually published, both were exactly right,
+ * which is precisely the shape of the 2026-08-06 bug: an assumption that held for the
+ * common case and silently stopped holding for a new one.
+ *
+ * Checked against bitcoinjs `payments.embed` at 64, 75, 76, 252, 255, 256, 520, 1000,
+ * 8000 and 10000 bytes.
+ */
+function opReturnOutputVBytes(dataLength) {
+    const scriptLength = opReturnScriptVBytes(dataLength);
+    return 8 + varIntVBytes(scriptLength) + scriptLength;
 }
 
 function outputVBytesForAddress(address, network) {
@@ -60,7 +108,10 @@ function dustLimitForAddress(address, network, config) {
 }
 
 module.exports = {
+    varIntVBytes,
     outputVBytes,
+    opReturnScriptVBytes,
+    opReturnOutputVBytes,
     outputVBytesForAddress,
     dustThresholdForScript,
     dustLimitForScript,

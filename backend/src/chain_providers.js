@@ -32,6 +32,16 @@ const PERMANENT_ERROR_PATTERNS = [
     'non standard',
     'scriptpubkey',
     'bad-txns',
+    // Bitcoin Core's reject reasons for an OP_RETURN a node's policy will not carry.
+    // Without these, a bare "datacarrier" reply matches nothing above and is read as
+    // TRANSIENT — so the request would retry to MAX_FULFILL_ATTEMPTS against a limit that
+    // cannot change between attempts, then refund anyway, having burned the budget and
+    // delayed the customer's money for nothing.
+    //
+    // They are permanent AND contested: see CONSENSUS_INVALID_PATTERNS below. Every host
+    // gets asked, and only unanimous refusal is final.
+    'datacarrier',
+    'multi-op-return',
 ];
 
 // These are NOT failures. They mean the transaction is already in the mempool or a
@@ -82,6 +92,37 @@ const FEE_TOO_LOW_PATTERNS = [
 // output value, so a request whose providers all agree should refund rather than spin.
 const DUST_PATTERNS = ['dust'];
 
+// THE LINE THAT MATTERS: consensus invalidity vs node policy.
+//
+// A `bad-txns-*` rejection means the transaction breaks a consensus rule. Every node on
+// earth agrees, so the first host to say so is telling the whole truth and there is
+// nothing to gain by asking the others.
+//
+// Everything else in PERMANENT_ERROR_PATTERNS is *standardness* — a policy judgement each
+// node operator configures. Policy differs per host BY DESIGN, so one host's refusal is
+// its opinion, not a verdict. Dust was the first case where that bit us. It is not the
+// only one:
+//
+//   `datacarrier` — the OP_RETURN size limit. Bitcoin Core v30 (October 2025) raised the
+//   default from 83 bytes to 100,000 and the option stayed configurable; Bitcoin Knots
+//   keeps the old limit and is actively promoted as the alternative. So a multi-kilobyte
+//   OP_RETURN is standard to one host and non-standard to the next, RIGHT NOW, by the
+//   deliberate choice of whoever runs them. BlockCypher is first in our broadcast order
+//   and we do not know which policy it runs.
+//
+// Without this, a BlockCypher datacarrier rejection would stop the chain dead, be
+// classified permanent, and auto-refund an order that both Esplora hosts would very
+// likely have accepted — the 2026-08-06 sequence exactly, with a different reason string.
+//
+// CLAUDE.md says not to extend the dust exception without the same evidence of genuine
+// disagreement. That evidence here is stronger than it was for dust: this one is a
+// documented, contested, actively-configured split in the network.
+//
+// A contested rejection is still PERMANENT once every host agrees — retrying does not
+// shrink a payload any more than it raises an output value — so the caller still refunds
+// rather than spinning.
+const CONSENSUS_INVALID_PATTERNS = ['bad-txns'];
+
 function classifyError(message) {
     const lower = String(message || '').toLowerCase();
     const alreadyBroadcast = ALREADY_BROADCAST_PATTERNS.some((p) => lower.includes(p));
@@ -92,7 +133,18 @@ function classifyError(message) {
     // Only meaningful when the rejection is otherwise permanent — "dust" appearing in an
     // already-known or fee-too-low message must not defer those classifications.
     const dust = permanent && !inputsSpent && DUST_PATTERNS.some((p) => lower.includes(p));
-    return { permanent, alreadyBroadcast, feeTooLow, inputsSpent, dust, message: String(message || 'unknown error') };
+
+    // A standardness rejection is one host's policy, so ask the others before believing
+    // it. A consensus rejection (`bad-txns-*`) is universal — stop at the first host, as
+    // before. `inputsSpent` is excluded because it means the money has already moved,
+    // which is not a matter of opinion and must never be re-attempted elsewhere.
+    const consensusInvalid = CONSENSUS_INVALID_PATTERNS.some((p) => lower.includes(p));
+    const contested = permanent && !inputsSpent && !consensusInvalid;
+
+    return {
+        permanent, alreadyBroadcast, feeTooLow, inputsSpent, dust, contested, consensusInvalid,
+        message: String(message || 'unknown error'),
+    };
 }
 
 function extractErrorMessage(error) {
@@ -337,6 +389,7 @@ async function tryProviders(config, methodName, args, { label, onlyProviders, us
                 error: classified.message,
                 permanent: classified.permanent,
                 dust: classified.dust,
+                contested: classified.contested,
             });
 
             if (isProviderUnhealthy(classified.message)) {
@@ -355,30 +408,36 @@ async function tryProviders(config, methodName, args, { label, onlyProviders, us
 
             console.warn(`[ChainProviders] ${label} failed via ${provider.name}: ${classified.message}`);
 
-            // A permanently invalid transaction will be rejected identically everywhere —
-            // except for dust, where the threshold is each provider's own choice. Put
-            // that one to the remaining hosts before accepting it; if they all agree it
-            // is returned as permanent below.
-            if (classified.permanent && !classified.dust) {
+            // A CONSENSUS-invalid transaction is rejected identically everywhere, so the
+            // first host to say so has told us everything and we stop. A STANDARDNESS
+            // rejection is that host's own policy — dust thresholds and datacarrier limits
+            // are both configured per node — so put it to the remaining hosts first. If
+            // they all agree it is returned as permanent below.
+            if (classified.permanent && !classified.contested) {
                 return {
                     ok: false, permanent: true, inputsSpent: classified.inputsSpent,
                     reason: classified.message, attempts,
                 };
             }
-            if (classified.dust) {
-                console.warn(`[ChainProviders] ${label}: ${provider.name} calls this dust, but dust thresholds differ between providers — asking the rest.`);
+            if (classified.contested) {
+                console.warn(`[ChainProviders] ${label}: ${provider.name} rejects this on POLICY (${classified.message}), `
+                    + 'which differs per node — asking the remaining hosts before accepting it.');
             }
             // A fee rejection is worth trying elsewhere — thresholds differ per provider —
             // so fall through to the next one rather than giving up here.
         }
     }
 
-    // Every host has now refused. A dust rejection that none of them contradicted is as
-    // permanent as it first looked, and must be reported that way: retrying cannot change
-    // an output value, so the caller should refund rather than keep the request spinning.
-    const dustAttempt = attempts.find((a) => a.dust);
-    if (dustAttempt) {
-        return { ok: false, permanent: true, reason: dustAttempt.error, attempts };
+    // Every host has now refused. A policy rejection that none of them contradicted is as
+    // permanent as it first looked, and must be reported that way: retrying changes
+    // neither an output value nor a payload size, so the caller should refund rather than
+    // keep the request spinning.
+    //
+    // The first contested attempt is reported, not the last: it is the one that describes
+    // the transaction, where a later host may merely have echoed a generic refusal.
+    const contestedAttempt = attempts.find((a) => a.contested || a.dust);
+    if (contestedAttempt) {
+        return { ok: false, permanent: true, reason: contestedAttempt.error, attempts };
     }
 
     return {

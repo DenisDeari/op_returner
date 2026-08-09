@@ -59,8 +59,21 @@
 // capability: GET /api/request-status/:requestId is public, so anyone holding a request id
 // can read that order. The wall must never emit `id` or `address`. If a "hide this" button
 // ever needs an id, it belongs in the admin panel, which has its own authenticated listing.
+//
+// `payloadKind` is safe to emit and necessary: it is our own closed enum, written only by
+// intake and validated against the payload's actual magic bytes, never free text from a
+// customer. The frontend needs it to know whether `message` is words to put in a
+// textContent node or base64 to hand to an <img>, and GUESSING would be the bug — sniffing
+// a payload client-side to decide how to render it is exactly the content-type confusion
+// that turns a message wall into an XSS surface.
+//
+// What it is NOT is permission to render arbitrary types. The enum is text, image/webp and
+// image/jpeg — all inert raster. Never add a type the browser executes or parses as markup
+// (SVG above all: it carries <script> and <foreignObject>), and never build a `data:` URL
+// from a type that did not come from this list.
 
-const { dbAll } = require('./db_utils');
+const { dbAll, dbGet } = require('./db_utils');
+const payload = require('./payload');
 
 /** Nobody needs more than this, and it bounds the cost of the one public query. */
 const MAX_LIMIT = 100;
@@ -73,11 +86,15 @@ const DEFAULT_LIMIT = 50;
  */
 const CACHE_MS = 10 * 1000;
 
-const WALL_SELECT_SQL = `
-    SELECT message,
-           opReturnTxId,
-           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt
-      FROM requests
+// THE PREDICATE, ONCE. Two queries need it now — the listing below and the per-payload
+// fetch that serves an image's bytes — and they must never drift apart. A payload endpoint
+// with a weaker WHERE would happily serve the bytes of a message the operator had hidden,
+// a customer had withdrawn, or retention had redacted, while the listing correctly refused
+// to mention it. The listing is the visible guard; this one would fail silently.
+//
+// Interpolated into both statements so there is exactly one copy in the process, and the
+// harness asserts both carry it.
+const WALL_WHERE_SQL = `
      WHERE status = 'op_return_broadcasted'
        AND isPublic = 1
        AND publicAt IS NOT NULL
@@ -85,8 +102,42 @@ const WALL_SELECT_SQL = `
        AND archivedAt IS NULL
        AND redactedAt IS NULL
        AND message <> ''
+`;
+
+// The listing NEVER carries image bytes.
+//
+// It used to. `message` holds base64 for an image row, so at the 20,000-byte limit a
+// single image is ~27 kB of JSON and a full page of 50 is over a megabyte — served
+// unauthenticated, uncompressed and deliberately un-rate-limited, on every single homepage
+// visit. The CASE keeps those bytes out of the result set entirely rather than fetching
+// them and discarding them afterwards, so they never leave SQLite either.
+//
+// Text stays inline: it is capped at 1,000 bytes and is what the card actually renders.
+// An image row carries its `opReturnTxId`, which the client turns into an <img src> against
+// the payload endpoint below.
+const WALL_SELECT_SQL = `
+    SELECT CASE WHEN payloadKind IN ('image/webp', 'image/jpeg') THEN NULL ELSE message END AS message,
+           payloadKind,
+           opReturnTxId,
+           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt
+      FROM requests
+     ${WALL_WHERE_SQL}
      ORDER BY COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) DESC
      LIMIT ?
+`;
+
+// One published payload, addressed by its transaction id.
+//
+// Keyed on opReturnTxId and NOT on the request id, deliberately. A request id is a bearer
+// capability — GET /api/request-status/:id is public — so putting one in a URL the homepage
+// emits would hand every visitor read access to that order. The transaction id is already
+// public: it is in the listing, it is printed on the card, and it is on the chain.
+const WALL_PAYLOAD_SQL = `
+    SELECT message, payloadKind
+      FROM requests
+     ${WALL_WHERE_SQL}
+       AND opReturnTxId = ?
+     LIMIT 1
 `;
 
 let cache = null; // { at: number, rows: object[] }
@@ -113,6 +164,37 @@ async function listPublicMessages(db, limit = DEFAULT_LIMIT) {
     };
 }
 
+/** A Bitcoin txid and nothing else, checked before it reaches a query. */
+const TXID_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * The decoded bytes of one published image, or null.
+ *
+ * Runs the SAME predicate as the listing, so a row the wall would not mention cannot have
+ * its bytes served either. Returns null for every refusal — not found, hidden, archived,
+ * redacted, a text row, or a payload that will not decode — because the caller must not be
+ * able to tell those apart. A 404 that means "exists but hidden" is an oracle.
+ *
+ * Deliberately NOT cached in this module. The listing cache exists to keep the homepage
+ * off the money paths' serialized handle; this is one indexed lookup, served with immutable
+ * cache headers, so the browser and Cloudflare do the caching. Holding decoded image bytes
+ * in process memory would be the same megabyte problem moved one layer down.
+ */
+async function findPublicPayload(db, opReturnTxId) {
+    const txid = String(opReturnTxId || '').toLowerCase();
+    if (!TXID_RE.test(txid)) return null;
+
+    const row = await dbGet(db, WALL_PAYLOAD_SQL, [txid]);
+    if (!row || !payload.isImage(row.payloadKind)) return null;
+
+    try {
+        return { bytes: payload.decode(row.message, row.payloadKind), kind: row.payloadKind };
+    } catch {
+        // Stored payload does not decode. Nothing to serve and nothing the caller can do.
+        return null;
+    }
+}
+
 function clampLimit(value) {
     const n = Number.parseInt(value, 10);
     if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
@@ -130,8 +212,11 @@ function invalidate() {
 
 module.exports = {
     listPublicMessages,
+    findPublicPayload,
     invalidate,
     clampLimit,
+    WALL_WHERE_SQL,
+    WALL_PAYLOAD_SQL,
     WALL_SELECT_SQL,
     MAX_LIMIT,
     DEFAULT_LIMIT,

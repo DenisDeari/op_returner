@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Publish a message permanently in a Bitcoin block.">
     <title>SatWire — Immortalize your Message</title>
-    <link rel="stylesheet" href="css/styles.css?v=3">
+    <link rel="stylesheet" href="css/styles.css?v=11">
 </head>
 <body>
 
@@ -38,7 +38,63 @@
 
     <!-- ============================ Compose ============================== -->
     <section class="compose">
-        <textarea id="msg" placeholder="Say it once, and let it outlive you&hellip;" aria-label="Your message"></textarea>
+        <div class="msg-wrap">
+            <textarea id="msg" placeholder="Say it once, and let it outlive you&hellip;" aria-label="Your message"></textarea>
+
+            <!-- The file input is the real control; the button just clicks it. A bare
+                 <input type=file> cannot be styled and would sit in the composer looking
+                 like a form from 2003. `accept` is a filter for the picker, never a
+                 check — the browser re-encodes whatever is chosen to WebP or JPEG and
+                 the server validates the resulting bytes. -->
+            <input type="file" id="img-file" accept="image/*" hidden>
+            <!-- Starts hidden. Revealed only once /api/config/limits confirms images are
+                 allowed AND this browser can encode WebP or JPEG, so the button never
+                 offers something that would fail on submit. -->
+            <button class="msg-img" id="img-btn" type="button" hidden
+                    aria-label="Attach an image" title="Publish an image instead">
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <rect x="2.5" y="3.5" width="15" height="13" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+                    <circle cx="7.4" cy="8" r="1.5" fill="currentColor"/>
+                    <path d="M3.2 14.2 7.6 10.4l3.1 2.7 2.8-2.3 3.3 3" stroke="currentColor"
+                          stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Shown only once an image is chosen. -->
+        <div class="imgbox" id="imgbox" hidden>
+            <button class="imgbox-thumb" id="img-open" type="button"
+                    aria-label="Open a larger preview" title="Click to enlarge">
+                <img id="img-preview" alt="Your image as it will be published">
+                <span class="imgbox-zoom" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                        <path d="M6 1H1v5M10 15h5v-5M15 6V1h-5M1 10v5h5" stroke="currentColor"
+                              stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+            </button>
+            <div class="imgbox-body">
+                <div class="imgbox-head">
+                    <strong id="img-dims">—</strong>
+                    <span class="note" id="img-size">—</span>
+                    <button class="imgbox-x" id="img-clear" type="button" aria-label="Remove image">&times;</button>
+                </div>
+                <!-- THE budget control. There is exactly one of these in the document: it is
+                     physically moved into the preview dialog while that is open and moved
+                     back on close. Two synced sliders would be two sources of truth for one
+                     number, and the one the customer is looking at could disagree with the
+                     one that is actually driving the encode. -->
+                <div id="img-budget-home">
+                    <label class="imgbox-budget" id="img-budget-row">
+                        <span>Budget</span>
+                        <input type="range" id="img-budget" min="3000" max="25000" step="500" value="8000"
+                               aria-label="How many sats to spend on this image">
+                        <b id="img-budget-n">8,000</b><span>sats</span>
+                    </label>
+                </div>
+                <div class="note" id="img-note">Bigger budget, bigger picture.</div>
+            </div>
+        </div>
 
         <div class="recip">
             <div class="field grow">
@@ -177,6 +233,23 @@
 
 </div>
 
+<!-- ============================ Image preview ========================== -->
+<!-- The budget slider is NOT duplicated here. #img-budget-row is moved into
+     #imgview-slot when this opens and moved back on close, so there is one control
+     and one value. -->
+<div class="imgview" id="imgview" hidden role="dialog" aria-modal="true" aria-label="Image preview">
+    <div class="imgview-box">
+        <button class="modal-x" id="imgview-x" type="button" aria-label="Close">&times;</button>
+        <div class="imgview-stage"><img id="imgview-img" alt="Your image at the size it will be published"></div>
+        <div class="imgview-head">
+            <strong id="imgview-dims">—</strong>
+            <span class="note" id="imgview-size">—</span>
+        </div>
+        <div class="imgview-slot" id="imgview-slot"></div>
+        <div class="note" id="imgview-note"></div>
+    </div>
+</div>
+
 <!-- ============================ Payment modal =========================== -->
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-label="Payment">
     <div class="modal-box">
@@ -191,6 +264,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=3"></script>
+<script src="js/app.js?v=11"></script>
 </body>
 </html>

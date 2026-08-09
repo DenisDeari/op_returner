@@ -171,6 +171,115 @@ body::before {
 }
 #msg:focus { outline: none; }
 #msg::placeholder { color: var(--dimmer); }
+#msg:disabled { color: var(--dimmer); cursor: default; }
+
+/* --- Image payloads ---------------------------------------------------- */
+
+/* The button floats inside the textarea's bottom-right rather than sitting in the
+   strip below: this is a way of writing the message, not a setting about it. */
+.msg-wrap { position: relative; }
+.msg-img {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--dim);
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.msg-img:hover  { color: var(--accent-2); border-color: rgba(247,147,26,.45); background: var(--surface-2); }
+.msg-img:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.msg-img[hidden] { display: none; }
+
+.imgbox {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin: 0 20px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: rgba(0,0,0,.28);
+}
+.imgbox[hidden] { display: none; }
+
+/* Checkerboard behind the preview so a transparent WebP does not read as a
+   mysteriously cropped picture. pixelated because these are genuinely small
+   images being shown larger — smoothing them would flatter the encode and
+   misrepresent what actually goes on chain. */
+#img-preview {
+  flex-shrink: 0;
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+  image-rendering: pixelated;
+  background-color: #15171b;
+  background-image:
+    linear-gradient(45deg, #1d2026 25%, transparent 25%, transparent 75%, #1d2026 75%),
+    linear-gradient(45deg, #1d2026 25%, transparent 25%, transparent 75%, #1d2026 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+}
+
+.imgbox-body { flex: 1; min-width: 0; }
+.imgbox-head { display: flex; align-items: baseline; gap: 10px; }
+.imgbox-head strong {
+  font-family: var(--mono);
+  font-size: .92rem;
+  font-variant-numeric: tabular-nums;
+}
+.imgbox-head .note { flex: 1; }
+.imgbox-x {
+  background: none;
+  border: none;
+  color: var(--dimmer);
+  font-size: 1.3rem;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  transition: color .2s;
+}
+.imgbox-x:hover { color: var(--red); }
+
+.imgbox-budget {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 8px;
+  font-size: .74rem;
+  color: var(--dimmer);
+}
+.imgbox-budget input[type=range] { flex: 1; min-width: 80px; }
+.imgbox-budget b {
+  font-family: var(--mono);
+  font-size: .82rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A published image, on the wall and on an order card. Bounded rather than natural
+   size — these are on-chain images so a couple of kilobytes at most, but the element
+   must never be able to blow out the layout whatever dimensions the encoder chose. */
+.payload-img {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  width: auto;
+  height: auto;
+  border-radius: var(--r-sm);
+  image-rendering: pixelated;
+  background: #15171b;
+}
+.note-card.is-image p { white-space: normal; }
 
 /* Recipient: always visible, never behind a disclosure. Amount rides along with
    it — an address field whose amount is hidden lets someone fill in a payee and
@@ -820,3 +929,106 @@ input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
     transition-duration: .001ms !important;
   }
 }
+
+/* --- Image preview ------------------------------------------------------ */
+
+/* The thumbnail is a button now, so it needs the button chrome stripped. */
+.imgbox-thumb {
+  position: relative;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+  line-height: 0;
+  border-radius: var(--r-sm);
+}
+.imgbox-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.imgbox-zoom {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(0,0,0,.6);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity .18s;
+  pointer-events: none;
+}
+.imgbox-thumb:hover .imgbox-zoom,
+.imgbox-thumb:focus-visible .imgbox-zoom { opacity: 1; }
+
+.imgview {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0,0,0,.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.imgview[hidden] { display: none; }
+
+.imgview-box {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-lift);
+  box-shadow: 0 30px 80px -20px rgba(0,0,0,.9);
+}
+
+/* Checkerboard so a transparent WebP is not mistaken for a cropped picture, and
+   pixelated because these are genuinely small images shown large — smoothing them
+   would flatter the encode and misrepresent what goes on chain. */
+.imgview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 10px;
+  border-radius: var(--r);
+  background-color: #15171b;
+  background-image:
+    linear-gradient(45deg, #1d2026 25%, transparent 25%, transparent 75%, #1d2026 75%),
+    linear-gradient(45deg, #1d2026 25%, transparent 25%, transparent 75%, #1d2026 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+#imgview-img {
+  max-width: 100%;
+  max-height: min(52vh, 420px);
+  width: auto;
+  height: auto;
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+
+.imgview-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 14px;
+}
+.imgview-head strong {
+  font-family: var(--mono);
+  font-size: 1.02rem;
+  font-variant-numeric: tabular-nums;
+}
+.imgview-head .note { flex: 1; }
+
+/* The slider lands here. Same control, moved — never a copy. */
+.imgview-slot { margin-top: 16px; }
+.imgview-slot:empty { display: none; }
+.imgview-slot .imgbox-budget { margin: 0 0 10px; }

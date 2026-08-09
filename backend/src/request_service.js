@@ -80,6 +80,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
             notifier.notifyDelivered({
                 requestId,
                 message: request.message,
+                payloadKind: request.payloadKind,
                 opReturnTxId: result.opReturnTxId,
             }, config);
             return { success: true, opReturnTxId: result.opReturnTxId };
@@ -134,6 +135,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
         notifier.notifyFailed({
             requestId,
             message: request.message,
+            payloadKind: request.payloadKind,
             reason: failureReason,
             amount: request.paymentReceivedSatoshis,
             terminal,

@@ -619,3 +619,30 @@ tr.has-note .customer-note {
     background: #4a4a4a;
     color: #bbb;
 }
+
+/* Image payloads. Bounded rather than natural size: these are on-chain images, so a
+   couple of kilobytes at most, but the element must not be able to blow out the details
+   modal whatever dimensions the encoder chose. */
+.payload-image {
+    display: block;
+    margin-top: 0.6rem;
+    max-width: 320px;
+    max-height: 320px;
+    width: auto;
+    height: auto;
+    border-radius: 6px;
+    background: #1c1c1c;
+    image-rendering: pixelated;
+}
+
+.payload-tag {
+    display: inline-block;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    background: #2d5a88;
+    color: #dbeaff;
+    vertical-align: middle;
+}

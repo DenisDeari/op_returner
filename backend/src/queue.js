@@ -2,6 +2,7 @@
 const { v4: uuidv4 } = require('uuid');
 const bitcoin = require('bitcoinjs-lib');
 const txSizing = require('./tx_sizing');
+const payload = require('./payload');
 
 const requestProcessingQueue = [];
 let isProcessing = false;
@@ -11,7 +12,7 @@ async function processNextInQueue(db, rootNode, config) {
         return;
     }
     isProcessing = true;
-    const { message, targetAddress, feeRate, amountToSend, resolve, reject } = requestProcessingQueue.shift();
+    const { message, targetAddress, feeRate, amountToSend, payloadKind, resolve, reject } = requestProcessingQueue.shift();
 
     try {
         const nextIndex = await new Promise((resolve, reject) => {
@@ -39,8 +40,17 @@ async function processNextInQueue(db, rootNode, config) {
         // too, and under-quoting a 43-byte P2WSH output by 12 vBytes is what left four
         // orders on 2026-08-06 priced below the minimum relay fee once actually built.
         // targetAddress has already been through validateRequestParams, so it parses.
-        const messageBytes = Buffer.byteLength(message, 'utf8');
-        let estimatedVBytes = 10.5 + 68 + (11 + messageBytes) + 31;
+        //
+        // payload.byteLength, NOT Buffer.byteLength(message): for an image row `message`
+        // holds base64 and the chain gets the decoded bytes, which are a third smaller.
+        // Quoting from the stored string would overcharge every image customer by 33%.
+        //
+        // The OP_RETURN output size comes from txSizing rather than the `11 + bytes` this
+        // line used to hand-roll. That form assumed a one-byte push prefix and a one-byte
+        // script varint, both of which stop being true past 75 bytes — it under-quoted a
+        // 1000-byte message by 4 vBytes even at the limit that was already live.
+        const messageBytes = payload.byteLength(message, payloadKind);
+        let estimatedVBytes = 10.5 + 68 + txSizing.opReturnOutputVBytes(messageBytes) + 31;
         if (targetAddress) {
             estimatedVBytes += txSizing.outputVBytesForAddress(targetAddress, config.NETWORK);
         }
@@ -60,9 +70,14 @@ async function processNextInQueue(db, rootNode, config) {
 
         // Persist the same fee rate that was quoted, rather than a separate hardcoded
         // default, so the quote and the later fulfilment can never drift apart.
-        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, effectiveFeeRate, effectiveAmountToSend];
+        // payloadKind is named in the INSERT rather than left to the column default. The
+        // default is NULL, which payload.js reads as text — correct for a text order, and
+        // silently wrong for an image one, whose message would then be priced and embedded
+        // as literal base64 characters. Same reasoning as isPublic: never rely on a
+        // default for a value the customer chose.
+        const params = [newRequestId, message, address, derivationPath, nextIndex, requiredAmountSatoshis, 'pending_payment', new Date().toISOString(), targetAddress || null, effectiveFeeRate, effectiveAmountToSend, payload.normalizeKind(payloadKind)];
         await new Promise((res, rej) => {
-            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, feeRate, amountToSend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
+            db.run('INSERT INTO requests (id, message, address, derivationPath, "index", requiredAmountSatoshis, status, createdAt, targetAddress, feeRate, amountToSend, payloadKind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', params, (err) => err ? rej(err) : res());
         });
 
         console.log(`[Queue] New request processed: ID ${newRequestId}`);
@@ -79,9 +94,12 @@ async function processNextInQueue(db, rootNode, config) {
     }
 }
 
-function add(message, targetAddress, feeRate, amountToSend, db, rootNode, config) {
+// payloadKind is trailing and optional so the existing 7-argument positional call keeps
+// working and defaults to text. The signature is already awkward; widening it further was
+// the smaller evil against threading an options object through every caller.
+function add(message, targetAddress, feeRate, amountToSend, db, rootNode, config, payloadKind) {
     return new Promise((resolve, reject) => {
-        requestProcessingQueue.push({ message, targetAddress, feeRate, amountToSend, resolve, reject });
+        requestProcessingQueue.push({ message, targetAddress, feeRate, amountToSend, payloadKind, resolve, reject });
         console.log(`[Queue] Added to queue. Length: ${requestProcessingQueue.length}`);
         processNextInQueue(db, rootNode, config);
     });

@@ -140,6 +140,51 @@ document.addEventListener('DOMContentLoaded', () => {
         return s.length > max ? `${s.slice(0, max)}…` : s;
     }
 
+    // Mirrors backend/src/payload.js describe(). An image order stores base64 in
+    // `message`, so truncating it to 80 characters fills the table with gibberish and
+    // hides which orders are images — exactly the column an operator scans to moderate.
+    const IMAGE_KINDS = { 'image/webp': 'WebP', 'image/jpeg': 'JPEG' };
+    function isImagePayload(kind) {
+        return Object.prototype.hasOwnProperty.call(IMAGE_KINDS, kind);
+    }
+    function describePayload(message, kind) {
+        if (!isImagePayload(kind)) return message;
+        // 4 base64 chars per 3 bytes, minus padding. Good enough for a table cell.
+        const s = String(message ?? '');
+        const pad = (s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0);
+        const bytes = Math.max(0, (s.length / 4) * 3 - pad);
+        return `[${IMAGE_KINDS[kind]} image, ${Math.round(bytes)} bytes]`;
+    }
+
+    // Exactly the charset a base64 payload may contain. The server validates this before
+    // the row is written, but the check is repeated here because this string is about to
+    // be concatenated into a URL: anything outside this set means the value is not what we
+    // think it is, and the right answer is to render nothing rather than to guess.
+    const BASE64_ONLY = /^[A-Za-z0-9+/]+={0,2}$/;
+
+    /**
+     * An image payload, rendered for the operator to actually look at.
+     *
+     * Built with DOM calls, and the `data:` URL's media type comes from the CLOSED enum
+     * above — never from the row. Interpolating a server-supplied type into a data: URL is
+     * how `data:text/html` ends up rendering on the admin origin, which is the one origin
+     * in this service holding a bearer token.
+     *
+     * Returns null when anything does not line up, and every caller falls back to the text
+     * description. Refusing to render is always a safe answer here.
+     */
+    function imageElement(message, kind) {
+        if (!isImagePayload(kind)) return null;
+        const b64 = String(message ?? '');
+        if (!BASE64_ONLY.test(b64)) return null;
+        const img = document.createElement('img');
+        img.className = 'payload-image';
+        img.alt = 'Customer image payload';
+        img.loading = 'lazy';
+        img.src = `data:${kind};base64,${b64}`;
+        return img;
+    }
+
     function renderRequests(requests) {
         if (!requests || requests.length === 0) {
             requestsBody.innerHTML = '<tr><td colspan="7">No requests found in the database.</td></tr>';
@@ -174,7 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <tr${req.userFeedback ? ' class="has-note"' : ''}>
                 <td>${escapeHtml(req.id.substring(0, 8))}...</td>
                 <td>${escapeHtml(new Date(req.createdAt).toLocaleString())}</td>
-                <td>${escapeHtml(truncate(req.message, 80))}</td>
+                <td>${escapeHtml(truncate(describePayload(req.message, req.payloadKind), 80))}${isImagePayload(req.payloadKind) ? ' <span class="payload-tag">IMG</span>' : ''}</td>
                 <td>
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
@@ -258,7 +303,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p><strong>ID:</strong> ${escapeHtml(req.id)}</p>
                     <p><strong>Status:</strong> ${escapeHtml(req.status)}</p>
                     <p><strong>Created At:</strong> ${escapeHtml(new Date(req.createdAt).toLocaleString())}</p>
-                    <p><strong>Message:</strong> <span style="white-space: pre-wrap;">${escapeHtml(req.message)}</span></p>
+                    <p><strong>Message:</strong> <span style="white-space: pre-wrap;">${escapeHtml(describePayload(req.message, req.payloadKind))}</span></p>
+                    ${isImagePayload(req.payloadKind) ? '<p id="detail-payload-image"></p>' : ''}
                 </div>
                 ${feedbackSection}
                 <div class="detail-section">
@@ -276,6 +322,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     ${txHistoryHtml}
                 </div>
             `;
+
+            // Appended after the innerHTML assignment, not interpolated into it: the src
+            // is built by imageElement from a validated base64 string, and keeping it out
+            // of the template string means the payload never passes through HTML parsing
+            // at all. Absent or malformed, the description above already stands alone.
+            const imageSlot = modalBody.querySelector('#detail-payload-image');
+            if (imageSlot) {
+                const img = imageElement(req.message, req.payloadKind);
+                if (img) imageSlot.appendChild(img);
+                else imageSlot.textContent = 'This image payload could not be decoded for display.';
+            }
 
         } catch (error) {
             modalBody.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;

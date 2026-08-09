@@ -77,7 +77,6 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
     // --- Estimate fees ---
     const opReturnBuffer = Buffer.from(message, 'utf8');
     const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
-    const opReturnScriptLength = opReturnOutput.output.length;
 
     // Validate and size the recipient output before pricing anything, exactly as the
     // public path does: both the fee and the dust limit depend on its script type.
@@ -92,11 +91,34 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
 
     // input + opreturn + change (P2WPKH) + overhead, plus the recipient output measured
     // from its own script — a flat 31 undercounts a P2WSH one by 12 vBytes.
-    let estimatedVBytes = 68 + (opReturnScriptLength + 9) + 31 + 10;
+    //
+    // The OP_RETURN output comes from txSizing, the same function the quoting and building
+    // paths use. This was `opReturnScriptLength + 9`, which assumes a one-byte script
+    // varint and so under-counts by 2 vBytes for any script over 252 bytes. Unlike
+    // op_return_creator.js there is no FEE_SAFETY_VBYTES here to absorb it, so the built
+    // fee landed just under the requested rate — at the default rate of 2 that is a
+    // transaction priced fractionally below the floor the whole service is built around.
+    // Reachable today: max_payload_size is 1000.
+    //
+    // The overhead is 10.5, not 10: version(4) + input count(1) + output count(1) +
+    // locktime(4), plus the segwit marker and flag, which are 2 witness bytes and so half
+    // a vByte. Every other estimator in the service uses 10.5. FEE_SAFETY_VBYTES then
+    // covers the rounding, exactly as in op_return_creator.js — without it this path was
+    // the only one building with no headroom at all.
+    const FEE_SAFETY_VBYTES = 4;
+    let estimatedVBytes = 68 + txSizing.opReturnOutputVBytes(opReturnBuffer.length) + 31 + 10.5 + FEE_SAFETY_VBYTES;
     if (targetScript) estimatedVBytes += txSizing.outputVBytes(targetScript);
     estimatedVBytes = Math.ceil(estimatedVBytes);
 
-    const effectiveFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
+    // Never build below the effective floor. A transaction sitting exactly on the minimum
+    // relay fee is rejected as non-standard, which is why the floor is 2 and not 1 — and
+    // this path had no floor at all, so a caller passing feeRate 1 produced a transaction
+    // the network would refuse. The customer path has enforced this since 2026-08-06.
+    const requestedFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
+    const effectiveFeeRate = Math.max(requestedFeeRate, appConfig.MIN_EFFECTIVE_FEE_RATE);
+    if (effectiveFeeRate !== requestedFeeRate) {
+        console.warn(`[Treasury] Raised fee rate ${requestedFeeRate} to the ${effectiveFeeRate} sat/vB floor.`);
+    }
     const fee = estimatedVBytes * effectiveFeeRate;
 
     // A recipient output below the dust limit makes the transaction non-standard and it
@@ -165,7 +187,24 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
     const tx = psbt.extractTransaction();
     const txHex = tx.toHex();
     const txId = tx.getId();
-    console.log(`[Treasury] Signed TX. ID: ${txId}`);
+
+    // Check the fee against the transaction that ACTUALLY got built, not the estimate.
+    //
+    // The estimate is made before signing and can only ever be approximate; this is the
+    // real signed size. op_return_creator.js has had this check since the 2026-08-06 loss,
+    // when two orders were priced below the relay minimum and only caught here. This path
+    // never had it, so an under-estimate would have been discovered by the network instead
+    // — as a silent non-propagating transaction that had already spent a treasury UTXO.
+    const actualVBytes = tx.virtualSize();
+    const actualFeeRate = fee / actualVBytes;
+    if (actualFeeRate < appConfig.MIN_EFFECTIVE_FEE_RATE) {
+        throw new Error(
+            `Refusing to broadcast: computed fee ${fee} sats over ${actualVBytes} vBytes is `
+            + `${actualFeeRate.toFixed(3)} sat/vB, below the ${appConfig.MIN_EFFECTIVE_FEE_RATE} sat/vB floor. `
+            + `The size estimate (${estimatedVBytes} vBytes) was too low.`
+        );
+    }
+    console.log(`[Treasury] Signed TX. ID: ${txId} (${actualVBytes} vBytes, ${fee} sats, ${actualFeeRate.toFixed(2)} sat/vB)`);
 
     // --- Broadcast ---
     const broadcastUrl = `${config.BLOCKCYPHER_API_BASE}/txs/push?token=${config.BLOCKCYPHER_TOKEN}`;

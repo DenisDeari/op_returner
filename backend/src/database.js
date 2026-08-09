@@ -117,7 +117,24 @@ function initializeDatabase(onReady) {
         }
         console.log("Table 'system_settings' created or already exists.");
         db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_payload_size', '1000')", () => {
-            markStepDone('system_settings');
+            // Images get their own budget, separate from the text limit, and it starts
+            // CONSERVATIVE ON PURPOSE.
+            //
+            // Bitcoin Core v30 relaxed the datacarrier limit from 83 bytes to 100,000, so
+            // consensus and default Core policy are not the constraint here. Our provider
+            // chain is: the largest OP_RETURN this service has ever actually broadcast is
+            // 64 bytes, every published message predates the relaxation, and BlockCypher
+            // is first in the broadcast order and has already shown it applies stricter
+            // rules than the Esplora hosts (2026-08-06, dust). Whether it relays a
+            // multi-kilobyte OP_RETURN is untested.
+            //
+            // So this is the knob to raise once a real broadcast has been observed at the
+            // size you want, and not before — taking money for a payload no provider will
+            // relay is the one thing this service must never do. Raise it with
+            // POST /api/admin/settings/limits, same as the text limit.
+            db.run("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('max_image_payload_size', '2000')", () => {
+                markStepDone('system_settings');
+            });
         });
     });
 

@@ -14,6 +14,7 @@
 // exactly as before if notifications are not configured.
 
 const axios = require('axios');
+const payload = require('./payload');
 
 const SEND_TIMEOUT_MS = 15000;
 const MAX_PER_HOUR = 40;
@@ -109,12 +110,27 @@ function fire(text, config) {
 
 const shortId = (id) => String(id || '').substring(0, 8);
 
+/**
+ * The quoted line every lifecycle notification opens with.
+ *
+ * Centralised here rather than at the four call sites on purpose. An image order stores
+ * base64 in `message`, so `truncate(message, 200)` sends the operator 200 characters of
+ * gibberish — and the operator reading these is how orders actually get looked at. Doing
+ * it in one place means a notification added later cannot quietly get it wrong.
+ *
+ * Callers pass the row's payloadKind; absent, payload.describe treats it as text, which
+ * is what every row written before images existed is.
+ */
+function preview(message, payloadKind) {
+    return esc(truncate(payload.describe(message, payloadKind), 200));
+}
+
 // --- Lifecycle notifications ---------------------------------------------
 
-function notifyNewOrder({ requestId, message, requiredAmountSatoshis, targetAddress }, config) {
+function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshis, targetAddress }, config) {
     fire(
         `🟡 <b>New order</b>\n\n` +
-        `<i>"${esc(truncate(message, 200))}"</i>\n\n` +
+        `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Awaiting <b>${esc(requiredAmountSatoshis)} sats</b>` +
         (targetAddress ? `\nRecipient: <code>${esc(targetAddress)}</code>` : '') +
         `\nOrder <code>${esc(shortId(requestId))}</code>`,
@@ -122,26 +138,26 @@ function notifyNewOrder({ requestId, message, requiredAmountSatoshis, targetAddr
     );
 }
 
-function notifyPaymentReceived({ requestId, amount, message }, config) {
+function notifyPaymentReceived({ requestId, amount, message, payloadKind }, config) {
     fire(
         `💰 <b>Payment received</b> — ${esc(amount)} sats\n\n` +
-        `<i>"${esc(truncate(message, 200))}"</i>\n\n` +
+        `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Publishing now…\nOrder <code>${esc(shortId(requestId))}</code>`,
         config
     );
 }
 
-function notifyDelivered({ requestId, message, opReturnTxId }, config) {
+function notifyDelivered({ requestId, message, payloadKind, opReturnTxId }, config) {
     fire(
         `✅ <b>Published to the blockchain</b>\n\n` +
-        `<i>"${esc(truncate(message, 200))}"</i>\n\n` +
+        `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `https://mempool.space/tx/${esc(opReturnTxId)}\n` +
         `Order <code>${esc(shortId(requestId))}</code>`,
         config
     );
 }
 
-function notifyFailed({ requestId, message, reason, amount, terminal, refund }, config) {
+function notifyFailed({ requestId, message, payloadKind, reason, amount, terminal, refund }, config) {
     let refundLine = '';
     if (refund?.ok) {
         refundLine = `\n\n↩️ Automatically refunded ${esc(refund.amount)} sats.`;
@@ -151,7 +167,7 @@ function notifyFailed({ requestId, message, reason, amount, terminal, refund }, 
 
     fire(
         `${terminal ? '🔴' : '🟠'} <b>Order ${terminal ? 'FAILED' : 'failed — will retry'}</b>\n\n` +
-        `<i>"${esc(truncate(message, 200))}"</i>\n\n` +
+        `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         (amount ? `Customer paid: <b>${esc(amount)} sats</b>\n` : '') +
         `Reason: ${esc(truncate(reason, 200))}` +
         refundLine +
