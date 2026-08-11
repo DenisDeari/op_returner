@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Publish a message permanently in a Bitcoin block.">
     <title>SatWire — Immortalize your Message</title>
-    <link rel="stylesheet" href="css/styles.css?v=11">
+    <link rel="stylesheet" href="css/styles.css?v=12">
 </head>
 <body>
 
@@ -98,15 +98,21 @@
 
         <div class="recip">
             <div class="field grow">
-                <input type="text" id="addr-in" placeholder="Also pay a Bitcoin address &mdash; optional"
-                       spellcheck="false" autocomplete="off" aria-label="Recipient address">
+                <!-- "Also pay a Bitcoin address" read, to at least one customer, as a way to
+                     send bitcoin somewhere. On 2026-08-11 someone filled in their own exchange
+                     deposit address and was quoted 124,970 sats to forward 1,000 of them. The
+                     wording now leads with what the field is: optional, and an extra. -->
+                <input type="text" id="addr-in" placeholder="Optional &mdash; also send sats to an address"
+                       spellcheck="false" autocomplete="off" aria-label="Optional recipient address">
             </div>
             <div class="field amt">
-                <input type="number" id="amt-in" min="0" placeholder="0" aria-label="Amount to send">
+                <input type="number" id="amt-in" min="0" placeholder="0" aria-label="Sats to send to that address">
                 <span class="unit">sats</span>
             </div>
         </div>
-        <div class="recip-note"><span class="note" id="amt-note">Leave empty to just publish the message.</span></div>
+        <!-- recalc() owns this span's text and class from the first frame; the copy here is
+             what a visitor sees if the script never runs, so it says the same thing. -->
+        <div class="recip-note"><span class="note" id="amt-note">Optional. SatWire publishes your message &mdash; this only adds a payment on top.</span></div>
 
         <div class="strip">
             <div class="ring" id="ring">
@@ -127,6 +133,11 @@
 
             <button class="chip" id="opt-btn" type="button" aria-expanded="false" aria-controls="drawer">
                 Fee <b id="fee-n">2</b> sat/vB
+                <!-- What the chosen rate costs over the cheapest one, in sats. On the chip
+                     rather than only inside the drawer, because the drawer is collapsed by
+                     default and a warning nobody opens is not a warning. Empty and hidden at
+                     the minimum rate, so it is never a permanent scold. -->
+                <span class="chip-extra" id="fee-extra" hidden></span>
                 <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
         </div>
@@ -139,6 +150,9 @@
                 <input type="range" id="fee-in" min="2" max="10" value="2" aria-label="Fee rate">
                 <span class="tick">faster</span>
             </div>
+            <!-- Outside .drawer-inner on purpose: that is a three-column grid, so a fourth
+                 child lands in column 1 of a new implicit row. -->
+            <div class="drawer-note"><span class="note" id="fee-cost-note"></span></div>
         </div></div>
 
         <div class="pay">
@@ -264,6 +278,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=11"></script>
+<script src="js/app.js?v=12"></script>
 </body>
 </html>

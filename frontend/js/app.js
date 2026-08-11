@@ -6,6 +6,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const RING_CIRC = 94.25;    // 2 * pi * r, r = 15
     let MAX_BYTES = 1000;       // max_payload_size — text
     let MAX_IMAGE_BYTES = 0;    // max_image_payload_size — 0 until the server says otherwise
+    // config.js MIN_FEE_RATE, refreshed from /api/config/limits. The hardcoded fallback is
+    // mandatory: recalc() runs once at init, before that fetch resolves.
+    let MIN_FEE = 2;
 
     // --- DOM ---------------------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -23,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const publicToggle = $('public-toggle');
     const addrIn = $('addr-in'), amtIn = $('amt-in'), amtNote = $('amt-note');
     const feeIn = $('fee-in'), feeN = $('fee-n');
+    const feeExtra = $('fee-extra'), feeCostNote = $('fee-cost-note');
     const optBtn = $('opt-btn'), drawer = $('drawer');
     const totalBtn = $('total-btn'), totalN = $('total-n'), breakdown = $('breakdown');
     const bdNet = $('bd-net'), bdSvc = $('bd-svc'), bdRec = $('bd-rec');
@@ -232,6 +236,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (d.maxPayloadSize) MAX_BYTES = d.maxPayloadSize;
             if (Number.isFinite(d.serviceFeeSats)) SERVICE_FEE = d.serviceFeeSats;
             MAX_IMAGE_BYTES = Number.isFinite(d.maxImagePayloadSize) ? d.maxImagePayloadSize : 0;
+            // The server has always sent this and the page has always ignored it, keeping a
+            // hardcoded 2 in the markup instead. If MIN_FEE_RATE is ever raised server-side,
+            // a slider still offering the old floor produces a guaranteed 400 at intake —
+            // which is the exact failure the comment beside the range input warns about.
+            if (Number.isFinite(d.minFeeRate) && d.minFeeRate > 0) {
+                MIN_FEE = d.minFeeRate;
+                feeIn.min = String(MIN_FEE);
+            }
             // Probing runs the real encoder once, so it is async. The button stays hidden
             // until it answers — better a button that appears a beat late than one that
             // offers something this browser cannot actually produce.
@@ -778,7 +790,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Fall back rather than let a NaN through: fmt() would render it as "0", and a
         // quote reading "0 sats" is worse than a wrong one, because it looks deliberate.
-        const fee = parseInt(feeIn.value, 10) || 2;
+        const fee = parseInt(feeIn.value, 10) || MIN_FEE;
         feeN.textContent = fee;
 
         const recipient = addrIn.value.trim();
@@ -791,6 +803,23 @@ document.addEventListener('DOMContentLoaded', () => {
         bdRec.textContent = fmt(amount);
         animateTotal(total);
 
+        // What the fee slider actually costs, named in sats.
+        //
+        // The rate multiplies the WHOLE transaction, so one step is worth ~250 sats on a
+        // short message and ~12,000 on a 12 kB picture. On 2026-08-11 a customer was quoted
+        // 124,970 sats for a 12,038-byte image; 97,576 of that was the slider sitting at 10
+        // rather than at the floor of 2. The total was on screen the entire time — what was
+        // missing was which control had produced it.
+        //
+        // Derived from quoteSats, not from totalN: that element is written from inside a
+        // requestAnimationFrame and is mid-animation whenever this runs.
+        const extra = total - quoteSats(bytes, MIN_FEE, recipient, amount);
+        feeExtra.hidden = extra <= 0;
+        feeExtra.textContent = extra > 0 ? `+${fmt(extra)}` : '';
+        feeCostNote.textContent = extra > 0
+            ? `${fee} sat/vB costs ${fmt(extra)} sats more than ${MIN_FEE}. It only buys a faster confirmation — the message published is the same.`
+            : `${MIN_FEE} sat/vB is the cheapest rate the network accepts.`;
+
         // Say the minimum out loud, before any money moves. The server refuses a sub-dust
         // amount, but a customer who only finds that out after paying has learned it the
         // expensive way — which is exactly what happened on 2026-08-06.
@@ -798,14 +827,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const min = recipientDustLimit(recipient);
             amtIn.min = String(min);
             const tooSmall = amount > 0 && amount < min;
+            // The split, said out loud the moment an amount exists.
+            //
+            // The breakdown already carried these two numbers, but it is collapsed by
+            // default. A customer paying 124,970 sats to forward 1,000 of them has misread
+            // what this page does, and the one number he could see did not tell him — it
+            // takes both numbers, side by side, to make the proportion obvious.
             amtNote.textContent = tooSmall
                 ? `Below ${min} sats the network drops this output as dust.`
-                : `0, or at least ${min} for this address.`;
+                : amount > 0
+                    ? `${fmt(amount)} sats reach that address. ${fmt(total - amount)} sats publish your message.`
+                    : `0, or at least ${min} for this address.`;
             amtNote.className = tooSmall ? 'note warn' : 'note';
             amtIn.style.borderColor = tooSmall ? 'var(--red)' : '';
         } else {
             amtIn.min = '0';
-            amtNote.textContent = 'Leave empty to just publish the message.';
+            amtNote.textContent = 'Optional. SatWire publishes your message — this only adds a payment on top.';
             amtNote.className = 'note';
             amtIn.style.borderColor = '';
         }

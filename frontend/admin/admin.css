@@ -635,6 +635,19 @@ tr.has-note .customer-note {
     image-rendering: pixelated;
 }
 
+/* The table thumbnail. Deliberately a fixed small box rather than .payload-image's 320px:
+   the requests table has no fixed row height, so an unbounded image resizes the whole row. */
+.payload-thumb-img {
+    width: 42px;
+    height: 42px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #1c1c1c;
+    border: 1px solid #333;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+
 .payload-tag {
     display: inline-block;
     padding: 0 5px;

@@ -96,6 +96,12 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A refund never runs twice — conditional `UPDATE` acts as the lock | `refund.js` |
 | Never auto-refund when the payment UTXO is already spent | `NO_REFUND_FAILURES`, `reconcile.js` |
 | The refund address comes from the chain, never from the webhook body | `routes/webhook.js` |
+| The admin panel's image allowlist matches the wall's, and neither contains SVG | `IMAGE_KINDS` in `frontend/admin/admin.js`, asserted against `RENDERABLE_KINDS` |
+| A block explorer being slow never hides the order behind it | `frontend/admin/admin.js` `showDetails` paints before it fetches |
+| A notification carries the picture itself, in one Telegram call | `notifier.js` `sendPhoto` |
+| A photo Telegram will not take falls back to text — silence is the worst outcome | `notifier.js` `fire` |
+| A notification never throws into a money path, whatever the row holds | `notifier.js` `fire`, decode inside the promise |
+| The fee surcharge shown to the customer equals the one the server charges | `frontend/js/app.js`, asserted against `queue.js` arithmetic |
 | Nothing user-supplied reaches `innerHTML` unescaped | `frontend/admin/admin.js`, `frontend/js/app.js` |
 | Wall text is rendered with `textContent`; a wall image is a DOM-built `<img>` — neither ever reaches the HTML parser | `frontend/js/app.js` `renderWall`, `payloadImage` |
 | The wallet view never spends BlockCypher's quota | `chain_providers.js` `getAddressSummaries` |
@@ -297,7 +303,7 @@ Four ceilings sit on top of each other. The lowest wins.
 | Ceiling | Value | Where |
 |---|---|---|
 | Text | 1,000 bytes | `system_settings.max_payload_size` |
-| Image | **20,000 bytes** | `system_settings.max_image_payload_size` |
+| Image | **20,000 bytes** live | `system_settings.max_image_payload_size` |
 | Builder backstop | 20,000 bytes | `op_return_creator.js` `MAX_ON_CHAIN_PAYLOAD_BYTES` |
 | Browser encoder | 1024 px longest edge | `frontend/js/app.js` `IMAGE_SIZES` |
 | Bitcoin standardness | 100,000 bytes | Core v30 default, not our constraint |
@@ -305,6 +311,13 @@ Four ceilings sit on top of each other. The lowest wins.
 `POST /api/admin/config/limits` sets the first two and **clamps both against the builder
 backstop**. That clamp is not optional: a settings value above it would be quoted to a
 customer and then refused by the builder *after they had paid*.
+
+**`database.js` seeds `max_image_payload_size` at 2,000, not 20,000.** Production was raised
+to 20,000 by hand and that is the live value; a *fresh* database gets 2,000, and the admin
+panel has no control for this key — `frontend/admin/index.html` exposes only the text limit,
+and `admin.js` POSTs only `maxPayloadSize`. So a rebuilt database silently caps images at a
+tenth of what this document describes, and the only way to raise it is the API directly. Read
+the row before trusting either number.
 
 **In practice the picture usually runs out before the bytes do.** Most photos at 1024 px
 land well under 20,000 bytes, so the encoder's ladder is the binding limit, not the setting.
@@ -407,6 +420,110 @@ Encoding happens entirely in the browser, and that is a security decision, not a
 one: no upload endpoint, no temp files, and no image decoder parsing hostile input on the
 machine holding the wallet seed. It also strips EXIF for free — phone photos carry GPS, and
 this is a permanent public ledger.
+
+## What the fee slider costs
+
+**2026-08-11 — an order quoted at 124,970 sats, of which 97,576 was one slider.** A customer
+attached a 12,038-byte picture, set a 1,000-sat payout to their own exchange deposit address,
+and dragged the fee control to 10 sat/vB. They did not pay.
+
+The arithmetic is not in dispute — `queue.js` priced it correctly:
+
+| Term | vBytes | At 2 sat/vB | At 10 sat/vB |
+|---|---|---|---|
+| OP_RETURN output (12,038 bytes) | 12,053 | | |
+| Recipient output (P2PKH) | 34 | | |
+| Input, change, overhead | 109.5 | | |
+| **Transaction** | **12,197** | 24,394 | 121,970 |
+| Service fee | | 2,000 | 2,000 |
+| To the recipient | | 1,000 | 1,000 |
+| **Total** | | **27,394** | **124,970** |
+
+The rate multiplies the *whole* transaction. On a 200-byte message a step is worth ~250 sats
+and nobody notices; on a 12 kB picture it is ~12,000, and the slider is the most expensive
+control on the page while looking like the most incidental. Both numbers were already on
+screen — the total updated live, and the breakdown had the split. What was missing was the
+link between the control and the number.
+
+Three things now say it out loud, and none of them changes what is POSTed:
+
+- **The chip carries the surcharge**, not just the drawer. The drawer is `grid-template-rows:
+  0fr` until somebody clicks it, and a warning nobody opens is not a warning. It is hidden
+  entirely at the minimum rate so it is never a permanent scold.
+- **The surcharge is `quoteSats(bytes, MIN_FEE, …)` subtracted from the total**, never
+  `totalN.textContent` — that element is written from inside a `requestAnimationFrame` and is
+  mid-animation whenever `recalc` runs.
+- **An entered payout amount is shown against what publishing costs**: "1,000 sats reach that
+  address. 123,970 sats publish your message." The dust warning still wins when it applies —
+  that is the one that would actually block a payment.
+
+`MIN_FEE` comes from `/api/config/limits`, which has always sent `minFeeRate` and which the
+page always threw away, keeping a hardcoded 2 in the markup instead. It now also drives
+`feeIn.min`, so raising `MIN_FEE_RATE` server-side can no longer leave a slider offering a
+rate that intake rejects.
+
+**`Math.ceil(vb) * rate`, never `Math.ceil(vb * rate)`.** `queue.js` rounds the vBytes up
+before multiplying. The two differ by a few sats, and `operator_view.js` asserts the frontend
+surcharge equals the backend one across all six address types — reintroducing the wrong order
+fails it.
+
+The recipient field was relabelled in the same pass. "Also pay a Bitcoin address — optional"
+read, to this customer, as a way to send bitcoin somewhere: they filled in an exchange deposit
+address, screenshotted that same deposit page as their message, and set the fee high the way
+you would to make a payment arrive quickly. The wording now leads with what the field is.
+
+## What the operator can see
+
+The operator moderates this service by reading Telegram and opening the admin panel. Until
+2026-08-11 an image order reached both as `[WebP image, 12038 bytes]` — a string that says
+nothing about whether the picture belongs on a permanent public ledger.
+
+### Telegram gets the picture
+
+`notifier.js` `sendPhoto` uploads the decoded bytes with the caption attached, for all four
+lifecycle notifications that hold a payload (new order, payment received, delivered, failed).
+
+- **One call, not two.** The caption *replaces* the text message rather than following it.
+  `withinRateLimit()` is a global hourly cap shared by every notification type, so a photo
+  sent as a second call would halve how many orders the operator hears about in a busy hour.
+- **Everything that can fail is decided before a rate-limit slot is spent** — not an image,
+  caption over Telegram's 1,024 characters, undecodable base64. A photo we then fail to send
+  must not cost the operator the text message that replaces it.
+- **An over-long caption falls back rather than truncating.** Cutting HTML mid-tag turns a
+  length problem into a parse error, and Telegram rejects the whole message.
+- **The decode happens inside `fire`'s promise.** `payload.decode()` throws on a row that does
+  not decode, and `notifyDelivered` is called from inside `request_service.js`'s fulfil path,
+  whose catch turns any throw into `{ success: false }` — *after* the OP_RETURN was broadcast.
+  Evaluating it in the argument expression would make a corrupt row look like a failed order.
+- **Anything at all going wrong sends the text instead.** A picture Telegram will not take is
+  worse than plain text; silence is worse than both.
+
+**The multipart body is built by hand.** The container runs Node 18, where `File` is not a
+global and `require('node:buffer').File` prints an ExperimentalWarning — and axios only emits
+`filename="…"` when a part carries a `.name`, which Telegram needs or it reads the part as a
+plain string field instead of an upload. That was a choice between an experimental API and
+twenty legible lines; in a repository that moves money, the twenty lines win. Do not
+`require('form-data')` either: it exists under `backend/node_modules` only because axios
+depends on it, it is not in `package.json`, and one `npm install` reshuffle would break a
+module the money paths import.
+
+### The admin panel shows it in the row
+
+A thumbnail is appended to the payload cell after the `innerHTML` assignment — never
+interpolated into it. `renderRequests` is one big template string, and this is the one origin
+in the service holding a bearer token; the payload must not pass through the HTML parser here.
+It goes through the same `imageElement` the details modal uses, so a row claiming
+`image/svg+xml` renders nothing on both surfaces.
+
+`IMAGE_KINDS` in `frontend/admin/admin.js` is a **second copy** of the wall's
+`RENDERABLE_KINDS`. `operator_view.js` asserts the two are identical and that neither contains
+SVG — previously only the public one was tested, and the admin one is the more dangerous half.
+
+**A slow block explorer no longer hides the order.** `showDetails` used to build the whole
+modal inside the same `try` as an awaited BlockCypher lookup, whose catch replaced the body
+with one red line: a provider timeout took the customer's picture, their payment figures and
+their refund address with it. The modal is now painted first and the lookup fills its own slot,
+guarded by `histSlot.isConnected` so a late answer cannot land under a different order.
 
 ## The public wall
 
@@ -736,7 +853,7 @@ response carries `incomplete` / `staleCount` so the panel can say so plainly.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **531 assertions across ten files**, all offline:
+`/home/admin/op_returner_tests/` — **605 assertions across eleven files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -764,6 +881,13 @@ There is no test runner in the repo. Verification lives outside it, in
   every refusal is an identical null so it is not an oracle; both queries are built from the
   same `WALL_WHERE_SQL`; and the **shipped** `wallImage` from `frontend/js/app.js` builds the
   right URL. Uses `fixtures/sample_200x200.webp`.
+- `operator_view.js` — 74. What the operator and the customer can actually see: the
+  hand-rolled multipart body byte for byte, every refusal `sendPhoto` makes before spending a
+  rate-limit slot, one Telegram call per notification, the text fallback, the admin panel's
+  allowlist checked against the wall's, the thumbnail being appended rather than interpolated,
+  the details modal painting before the block explorer is asked, and the fee surcharge shown
+  matching the one `queue.js` charges across all six address types. `axios.post` is stubbed
+  before `notifier.js` is required.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real
@@ -796,6 +920,13 @@ dropping the address fallback in `judgeHook` turns a hook belonging to a live
 prune would delete the webhook watching a customer mid-payment. Removing the
 `webhooksRetiredAt` rollback leaves `the next pass retries it — []`: nothing retries, and
 the row claims a teardown that never happened.
+
+Four more, all checked this way against `operator_view.js`. Dropping the text fallback from
+`notifier.js` `fire` means a Telegram photo rejection produces **no notification at all**.
+Restoring the awaited lookup at the top of `showDetails` makes the modal stop painting before
+the block explorer answers. Changing the frontend quote to `Math.ceil(vb * rate)` puts the
+surcharge shown 4 sats away from the one charged. Adding `image/svg+xml` to the admin panel's
+`IMAGE_KINDS` breaks three assertions at once, including the one binding it to the wall's list.
 
 `refund.js` exports `estimateRefundVBytes`, which the harness asserts against. It takes a
 second argument (the refund output's size) and uses a 10.5-vByte overhead rather than 10,

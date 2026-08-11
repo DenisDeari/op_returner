@@ -408,6 +408,17 @@ body::before {
 .chip svg { transition: transform .25s var(--ease); }
 .chip[aria-expanded="true"] svg { transform: rotate(180deg); }
 
+/* The fee surcharge, on the chip itself. Accent rather than red: choosing a faster
+   confirmation is a legitimate decision, not an error — the number just has to be
+   visible before it is paid. Hidden entirely at the minimum rate. */
+.chip-extra {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.chip-extra[hidden] { display: none; }
+
 .drawer {
   display: grid;
   grid-template-rows: 0fr;
@@ -424,6 +435,7 @@ body::before {
   padding: 16px 20px;
 }
 .tick { font-size: .74rem; color: var(--dimmer); }
+.drawer-note { padding: 0 20px 16px; }
 
 input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
 

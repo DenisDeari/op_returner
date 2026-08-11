@@ -14,11 +14,24 @@
 // exactly as before if notifications are not configured.
 
 const axios = require('axios');
+const crypto = require('crypto');
 const payload = require('./payload');
 
 const SEND_TIMEOUT_MS = 15000;
 const MAX_PER_HOUR = 40;
 const WINDOW_MS = 60 * 60 * 1000;
+
+// Telegram's own limits on sendPhoto. The caption ceiling is the one that bites: a caption
+// over it is rejected outright, and truncating HTML mid-tag turns that into a parse error
+// instead. We check and fall back to a text message rather than cutting.
+const CAPTION_MAX_CHARS = 1024;
+const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+
+/** The filename Telegram sees. It only ever comes from this closed map, never from a row. */
+const PHOTO_FILENAMES = {
+    'image/webp': 'payload.webp',
+    'image/jpeg': 'payload.jpg',
+};
 
 let sentTimestamps = [];
 let suppressedCount = 0;
@@ -101,10 +114,131 @@ async function send(text, config) {
     }
 }
 
-/** Fire-and-forget wrapper used by the lifecycle hooks. */
-function fire(text, config) {
+/**
+ * A multipart/form-data body, built by hand.
+ *
+ * Node 18 has global FormData and Blob but no global File, and `require('node:buffer').File`
+ * prints an ExperimentalWarning — axios only emits `filename="…"` when the part has a `.name`,
+ * and Telegram treats a part without a filename as a plain string field rather than an upload.
+ * So the choice was an experimental API or twenty legible lines. In a repository that moves
+ * money, twenty legible lines win: this has no version-dependent behaviour to be surprised by,
+ * and the test can assert the exact bytes on the wire.
+ *
+ * The boundary is 24 random bytes. A caption containing it would corrupt the body, so the
+ * caller checks rather than assuming — see sendPhoto.
+ */
+function buildMultipart(boundary, fields, file) {
+    const parts = [];
+    for (const [name, value] of Object.entries(fields)) {
+        parts.push(Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+            'utf8'
+        ));
+    }
+    parts.push(Buffer.from(
+        `--${boundary}\r\n`
+        + `Content-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n`
+        + `Content-Type: ${file.contentType}\r\n\r\n`,
+        'utf8'
+    ));
+    parts.push(file.bytes);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'));
+    return Buffer.concat(parts);
+}
+
+/**
+ * Sends the picture WITH its caption, in a single Telegram call.
+ *
+ * The caption replaces the text message rather than following it, and that is deliberate:
+ * withinRateLimit() is a global hourly cap shared by every notification type, so a photo sent
+ * as a second call would halve how many orders the operator hears about in a busy hour.
+ *
+ * Everything that can fail is decided BEFORE a rate-limit slot is spent, so a photo we end up
+ * not sending does not cost the operator the text message that replaces it.
+ *
+ * Same contract as send(): always resolves, never throws. payload.decode() throws on a row
+ * that does not decode, and these functions are called from the middle of building and
+ * broadcasting transactions — a throw here would surface as a failed order.
+ */
+async function sendPhoto(caption, message, payloadKind, config) {
+    if (!isEnabled(config)) return { ok: false, reason: 'disabled' };
+
+    const boundary = `----satwire${crypto.randomBytes(24).toString('hex')}`;
+    let body;
+    try {
+        if (!payload.isImage(payloadKind)) return { ok: false, reason: 'not an image payload' };
+        if (caption.length > CAPTION_MAX_CHARS) return { ok: false, reason: 'caption too long' };
+        // Cannot happen with a random 48-hex boundary, but the failure mode if it ever did
+        // is a corrupted upload rather than an error, so it is checked rather than assumed.
+        if (caption.includes(boundary)) return { ok: false, reason: 'boundary collision' };
+
+        const bytes = payload.decode(message, payloadKind);
+        if (!bytes.length || bytes.length > PHOTO_MAX_BYTES) return { ok: false, reason: 'payload size' };
+
+        body = buildMultipart(
+            boundary,
+            {
+                chat_id: String(config.TELEGRAM_CHAT_ID),
+                caption,
+                parse_mode: 'HTML',
+            },
+            {
+                field: 'photo',
+                // From the closed map above, never from the row: the filename and the type
+                // are ours to state, and a row claiming something else is not an image here.
+                filename: PHOTO_FILENAMES[payloadKind],
+                contentType: payloadKind,
+                bytes,
+            }
+        );
+    } catch (error) {
+        return { ok: false, reason: `payload: ${error.message}` };
+    }
+
+    if (!withinRateLimit()) return { ok: false, reason: 'rate_limited' };
+
+    try {
+        const url = `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendPhoto`;
+        const res = await axios.post(url, body, {
+            timeout: SEND_TIMEOUT_MS,
+            headers: {
+                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': body.length,
+            },
+            maxBodyLength: Infinity,
+        });
+        if (res.data && res.data.ok) {
+            return { ok: true, messageId: res.data.result?.message_id };
+        }
+        return { ok: false, reason: res.data?.description || 'rejected' };
+    } catch (error) {
+        const detail = error?.response?.data?.description || error.message;
+        return { ok: false, reason: detail };
+    }
+}
+
+/**
+ * Fire-and-forget wrapper used by the lifecycle hooks.
+ *
+ * `image` is optional and is `{ message, payloadKind }` straight off the row. When it names
+ * an image, the operator gets the actual picture with the same caption they would have got as
+ * text; anything at all going wrong falls back to the text message, because a notification
+ * that arrives is worth more than one that would have been prettier.
+ *
+ * The decode happens inside this promise, never in the caller's stack. `fire(...)` is called
+ * from the middle of request_service.js's fulfil path, whose catch turns any throw into
+ * `{ success: false }` — after the OP_RETURN has already been broadcast.
+ */
+function fire(text, config, image) {
     Promise.resolve()
-        .then(() => send(text, config))
+        .then(async () => {
+            if (image && image.message && payload.isImage(image.payloadKind)) {
+                const shot = await sendPhoto(text, image.message, image.payloadKind, config);
+                if (shot.ok) return shot;
+                console.warn(`[Notifier] Photo not sent (${shot.reason}) — sending text instead.`);
+            }
+            return send(text, config);
+        })
         .catch((e) => console.warn('[Notifier] Unexpected notifier error:', e.message));
 }
 
@@ -134,7 +268,8 @@ function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshi
         `Awaiting <b>${esc(requiredAmountSatoshis)} sats</b>` +
         (targetAddress ? `\nRecipient: <code>${esc(targetAddress)}</code>` : '') +
         `\nOrder <code>${esc(shortId(requestId))}</code>`,
-        config
+        config,
+        { message, payloadKind }
     );
 }
 
@@ -143,7 +278,8 @@ function notifyPaymentReceived({ requestId, amount, message, payloadKind }, conf
         `💰 <b>Payment received</b> — ${esc(amount)} sats\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Publishing now…\nOrder <code>${esc(shortId(requestId))}</code>`,
-        config
+        config,
+        { message, payloadKind }
     );
 }
 
@@ -153,7 +289,8 @@ function notifyDelivered({ requestId, message, payloadKind, opReturnTxId }, conf
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `https://mempool.space/tx/${esc(opReturnTxId)}\n` +
         `Order <code>${esc(shortId(requestId))}</code>`,
-        config
+        config,
+        { message, payloadKind }
     );
 }
 
@@ -172,7 +309,8 @@ function notifyFailed({ requestId, message, payloadKind, reason, amount, termina
         `Reason: ${esc(truncate(reason, 200))}` +
         refundLine +
         `\n\nOrder <code>${esc(shortId(requestId))}</code>`,
-        config
+        config,
+        { message, payloadKind }
     );
 }
 
@@ -218,7 +356,11 @@ function notifyCustomerMessage({ requestId, feedback }, config) {
 
 module.exports = {
     send,
+    sendPhoto,
+    buildMultipart,
     isEnabled,
+    CAPTION_MAX_CHARS,
+    PHOTO_FILENAMES,
     notifyNewOrder,
     notifyPaymentReceived,
     notifyDelivered,

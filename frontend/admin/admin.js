@@ -219,7 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <tr${req.userFeedback ? ' class="has-note"' : ''}>
                 <td>${escapeHtml(req.id.substring(0, 8))}...</td>
                 <td>${escapeHtml(new Date(req.createdAt).toLocaleString())}</td>
-                <td>${escapeHtml(truncate(describePayload(req.message, req.payloadKind), 80))}${isImagePayload(req.payloadKind) ? ' <span class="payload-tag">IMG</span>' : ''}</td>
+                <td>${isImagePayload(req.payloadKind) ? `<span class="payload-thumb" data-req="${escapeHtml(req.id)}"></span>` : ''}${escapeHtml(truncate(describePayload(req.message, req.payloadKind), 80))}${isImagePayload(req.payloadKind) ? ' <span class="payload-tag">IMG</span>' : ''}</td>
                 <td>
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
@@ -237,6 +237,22 @@ document.addEventListener('DOMContentLoaded', () => {
             </tr>
         `;
         }).join('');
+
+        // Thumbnails, appended after the innerHTML assignment and never interpolated into
+        // it — the same rule the details modal follows, for the same reason: the payload
+        // must not pass through the HTML parser on the one origin that holds a bearer token.
+        //
+        // In the row rather than only behind the Details button because moderating a wall of
+        // pictures by reading "[WebP image, 12038 bytes]" is not moderating it at all.
+        requestsBody.querySelectorAll('.payload-thumb').forEach((slot) => {
+            const row = requests.find((r) => r.id === slot.dataset.req);
+            if (!row) return;
+            const img = imageElement(row.message, row.payloadKind);
+            if (!img) return;                       // malformed: the text description stands alone
+            img.className = 'payload-thumb-img';    // NOT .payload-image, which is 320px and would stretch every row
+            img.title = 'Open Details for a larger view';
+            slot.appendChild(img);
+        });
     }
 
     async function showDetails(requestId) {
@@ -246,32 +262,12 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.style.display = "block";
         modalBody.innerHTML = '<p>Loading transaction history...</p>';
 
+        // Everything the operator came here for is built and painted BEFORE the blockchain
+        // lookup runs. It used to be assembled inside the same try as that fetch, so a
+        // provider timeout replaced the whole modal with one red line — the customer's
+        // picture, the payment figures and the refund address all vanished because a third
+        // party was slow. The lookup now fills its own slot and may fail on its own.
         try {
-            const response = await fetch(`${API_BASE_URL}/address-transactions/${req.address}`, {
-                headers: { 'Authorization': `Bearer ${adminPassword}` }
-            });
-            
-            let txHistoryHtml = '';
-            if (response.ok) {
-                const data = await response.json();
-                if (data.txs && data.txs.length > 0) {
-                    txHistoryHtml = `<ul class="tx-list">
-                        ${data.txs.map(tx => `
-                            <li class="tx-item">
-                                <strong>TXID:</strong> <a href="https://mempool.space/tx/${encodeURIComponent(tx.hash)}" target="_blank">${escapeHtml(String(tx.hash).substring(0, 20))}...</a><br>
-                                <strong>Amount:</strong> ${escapeHtml(tx.total)} sats<br>
-                                <strong>Confirmations:</strong> ${escapeHtml(tx.confirmations)}<br>
-                                <strong>Time:</strong> ${tx.confirmed ? escapeHtml(new Date(tx.confirmed).toLocaleString()) : 'Unconfirmed'}
-                            </li>
-                        `).join('')}
-                    </ul>`;
-                } else {
-                    txHistoryHtml = '<p>No transactions found for this address.</p>';
-                }
-            } else {
-                txHistoryHtml = `<p style="color: red;">Error fetching transactions: ${response.statusText}</p>`;
-            }
-
             const feedbackSection = req.userFeedback ? `
                 <div class="detail-section customer-note-section">
                     <h3>Customer note</h3>
@@ -319,7 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${refundSection}
                 <div class="detail-section">
                     <h3>Transaction History (from Blockchain)</h3>
-                    ${txHistoryHtml}
+                    <div id="detail-tx-history"><p class="muted">Loading transaction history&hellip;</p></div>
                 </div>
             `;
 
@@ -336,6 +332,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             modalBody.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            return;
+        }
+
+        // The blockchain lookup, on its own. It goes through BlockCypher, which rate-limits
+        // and times out, and nothing above this line depends on the answer.
+        const histSlot = modalBody.querySelector('#detail-tx-history');
+        if (!histSlot) return;
+        try {
+            const response = await fetch(`${API_BASE_URL}/address-transactions/${req.address}`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+
+            let txHistoryHtml;
+            if (response.ok) {
+                const data = await response.json();
+                if (data.txs && data.txs.length > 0) {
+                    txHistoryHtml = `<ul class="tx-list">
+                        ${data.txs.map(tx => `
+                            <li class="tx-item">
+                                <strong>TXID:</strong> <a href="https://mempool.space/tx/${encodeURIComponent(tx.hash)}" target="_blank">${escapeHtml(String(tx.hash).substring(0, 20))}...</a><br>
+                                <strong>Amount:</strong> ${escapeHtml(tx.total)} sats<br>
+                                <strong>Confirmations:</strong> ${escapeHtml(tx.confirmations)}<br>
+                                <strong>Time:</strong> ${tx.confirmed ? escapeHtml(new Date(tx.confirmed).toLocaleString()) : 'Unconfirmed'}
+                            </li>
+                        `).join('')}
+                    </ul>`;
+                } else {
+                    txHistoryHtml = '<p>No transactions found for this address.</p>';
+                }
+            } else {
+                txHistoryHtml = `<p style="color: red;">Error fetching transactions: ${escapeHtml(response.statusText)}</p>`;
+            }
+            // The operator may have closed this and opened another request while the lookup
+            // was in flight; writing then would put one order's history under another's.
+            if (histSlot.isConnected) histSlot.innerHTML = txHistoryHtml;
+        } catch (error) {
+            if (histSlot.isConnected) {
+                histSlot.innerHTML = `<p style="color: red;">Could not reach the block explorer: ${escapeHtml(error.message)}</p>`;
+            }
         }
     }
 
