@@ -269,12 +269,15 @@ body::before {
 /* A published image, on the wall and on an order card. Bounded rather than natural
    size — these are on-chain images so a couple of kilobytes at most, but the element
    must never be able to blow out the layout whatever dimensions the encoder chose. */
+/* A FIXED height, not a max-height. .wall is a three-column layout, so a card that grows
+   when its picture finally arrives re-flows all three columns underneath it. The box is
+   now the same size before and after the bytes land; object-fit keeps the aspect ratio
+   inside it. */
 .payload-img {
   display: block;
-  max-width: 100%;
-  max-height: 260px;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 260px;
+  object-fit: contain;
   border-radius: var(--r-sm);
   image-rendering: pixelated;
   background: #15171b;
@@ -802,6 +805,67 @@ input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
 }
 
 /* ============================ Footer ==================================== */
+
+/* -- the explanatory section ---------------------------------------------
+   Static prose. It exists because the wall above is built by JavaScript, so a crawler
+   that does not run scripts previously saw a page with almost no words on it. */
+.info p { color: var(--dim); font-size: .92rem; line-height: 1.65; margin-bottom: 14px; max-width: 68ch; }
+.info strong { color: var(--text); font-weight: 600; }
+.info code {
+  font-family: var(--mono); font-size: .86em;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 5px; color: var(--text);
+}
+.info h3 {
+  font-size: .95rem; font-weight: 600; color: var(--text);
+  letter-spacing: -0.01em; margin: 32px 0 12px;
+}
+.info .note { margin-top: 10px; }
+
+.price { width: 100%; border-collapse: collapse; margin: 4px 0 6px; font-size: .88rem; }
+.price caption { text-align: left; color: var(--dimmer); font-size: .78rem; padding-bottom: 8px; }
+.price th, .price td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); }
+.price th { color: var(--dimmer); font-weight: 500; font-size: .8rem; }
+.price td { color: var(--dim); }
+.price td:last-child { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.price tr:last-child td { border-bottom: none; }
+
+.steps { list-style: none; counter-reset: step; max-width: 68ch; }
+.steps li {
+  position: relative; padding-left: 34px; margin-bottom: 10px;
+  color: var(--dim); font-size: .92rem; line-height: 1.6;
+}
+.steps li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 0; top: 1px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--accent); font-family: var(--mono); font-size: .72rem;
+  display: grid; place-items: center;
+}
+
+.faq { max-width: 68ch; }
+.faq dt { color: var(--text); font-size: .9rem; font-weight: 600; margin-top: 18px; }
+.faq dd { color: var(--dim); font-size: .9rem; line-height: 1.65; margin-top: 5px; }
+
+.api-intro { color: var(--dim); font-size: .86rem; line-height: 1.6; margin-bottom: 16px; }
+
+.noscript-note {
+  margin: 0 0 20px;
+  padding: 14px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-sm);
+  color: var(--dim);
+  font-size: .88rem;
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .price { font-size: .82rem; }
+  .price th, .price td { padding: 7px 8px 7px 0; }
+}
 
 .foot {
   margin-top: 48px;

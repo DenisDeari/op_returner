@@ -1214,13 +1214,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- The wall ----------------------------------------------------------
+    // The last listing's ETag. renderWall() clears #wall and rebuilds every card, and this
+    // runs once a minute in every open tab — so an unchanged wall used to re-create the
+    // whole DOM, restart the card animations and re-lay out the images for nothing.
+    //
+    // The server has always sent a stable ETag for this response (cachedAt moved to a header
+    // precisely so it would be stable). A 304 is therefore the normal answer, and the right
+    // reaction to one is to leave the DOM alone.
+    let wallEtag = null;
+
     async function loadWall() {
         try {
-            const res = await fetch('/api/wall');
+            const res = await fetch('/api/wall', {
+                headers: wallEtag ? { 'If-None-Match': wallEtag } : {},
+            });
+            if (res.status === 304) return;          // nothing published since last time
             if (!res.ok) throw new Error('wall');
+            const tag = res.headers.get('ETag');
             const data = await res.json();
+            // Stored only after the body parses, so a truncated response cannot make us
+            // skip the next poll as well.
+            wallEtag = tag;
             renderWall(data.messages || []);
         } catch {
+            wallEtag = null;                         // re-fetch in full next time
             wallEl.innerHTML = '';
             const p = document.createElement('p');
             p.className = 'wall-empty';

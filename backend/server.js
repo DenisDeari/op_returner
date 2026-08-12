@@ -2,6 +2,7 @@
 const express = require('express');
 const path = require('path');
 const config = require('./src/config');
+const hygiene = require('./src/http_hygiene');
 const { db, initializeDatabase } = require('./src/database');
 const { initializeWallet } = require('./src/wallet');
 const requestQueue = require('./src/queue');
@@ -30,12 +31,23 @@ initializeDatabase(() => {
 const rootNode = initializeWallet();
 const app = express();
 
+// Nothing gains from announcing the framework, and it is one line.
+app.disable('x-powered-by');
+
 // --- Middleware ---
 app.use(express.json());
 
+// HTTP hygiene: force TLS, keep /admin out of search results, and decide what may be
+// cached. The logic lives in src/http_hygiene.js so that it can be tested — requiring this
+// file opens the production database and binds a port, so nothing declared here could be.
+app.use(hygiene.forceHttps);
+app.use('/admin', hygiene.noIndexAdmin);
+app.use(hygiene.markCacheable);
+
 // --- Serve Frontend ---
-app.use(express.static(path.join(__dirname, '../frontend')));
-app.use('/admin', express.static(path.join(__dirname, '../frontend/admin')));
+const STATIC_OPTIONS = { setHeaders: hygiene.staticCacheHeaders };
+app.use(express.static(path.join(__dirname, '../frontend'), STATIC_OPTIONS));
+app.use('/admin', express.static(path.join(__dirname, '../frontend/admin'), STATIC_OPTIONS));
 
 // --- API Routes ---
 const apiRouter = createApiRouter(db, rootNode, config, requestQueue);

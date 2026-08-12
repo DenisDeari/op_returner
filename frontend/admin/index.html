@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Belt and braces: server.js already sets X-Robots-Tag on everything under /admin,
+         which is the half that also covers admin.js. This tag covers the case where the
+         file is served by something other than that middleware. Neither of them is a
+         security control — an auth layer in front of the path is. -->
+    <meta name="robots" content="noindex, nofollow, noarchive">
     <title>SatWire Admin</title>
     <link rel="stylesheet" href="admin.css?v=2">
 </head>

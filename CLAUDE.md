@@ -115,6 +115,11 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A webhook teardown that could not be confirmed is never recorded as done | `cleanup.js`, `webhook_manager.js` `deleteWebhookIds` |
 | A hook is judged by address as well as id, so a registration in flight is never pruned | `webhook_reconcile.js` `judgeHook` |
 | An archived row holding money is never hidden from the operator | `routes/admin.js` |
+| Plaintext HTTP is redirected, but **never** for a request with a body | `http_hygiene.js` `forceHttps` |
+| A redirect only fires on an explicit `x-forwarded-proto: http` — never on a guess | `http_hygiene.js` `forceHttps` |
+| A long `max-age` is only ever sent for a URL that changes when its bytes change | `http_hygiene.js` `staticCacheHeaders` |
+| The admin panel is `noindex`, by header so it also covers `admin.js` | `http_hygiene.js` `noIndexAdmin` |
+| A wall image reserves its height before the bytes arrive | `styles.css` `.payload-img` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -850,10 +855,84 @@ A balance that could not be read is never rendered as zero. The last known figur
 in memory and in `system_settings.wallet_balance_cache`, shown with its age, and the
 response carries `incomplete` / `staleCount` so the panel can say so plainly.
 
+## How the site is served
+
+**2026-08-12 — `http://satwire.io/` answered 200 with the whole page and no redirect.** Found
+by audit, never exploited. On a page whose entire job is to display a Bitcoin address a
+customer then pays, a plaintext leg is something anything on the path can rewrite. There was
+also no `Strict-Transport-Security`, so a browser had no reason to prefer TLS next time.
+
+`http_hygiene.js` holds the three middlewares that now sit in front of everything. They live
+in their own module for one reason: **requiring `server.js` opens the production database and
+binds a port**, so nothing declared inside it can be tested. Same reasoning as `schema.js`.
+
+Three details in `forceHttps` are load-bearing:
+
+- **Only `GET` and `HEAD` are redirected.** A 301 is allowed to drop a request body, and
+  `routes/webhook.js` receives unauthenticated BlockCypher POSTs — losing one loses a
+  customer's payment event.
+- **Only an explicit `x-forwarded-proto: http` redirects.** Absent, empty, `HTTP`, or a
+  comma-joined list all mean *we do not know*, and guessing wrong is a redirect loop that
+  takes the site down. Cloudflare's tunnel sets the header; nothing else is trusted.
+- **HSTS goes out only over https**, without `preload` and without `includeSubDomains`. Both
+  are far harder to walk back than they are to turn on.
+
+**Caching is decided per request, from the query string — not per file type.** Assets are
+versioned by hand (`app.js?v=13`), so a long `max-age` is correct for a URL carrying `?v=`
+and for the SHA-pinned codec under `/vendor/`, and wrong for everything else: an unversioned
+file cached for a week is a file you cannot fix for a week. HTML is never long-cached
+whatever the URL says — `index.html` is what carries the next `?v=N`.
+
+**`robots.txt` is Cloudflare's, not ours.** The origin 404s on it; the edge injects a
+1,248-byte Content Signals file with zero actual directives, which under RFC 9309 means
+everything is allowed. That is the right policy here, so there is deliberately no
+`robots.txt` in the repo. **Do not add a `Disallow: /admin`** — that file is public, so the
+line advertises the path to exactly the scrapers it is meant to hide it from, and no scanner
+reads it anyway. `noIndexAdmin` sends `X-Robots-Tag` instead, as a header so it covers
+`admin.js` and not just the HTML.
+
+Neither of those is a security control. **The admin panel is still world-readable HTML** —
+harmless in itself (every number on it comes from a 401-guarded API), but it publishes that
+an admin panel exists at a guessable path, its section headings, and 51 kB of unminified
+source naming every admin route. The fix for *that* is an auth layer in front of the path,
+which is a Cloudflare Access application and is **not done**.
+
+## What the page says it is
+
+Until 2026-08-12 the page had 149 indexable words and the strings `blockchain`, `OP_RETURN`
+and `on-chain` appeared **zero** times. It could not rank for what it does because it did not
+say what it does. The wall does not help: it is rendered by JavaScript from `/api/wall`, so a
+crawler that does not execute scripts saw nothing of it.
+
+What was added, all static:
+
+| | |
+|---|---|
+| `<title>` / description / `h1` | now name Bitcoin, the blockchain and `OP_RETURN` |
+| A "What SatWire does" section | ~500 words: what it is, a price table, five steps, six Q&A |
+| `<noscript>` | a visitor with JS off gets a sentence instead of a dead form |
+| canonical, Open Graph, Twitter tags | a shared link produced no card at all before |
+| `favicon.svg` / `.png` / `apple-touch-icon.png` / `og.png` | `/favicon.ico` was a 404 on every visit |
+| JSON-LD `WebApplication` | no rich result — Google wants a rating for that, and inventing one is a lie |
+
+**Every number in that prose is real** and `site_delivery.js` is not what keeps it that way —
+a human is. The limits come from `/api/config/limits` and the picture sizes from the measured
+ladder in *Image payloads* above. The JSON-LD states only the 2,000-sat service fee, because
+the network fee on top depends on the mempool and a `price` the service cannot hold would be
+a lie in machine-readable form.
+
+The PNG assets are generated by `tools/render_icons.py` and `tools/render_og.py`, which draw
+the mark from `frontend/favicon.svg` as geometry and encode it with `zlib` — this machine has
+no rasteriser, no ImageMagick and no headless browser. `tools/` sits outside `frontend/` on
+purpose: `express.static` serves that directory and nothing else should end up in it.
+
+**`?v=N` must be bumped on both the CSS and the JS whenever either changes**, or a returning
+visitor keeps the old file for a week now that versioned URLs are cached.
+
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **605 assertions across eleven files**, all offline:
+`/home/admin/op_returner_tests/` — **682 assertions across twelve files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -888,6 +967,11 @@ There is no test runner in the repo. Verification lives outside it, in
   the details modal painting before the block explorer is asked, and the fee surcharge shown
   matching the one `queue.js` charges across all six address types. `axios.post` is stubbed
   before `notifier.js` is required.
+- `site_delivery.js` — 77. How the site is served and what it says about itself: the HTTPS
+  redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
+  cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the
+  shipped `og.png`, that the JSON-LD parses and states only a price the service can hold, the
+  wall's ETag gating, and the reserved image height. Reads the shipped files off disk.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real

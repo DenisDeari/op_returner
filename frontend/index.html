@@ -3,9 +3,60 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Publish a message permanently in a Bitcoin block.">
-    <title>SatWire — Immortalize your Message</title>
-    <link rel="stylesheet" href="css/styles.css?v=12">
+
+    <!-- The title and description used to say "Immortalize your Message", which is what the
+         service feels like but not what anyone types into a search box. The words that
+         matter — blockchain, OP_RETURN, Bitcoin — did not appear on this page at all. -->
+    <title>Write a Message on the Bitcoin Blockchain — SatWire</title>
+    <meta name="description" content="Publish a message or picture permanently in a Bitcoin OP_RETURN output. No account, no signup. Pay in sats, get the transaction id in minutes.">
+    <link rel="canonical" href="https://satwire.io/">
+    <meta name="theme-color" content="#08090b">
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+    <!-- Shared links produced no card at all before these. og:image is the tag that decides
+         whether X shows anything; the file is generated from the same brand mark. -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="SatWire">
+    <meta property="og:url" content="https://satwire.io/">
+    <meta property="og:title" content="Write a message on the Bitcoin blockchain">
+    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,200 sats.">
+    <meta property="og:locale" content="en">
+    <meta property="og:image" content="https://satwire.io/og.png">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="SatWire — write a message on the Bitcoin blockchain.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Write a message on the Bitcoin blockchain">
+    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,200 sats.">
+    <meta name="twitter:image" content="https://satwire.io/og.png">
+
+    <link rel="stylesheet" href="css/styles.css?v=13">
+
+    <!-- No rich result will come of this: Google wants a rating for that, and inventing one
+         would be a lie. It is here so an answer engine can state what this is without
+         guessing. Nothing in it is a price claim the service cannot hold — the 2,000-sat
+         service fee is real and fixed; the network fee on top is not, so it is not stated. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "SatWire",
+      "url": "https://satwire.io/",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "Any",
+      "description": "Publishes a message or a picture permanently in a Bitcoin OP_RETURN output. No account and no signup: the customer pays a quoted amount in sats to a one-off address and receives the transaction id.",
+      "offers": {
+        "@type": "Offer",
+        "price": "0.00002",
+        "priceCurrency": "BTC",
+        "description": "A 2,000-sat service fee, plus the Bitcoin network fee for the transaction, which depends on its size and the chosen fee rate."
+      }
+    }
+    </script>
 </head>
 <body>
 
@@ -31,10 +82,23 @@
         </div>
     </header>
 
+    <!-- The h1 carries the words somebody would actually search for. "Immortalize your
+         Message" now sits underneath it, where it reads as the promise rather than as the
+         only description of the product. -->
     <section class="hero">
-        <h1><em>Immortalize</em> your Message</h1>
-        <p>In a Bitcoin block, in minutes.</p>
+        <h1>Write a message on the <em>Bitcoin blockchain</em></h1>
+        <p>Permanently, in an OP_RETURN output. In minutes.</p>
     </section>
+
+    <!-- Without JavaScript the composer is inert and the wall is empty. Two sentences are
+         better than a dead form, and they are on-topic text a crawler can read. -->
+    <noscript>
+        <p class="noscript-note">
+            SatWire needs JavaScript: your message is priced, and any picture is resized and
+            encoded, in your own browser before anything is sent. Nothing is uploaded until
+            you choose to publish.
+        </p>
+    </noscript>
 
     <!-- ============================ Compose ============================== -->
     <section class="compose">
@@ -196,6 +260,89 @@
         <div class="wall" id="wall"></div>
     </section>
 
+    <!-- ============================ What this is ========================= -->
+    <!-- Static prose, deliberately. The wall above is rendered by JavaScript from
+         /api/wall, so a crawler that does not run scripts saw an empty page with 149 words
+         on it, none of which were "blockchain", "OP_RETURN" or "on-chain". Every number
+         below is real: the limits come from /api/config/limits and the picture sizes were
+         measured on an actual photo at the cheapest fee rate. -->
+    <section class="sec info">
+        <div class="sec-head"><h2>What SatWire does</h2></div>
+        <p>
+            SatWire writes your message into the Bitcoin blockchain itself. Not a link to it,
+            not a hash of it — the text, in an <code>OP_RETURN</code> output of a real Bitcoin
+            transaction, where it stays as long as Bitcoin does. You get the transaction id and
+            can check it in any block explorer.
+        </p>
+        <p>
+            There is no account and no signup. You type a message, we quote a price, you pay a
+            one-off address, and the transaction is broadcast. You can publish a
+            <strong>picture</strong> the same way: it is resized and re-encoded to WebP in your
+            own browser, so the original file never leaves your device and its GPS data never
+            goes anywhere. The bytes that reach the chain are a complete, valid image file —
+            anyone can pull them out of the transaction and open them, with no tool of ours.
+        </p>
+
+        <h3>What it costs</h3>
+        <p>
+            Two parts: a flat <strong>2,000-sat service fee</strong>, and the Bitcoin network fee
+            for the transaction. The network fee depends on how big your message is and how fast
+            you want it confirmed — a short line of text costs about 220 sats to publish, a
+            picture costs more because it is bigger.
+        </p>
+        <table class="price">
+            <caption>Roughly, at the cheapest fee rate, service fee included</caption>
+            <thead><tr><th>What you publish</th><th>On-chain size</th><th>Total</th></tr></thead>
+            <tbody>
+                <tr><td>A line of text</td><td>~100 bytes</td><td>~2,220 sats</td></tr>
+                <tr><td>Picture, 160&times;120</td><td>~1,500 bytes</td><td>~5,250 sats</td></tr>
+                <tr><td>Picture, 256&times;192</td><td>~2,840 bytes</td><td>~7,930 sats</td></tr>
+                <tr><td>Picture, 512&times;384</td><td>~7,880 bytes</td><td>~18,000 sats</td></tr>
+                <tr><td>Picture, 1024&times;768</td><td>~20,000 bytes</td><td>~42,250 sats</td></tr>
+            </tbody>
+        </table>
+        <p class="note">
+            The limits are 1,000 bytes for text and 20,000 bytes for a picture. The composer
+            above shows the exact price before you pay anything.
+        </p>
+
+        <h3>How it works</h3>
+        <ol class="steps">
+            <li>Write your message, or attach a picture and pick a budget.</li>
+            <li>You get a Bitcoin address and an exact amount.</li>
+            <li>You pay it. Nothing else is required of you.</li>
+            <li>SatWire builds a transaction carrying your bytes and broadcasts it.</li>
+            <li>You get the transaction id, and the message is on the chain forever.</li>
+        </ol>
+
+        <h3>Questions</h3>
+        <dl class="faq">
+            <dt>Can anyone read what I publish?</dt>
+            <dd>Yes. The Bitcoin blockchain is public, and so is everything written into it. Do
+                not publish anything you would not put on a billboard.</dd>
+
+            <dt>Can I delete it later?</dt>
+            <dd>No. Nobody can — not you, not us. That is the point of it, and the reason to
+                think before you pay. Showing your message on the public wall here is a separate
+                choice, and that one the operator can undo.</dd>
+
+            <dt>Do I need an account or a wallet connection?</dt>
+            <dd>Neither. You pay from any Bitcoin wallet to an address we show you once.</dd>
+
+            <dt>How long does it take?</dt>
+            <dd>The transaction is broadcast within seconds of your payment arriving. How long
+                it then takes to be mined into a block depends on the fee rate you chose.</dd>
+
+            <dt>What if it cannot be published?</dt>
+            <dd>The payment is sent back to the address it came from, automatically. In the rare
+                case that is not possible, the operator is alerted and sorts it out by hand.</dd>
+
+            <dt>Can other software read my picture, or only SatWire?</dt>
+            <dd>Any software. There is no wrapper and no format of our own — the data in the
+                <code>OP_RETURN</code> is the image file itself, so a hex decode is enough.</dd>
+        </dl>
+    </section>
+
     <!-- ============================ API ================================== -->
     <details class="api" id="api">
         <summary>
@@ -203,6 +350,13 @@
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </summary>
         <div class="api-body">
+            <!-- One sentence, because this block is a large share of the page's text and said
+                 nothing about what the paths are for. Not expanded into full documentation:
+                 that is a different job than a landing page. -->
+            <p class="api-intro">
+                A small HTTP API for publishing to the Bitcoin blockchain without the composer.
+                No key is needed for the public endpoints.
+            </p>
             <div class="ep">
                 <span class="verb post">POST</span>
                 <div>
@@ -278,6 +432,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=12"></script>
+<script src="js/app.js?v=13"></script>
 </body>
 </html>
