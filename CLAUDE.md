@@ -122,6 +122,9 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A wall image reserves its height before the bytes arrive | `styles.css` `.payload-img` |
 | The admin bearer token is `sessionStorage` only — never `localStorage` | `frontend/admin/admin.js` |
 | A rejected admin token is thrown away centrally, not at 14 call sites | `frontend/admin/admin.js`, shadowed `fetch` |
+| The admin password can be guessed 5 times per address per 15 minutes, then not at all | `routes/auth.js` |
+| A lockout is per client address — never global, which would be a DoS handle | `routes/auth.js` |
+| "Who is this" has one definition, shared by every limiter | `http_hygiene.js` `clientIp` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -921,6 +924,36 @@ be worse — permanent and shared across every tab — but do not restate the st
 messages, payload thumbnails, derived addresses and wallet balances are already rendered, and
 they are exactly what you are trying not to leave up.
 
+### The password can no longer be guessed for free
+
+Until 2026-08-12 `requireAdmin` would answer an unlimited number of guesses, from the open
+internet, with no counting. Now: **5 failures per client address per 15 minutes**, then `429`
+with `Retry-After` until the window slides.
+
+Five things about it are deliberate:
+
+- **Per address, never global.** A global counter would let anyone on the internet lock the
+  operator out of their own money by guessing wrong five times — turning a brute-force defence
+  into a denial-of-service handle.
+- **While locked, the password is not compared at all.** Cheaper, and the response timing then
+  says nothing about the guess. The observable proof is that even the *correct* password gets a
+  429 while locked.
+- **A correct password clears the bucket.** Otherwise an operator who mistyped four times and
+  then got it right stays four failures from a lockout for the next quarter of an hour.
+- **The 503 "no password configured" branch is checked first and never counted.** A misconfigured
+  server is not somebody guessing, and counting it would lock the operator out the moment the
+  password was finally set correctly.
+- **Telegram gets one message per lockout**, not per blocked request. What guarantees that is the
+  429 branch returning before the counter is touched again — the `count === MAX_FAILURES` test is
+  belt and braces. A *fresh* lockout after the window does notify again, and should.
+
+The bucket is in memory, so a restart clears it. That is a real weakness against a patient
+attacker and a deliberate trade: this is a money database on `journal_mode=delete`, and an fsync
+per failed login attempt is a much better denial-of-service target than the thing it defends.
+
+`clientIp` moved from `routes/api.js` to `http_hygiene.js` for this — the intake limiter and the
+auth throttle must bucket identically, and two copies of "who is this" is how they stop.
+
 **A guard that returns silently is worse than no guard.** `fetchAlerts` and the wallet scanner
 both used to `return;` when there was no token, above the button-disable and above every write —
 so the Refresh button did nothing and the previous alert list stayed on screen. A panel whose job
@@ -976,7 +1009,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **713 assertions across twelve files**, all offline:
+`/home/admin/op_returner_tests/` — **736 assertions across twelve files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1012,11 +1045,13 @@ There is no test runner in the repo. Verification lives outside it, in
   matching the one `queue.js` charges across all six address types, and the admin token being
   remembered in sessionStorage, restored on reload, and thrown away on a 401 from the admin API
   but not from anywhere else. `axios.post` is stubbed before `notifier.js` is required.
-- `site_delivery.js` — 77. How the site is served and what it says about itself: the HTTPS
+- `site_delivery.js` — 102. How the site is served and what it says about itself: the HTTPS
   redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
   cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the
   shipped `og.png`, that the JSON-LD parses and states only a price the service can hold, the
-  wall's ETag gating, and the reserved image height. Reads the shipped files off disk.
+  wall's ETag gating, the reserved image height, and the admin password throttle — the lockout,
+  that it is per address, that a correct password clears it, that the unconfigured-server branch
+  never counts, and that one lockout is one Telegram message. Reads the shipped files off disk.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real

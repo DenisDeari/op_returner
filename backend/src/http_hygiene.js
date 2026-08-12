@@ -91,11 +91,30 @@ function staticCacheHeaders(res, filePath) {
     res.setHeader('Cache-Control', versioned ? CACHE_VERSIONED : CACHE_REVALIDATE);
 }
 
+/**
+ * The real client address.
+ *
+ * This app sits behind Cloudflare and a tunnel, so `req.ip` is the proxy's address and is
+ * identical for every visitor — keying a rate limit on it alone would make one global
+ * bucket that any single user could exhaust for everyone.
+ *
+ * Moved here from routes/api.js when the admin auth throttle needed the same answer. Two
+ * copies of "who is this" is how one limiter ends up bucketing differently from the other.
+ */
+function clientIp(req) {
+    return req.headers['cf-connecting-ip']
+        || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+        || req.ip
+        || req.socket?.remoteAddress
+        || 'unknown';
+}
+
 module.exports = {
     forceHttps,
     noIndexAdmin,
     markCacheable,
     staticCacheHeaders,
+    clientIp,
     HSTS_MAX_AGE_SECONDS,
     CACHE_VERSIONED,
     CACHE_REVALIDATE,

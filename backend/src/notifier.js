@@ -345,6 +345,24 @@ function notifyArchiveFunded({ requestId, address, amount, refundAddress, create
     );
 }
 
+/**
+ * Somebody is guessing the admin password.
+ *
+ * Fired once per lockout, from routes/auth.js — not once per blocked request. A
+ * brute-force run would otherwise spend the whole hourly budget and the operator would
+ * stop hearing about orders, which is exactly what an attacker would want.
+ */
+function notifyAdminLockout({ ip, failures, minutes }, config) {
+    fire(
+        `🚨 <b>Failed admin logins</b>\n\n`
+        + `${esc(failures)} wrong passwords from <code>${esc(ip)}</code>.\n`
+        + `That address is locked out for ${esc(minutes)} minutes.\n\n`
+        + `If this was not you, the password is being guessed. `
+        + `Nothing was accessed — this fires on failures only.`,
+        config
+    );
+}
+
 function notifyCustomerMessage({ requestId, feedback }, config) {
     fire(
         `💬 <b>A customer wrote to you</b>\n\n` +
@@ -367,6 +385,7 @@ module.exports = {
     notifyFailed,
     notifyRefunded,
     notifyCustomerMessage,
+    notifyAdminLockout,
     notifyArchiveFunded,
     MAX_PER_HOUR,
 };

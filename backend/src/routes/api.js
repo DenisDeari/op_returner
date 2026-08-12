@@ -10,6 +10,7 @@ const events = require('../request_events');
 const wall = require('../wall');
 const qr = require('../qr');
 const payload = require('../payload');
+const httpHygiene = require('../http_hygiene');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -111,20 +112,10 @@ function publicRequestView(row) {
     return view;
 }
 
-/**
- * The real client address.
- *
- * This app sits behind Cloudflare and a tunnel, so `req.ip` is the proxy's address and is
- * identical for every visitor — keying a rate limit on it alone would make one global
- * bucket that any single user could exhaust for everyone.
- */
-function clientIp(req) {
-    return req.headers['cf-connecting-ip']
-        || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-        || req.ip
-        || req.socket?.remoteAddress
-        || 'unknown';
-}
+// clientIp now lives in http_hygiene.js — the admin auth throttle needs the same answer,
+// and two copies of "who is this" is how one limiter ends up bucketing differently from
+// the other. Aliased here so the call sites below read unchanged.
+const clientIp = httpHygiene.clientIp;
 
 /**
  * Sliding-window counter shared by the intake and feedback limiters.
