@@ -659,3 +659,14 @@ tr.has-note .customer-note {
     color: #dbeaff;
     vertical-align: middle;
 }
+
+/* The heading row, so the "forget password" control sits beside the title rather than
+   above the first section. */
+.admin-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.admin-head h1 { margin: 0; }

@@ -120,6 +120,8 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A long `max-age` is only ever sent for a URL that changes when its bytes change | `http_hygiene.js` `staticCacheHeaders` |
 | The admin panel is `noindex`, by header so it also covers `admin.js` | `http_hygiene.js` `noIndexAdmin` |
 | A wall image reserves its height before the bytes arrive | `styles.css` `.payload-img` |
+| The admin bearer token is `sessionStorage` only — never `localStorage` | `frontend/admin/admin.js` |
+| A rejected admin token is thrown away centrally, not at 14 call sites | `frontend/admin/admin.js`, shadowed `fetch` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -891,11 +893,53 @@ line advertises the path to exactly the scrapers it is meant to hide it from, an
 reads it anyway. `noIndexAdmin` sends `X-Robots-Tag` instead, as a header so it covers
 `admin.js` and not just the HTML.
 
-Neither of those is a security control. **The admin panel is still world-readable HTML** —
-harmless in itself (every number on it comes from a 401-guarded API), but it publishes that
-an admin panel exists at a guessable path, its section headings, and 51 kB of unminified
-source naming every admin route. The fix for *that* is an auth layer in front of the path,
-which is a Cloudflare Access application and is **not done**.
+Neither of those is a security control. The one that is went in on **2026-08-12**: a Cloudflare
+Access application now covers `satwire.io/admin`, so `/admin`, `/admin/` and `/admin/admin.js`
+all 302 to a Cloudflare login. Anonymously fetching `admin.js` returns 0 matches for
+`requireAdmin`, `adminPassword` or the refund route, where it used to return 51 kB of source.
+
+### Access does NOT cover the admin API, and that is deliberate
+
+`/api/admin/*` is **not** in the Access application. Putting it there would hand the panel's own
+`fetch()` calls a Cloudflare login page instead of JSON. So:
+
+**The bearer password is still the only thing in front of every endpoint that moves money.**
+`GET /api/admin/requests` answers `401` to an anonymous request and does *not* redirect —
+that 401 is the password, not Access. Access locks the anteroom; the password locks the safe.
+Do not "simplify" it away because Access exists.
+
+The token is kept in **`sessionStorage`, never `localStorage`**. The value stored is the admin
+password itself — it is sent verbatim as the bearer — so this is a real choice, not a detail.
+It survives a reload, which was the actual annoyance, and is never shared between tabs or synced
+between machines.
+
+**It is not, however, "gone when you close the browser".** Chrome and Firefox both write
+sessionStorage into the browser profile so that tab restore and crash recovery work, so the
+password can sit there in cleartext and can come back after a restart. localStorage would still
+be worse — permanent and shared across every tab — but do not restate the stronger claim. The
+**Forget password** button is what actually drops it, and it blanks the panel too: customer
+messages, payload thumbnails, derived addresses and wallet balances are already rendered, and
+they are exactly what you are trying not to leave up.
+
+**A guard that returns silently is worse than no guard.** `fetchAlerts` and the wallet scanner
+both used to `return;` when there was no token, above the button-disable and above every write —
+so the Refresh button did nothing and the previous alert list stayed on screen. A panel whose job
+is showing stranded customer money must not assert "all clear" from a stale render.
+
+**A rejected token is cleared in one place.** 14 call sites send the token and exactly two ever
+looked at a `401`. That was survivable while the token lived in memory and died on reload;
+persisting it means a mistyped or rotated password would stick and the other 12 calls would fail
+silently for as long as the tab stayed open. `fetch` is therefore **shadowed inside the
+`DOMContentLoaded` closure** — `window.fetch` is untouched — and forgets the token on any `401`
+whose URL contains `/api/admin`. A 401 from anywhere else means nothing about this password and
+is ignored. If you add a call site, you get this for free; if you replace the shadow with the
+global, you lose it silently.
+
+`?v=N` on `admin.js` and `admin.css` must be bumped whenever either changes. They are now
+long-cached like every other versioned URL, and Cloudflare caches them at the edge too — a
+change without a bump is invisible for a week. That has already happened once: after the
+2026-08-12 deploy the edge still served `admin.js?v=2` with the pre-deploy headers, and bumping
+the version was the fix that needed no dashboard.
 
 ## What the page says it is
 
@@ -932,7 +976,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **682 assertions across twelve files**, all offline:
+`/home/admin/op_returner_tests/` — **713 assertions across twelve files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -960,13 +1004,14 @@ There is no test runner in the repo. Verification lives outside it, in
   every refusal is an identical null so it is not an oracle; both queries are built from the
   same `WALL_WHERE_SQL`; and the **shipped** `wallImage` from `frontend/js/app.js` builds the
   right URL. Uses `fixtures/sample_200x200.webp`.
-- `operator_view.js` — 74. What the operator and the customer can actually see: the
+- `operator_view.js` — 105. What the operator and the customer can actually see: the
   hand-rolled multipart body byte for byte, every refusal `sendPhoto` makes before spending a
   rate-limit slot, one Telegram call per notification, the text fallback, the admin panel's
   allowlist checked against the wall's, the thumbnail being appended rather than interpolated,
   the details modal painting before the block explorer is asked, and the fee surcharge shown
-  matching the one `queue.js` charges across all six address types. `axios.post` is stubbed
-  before `notifier.js` is required.
+  matching the one `queue.js` charges across all six address types, and the admin token being
+  remembered in sessionStorage, restored on reload, and thrown away on a 401 from the admin API
+  but not from anywhere else. `axios.post` is stubbed before `notifier.js` is required.
 - `site_delivery.js` — 77. How the site is served and what it says about itself: the HTTPS
   redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
   cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the

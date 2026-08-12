@@ -16,8 +16,97 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveConfigBtn = document.getElementById('save-config-btn');
 
     const API_BASE_URL = '/api/admin';
-    let adminPassword = null;
     let allRequests = []; // Store requests locally
+
+    // --- The admin token ---------------------------------------------------
+    //
+    // Cloudflare Access now guards /admin, but it deliberately does NOT guard /api/admin —
+    // putting it there would hand the panel's own fetch() calls a login page instead of
+    // JSON. So this password is still the only thing in front of the endpoints that refund,
+    // fulfil and delete. It is not redundant with Access; Access locks the anteroom.
+    //
+    // sessionStorage, NOT localStorage. The value stored here IS the admin password — it is
+    // sent verbatim as the bearer token — so this is a real choice, not a detail.
+    //
+    // Be honest about what sessionStorage does and does not give you: it is per tab and is
+    // never synced between machines, but it is NOT purely in memory. Chrome and Firefox both
+    // write it to the browser profile so that "continue where you left off" and crash
+    // recovery can restore a tab, and a restored tab gets its sessionStorage back. So the
+    // password can sit in the profile directory in cleartext and can survive a restart.
+    // localStorage would be worse — permanent and shared across every tab — but "gone when
+    // you close the browser" is not a promise this can keep. Use "Forget password" for that.
+    //
+    // What it does buy, which is what was actually asked for: no prompt on every reload.
+    const TOKEN_KEY = 'satwire_admin_token';
+    let adminPassword = null;
+    try { adminPassword = sessionStorage.getItem(TOKEN_KEY) || null; } catch { /* storage blocked */ }
+
+    function rememberToken(value) {
+        adminPassword = value || null;
+        try {
+            if (adminPassword) sessionStorage.setItem(TOKEN_KEY, adminPassword);
+            else sessionStorage.removeItem(TOKEN_KEY);
+        } catch { /* private mode: fall back to memory only, which is the old behaviour */ }
+    }
+
+    const forgetToken = () => rememberToken(null);
+
+    /**
+     * fetch, shadowed for this closure only — window.fetch is untouched.
+     *
+     * 14 call sites send the token; exactly TWO ever looked at a 401. That was survivable
+     * while the token lived in memory and died on reload. Persisting it changes that: a
+     * mistyped or rotated password would stick, and the other 12 calls would fail silently
+     * for as long as the tab stayed open, with no way back but clearing storage by hand.
+     *
+     * So invalidation happens in one place instead of fourteen. Only a 401 from OUR admin
+     * API clears it — a 401 from anywhere else means nothing here. Every authenticated call
+     * goes through API_BASE_URL or WALLET_API, and both contain '/api/admin', so the test
+     * covers all fourteen; a new call site gets it for free. Reaching for window.fetch or
+     * realFetch directly would silently opt out.
+     */
+    const realFetch = window.fetch.bind(window);
+    function fetch(input, init) {
+        return realFetch(input, init).then((res) => {
+            if (res.status === 401) {
+                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                if (url.includes('/api/admin')) forgetToken();
+            }
+            return res;
+        });
+    }
+
+    // A deliberate way to drop the token without closing the browser — for handing the
+    // machine to somebody, or after a password change.
+    //
+    // Dropping the token alone would not be enough: everything already fetched stays on
+    // screen. Customer messages, payload thumbnails, derived addresses and wallet balances
+    // are exactly what you are trying not to leave up, so the panel is blanked too. No
+    // re-prompt here — the next action asks, which is what the labels below promise.
+    const LOCKED = '<p class="muted">Locked. Press Refresh to enter the password again.</p>';
+    function lockPanel() {
+        forgetToken();
+        allRequests = [];
+        requestsBody.innerHTML = '<tr><td colspan="7">Locked. Press Refresh to enter the password again.</td></tr>';
+        alertsBody.innerHTML = LOCKED;
+        alertsBadge.textContent = '';
+        alertsBadge.className = 'alerts-badge';
+        for (const id of ['wallet-branches', 'scan-result', 'watchlist-body', 'event-log-body']) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = LOCKED;
+        }
+        for (const id of ['wallet-total', 'wallet-yours', 'wallet-customer', 'wallet-unconfirmed']) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = '—';
+        }
+        for (const id of ['wallet-total-fiat', 'wallet-checked']) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = '';
+        }
+    }
+
+    const signOutBtn = document.getElementById('sign-out-btn');
+    if (signOutBtn) signOutBtn.addEventListener('click', lockPanel);
 
     // Load initial config (public)
     fetch('/api/config/limits')
@@ -33,7 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
     saveConfigBtn.addEventListener('click', async () => {
         if (!adminPassword) {
             const input = prompt("Please enter the admin password to save settings:");
-            if (input) adminPassword = input.trim();
+            if (input) rememberToken(input.trim());
             else return;
         }
 
@@ -54,7 +143,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (response.status === 401) {
-                adminPassword = null;
+                // fetch() above has already forgotten the token; this only reports it.
                 alert("Unauthorized! Incorrect password.");
                 return;
             }
@@ -90,7 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!adminPassword) {
             const input = prompt("Please enter the admin password:");
             if (input) {
-                adminPassword = input.trim(); // Trim whitespace/newlines
+                rememberToken(input.trim()); // Trim whitespace/newlines
             } else {
                 requestsBody.innerHTML = `<tr><td colspan="7">Password is required to view requests.</td></tr>`;
                 return;
@@ -105,7 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (response.status === 401) {
-                adminPassword = null; // Clear password on failure so user can retry
+                // fetch() above has already forgotten the token, so a retry re-prompts.
                 throw new Error('Unauthorized! Incorrect password.');
             }
             if (!response.ok) {
@@ -378,7 +467,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // Alerts come from the database, so they persist across restarts. The event log is
     // an in-memory tail of what the server has been warning about since it started.
     async function fetchAlerts() {
-        if (!adminPassword) return;
+        // NOT a bare return. This guard sits above the button-disable and above every write,
+        // so returning silently left the previous alert list on screen with an inert Refresh
+        // button — a panel whose job is showing stranded customer money asserting "all clear"
+        // from a stale render.
+        if (!adminPassword) {
+            alertsBody.innerHTML = '<p class="muted">Enter the admin password to see warnings — press Refresh on Requests.</p>';
+            alertsBadge.textContent = '';
+            alertsBadge.className = 'alerts-badge';
+            return;
+        }
 
         refreshAlertsBtn.disabled = true;
         refreshAlertsBtn.textContent = 'Loading...';
@@ -783,7 +881,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const watchlistBody = document.getElementById('watchlist-body');
 
     scanBtn.addEventListener('click', async () => {
-        if (!adminPassword) return;
+        if (!adminPassword) {
+            scanResult.innerHTML = '<div class="scan-message is-error">Enter the admin password first — press Refresh on Requests.</div>';
+            return;
+        }
         const path = scanPathInput.value.trim();
         if (!path) {
             scanResult.innerHTML = '<div class="scan-message is-error">Enter a derivation path first.</div>';

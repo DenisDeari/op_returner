@@ -9,11 +9,16 @@
          security control — an auth layer in front of the path is. -->
     <meta name="robots" content="noindex, nofollow, noarchive">
     <title>SatWire Admin</title>
-    <link rel="stylesheet" href="admin.css?v=3">
+    <link rel="stylesheet" href="admin.css?v=4">
 </head>
 <body>
     <div class="container">
-        <h1>SatWire &mdash; Admin</h1>
+        <div class="admin-head">
+            <h1>SatWire &mdash; Admin</h1>
+            <!-- The token is kept in sessionStorage, so it survives a reload but not a
+                 closed browser. This is the deliberate way to drop it in between. -->
+            <button id="sign-out-btn" class="btn btn-refresh" type="button">Forget password</button>
+        </div>
 
         <!-- Warnings: anything holding customer funds or needing attention -->
         <div id="alerts-container" class="section">
@@ -169,6 +174,6 @@
         </div>
     </div>
 
-    <script src="admin.js?v=3"></script>
+    <script src="admin.js?v=4"></script>
 </body>
 </html>
