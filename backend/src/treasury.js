@@ -1,18 +1,64 @@
 // backend/src/treasury.js
-// Self-funded OP_RETURN transactions using a dedicated treasury address.
-// Uses a fixed derivation path (m/84'/0'/0'/2/0) separate from user request addresses.
+//
+// Self-funded OP_RETURN transactions, paid for out of the treasury at m/84'/0'/0'/2/0.
+//
+// This began as a convenience path for the operator's own free proofs, where the only
+// money at risk was the operator's and a failure meant trying again by hand. It is being
+// made ready to carry customer orders: when a customer pays over a rail that produces no
+// spendable UTXO — Lightning — the message still has to reach the chain, and the only
+// wallet that can pay for it is this one.
+//
+// That changes what this file has to survive. A free proof that fails is an inconvenience;
+// a paid order that fails is money taken for a message nobody published. Everything below
+// exists because op_return_creator.js learned it the expensive way first.
+//
+// The treasury is a hot wallet. Its key sits in the same process as the one that spends
+// it, one address holds the whole balance, and nothing here can un-spend a transaction.
+// Guard rails are therefore stated as refusals, not as warnings.
 
-const axios = require('axios');
+const crypto = require('crypto');
 const bitcoin = require('bitcoinjs-lib');
-const { BIP32Factory } = require('bip32');
-const ecc = require('tiny-secp256k1');
 const appConfig = require('./config');
+const chainProviders = require('./chain_providers');
 const txSizing = require('./tx_sizing');
-
-const bip32 = BIP32Factory(ecc);
+const payload = require('./payload');
+// The builder backstop, taken from the module that owns it rather than restated. A
+// second copy of this number is a second thing to forget: routes/admin.js clamps the
+// configurable limits against this same constant so a settings value can never be quoted
+// to a customer and then refused after they have paid.
+const { MAX_ON_CHAIN_PAYLOAD_BYTES } = require('./op_return_creator');
 
 // Dedicated treasury path — never overlaps with user request paths (m/84'/0'/0'/0/index)
+// or with the change branch (m/84'/0'/0'/1/index). wallet_scan.js hardcodes this same
+// path with fixedReceiveIndex 0, because a "next unused" address would be money this
+// service cannot reach.
 const TREASURY_PATH = "m/84'/0'/0'/2/0";
+
+/**
+ * Failure reasons inherent to the request itself. Retrying them unchanged can never
+ * succeed. Everything not in this set is transient: a provider outage, a treasury that
+ * needs topping up, an unconfirmed chain that a block will clear.
+ *
+ * The distinction is the caller's whole decision. A permanent failure means stop and
+ * involve a human; a transient one means the reconcile pass should try again.
+ */
+const PERMANENT_FAILURES = new Set([
+    'invalid_message',
+    'invalid_target_address',
+    'exceeds_max_spend',
+    'signature_validation_failed',
+    'fee_below_relay_minimum',
+    'broadcast_rejected',
+    // Two different messages under one request id. Retrying cannot resolve which one the
+    // caller meant, and guessing publishes something nobody asked for, permanently.
+    'idempotency_key_reused',
+]);
+
+function failure(reason, detail) {
+    const permanent = PERMANENT_FAILURES.has(reason);
+    console.error(`[Treasury] FAILED (${reason}, permanent=${permanent}): ${detail}`);
+    return { ok: false, reason, detail: detail || null, permanent };
+}
 
 /**
  * Derives the treasury P2WPKH address from the HD wallet root node.
@@ -24,106 +70,429 @@ function getTreasuryAddress(rootNode, network) {
     return address;
 }
 
-/**
- * Fetches confirmed + unconfirmed UTXOs for the treasury address from BlockCypher.
- */
-async function fetchTreasuryUtxos(address, config) {
-    const url = `${config.BLOCKCYPHER_API_BASE}/addrs/${address}?unspentOnly=true&token=${config.BLOCKCYPHER_TOKEN}`;
-    console.log(`[Treasury] Fetching UTXOs for ${address}...`);
-    const response = await axios.get(url);
-    const data = response.data;
+// --- What we know that the providers do not --------------------------------
+//
+// A block explorer's idea of which outputs are unspent lags our own by however long it
+// takes a transaction to propagate and be indexed. Two treasury spends a few seconds
+// apart therefore both see the same UTXO as available, and the second one builds a
+// transaction that conflicts with the first: same input, different output set. Only one
+// of them can ever confirm, so the second message is simply never published.
+//
+// This is not hypothetical for a Lightning-funded service. Invoices settle in under a
+// second and two customers paying at once is an ordinary Tuesday, where two customers
+// paying on-chain in the same block is not.
+//
+// So the process keeps its own ledger of what it has just done, and unions it with what
+// the providers report:
+//
+//   spentOutpoints  — inputs we have successfully broadcast a spend of. Removed from the
+//                     candidate set even while a provider still lists them as unspent.
+//   pendingChange   — change outputs we created that no provider has indexed yet. Added
+//                     to the candidate set so a second order can be published immediately
+//                     rather than waiting for a block.
+//
+// Both are memory only and both are deliberately allowed to be lost. A restart drops back
+// to the providers' view, which is stale but never wrong in the dangerous direction: it
+// under-reports what we can spend, so the worst case is a transient "treasury has no
+// spendable funds" that clears when the last transaction confirms.
+const spentOutpoints = new Map(); // "txid:vout" -> recorded at (epoch ms)
+const pendingChange = new Map();  // "txid:vout" -> { txId, vout, value, depth, at }
 
-    // BlockCypher returns confirmed refs in txrefs, unconfirmed in unconfirmed_txrefs
-    const confirmed = (data.txrefs || []).filter(ref => !ref.spent);
-    const unconfirmed = (data.unconfirmed_txrefs || []).filter(ref => !ref.spent);
+// How long a ledger entry is trusted. Long enough to cover a mempool backlog at the 2
+// sat/vB floor, short enough that a transaction dropped from every mempool eventually
+// stops being counted as money we have. Both maps are pruned on every spend.
+const LEDGER_TTL_MS = 12 * 60 * 60 * 1000;
 
-    if (unconfirmed.length > 0) {
-        console.warn(`[Treasury] ${unconfirmed.length} unconfirmed UTXO(s) found. Using confirmed only for safety.`);
+// Transactions we signed and tried to broadcast but never got a clean answer for, keyed
+// by the caller's own request id.
+//
+// This exists because the obvious reasoning about retries is WRONG. Selection is
+// deterministic, so it is tempting to say a lost broadcast response is harmless: the
+// retry rebuilds the identical transaction and the provider answers "already known".
+// That holds only while the chain's view is unchanged — and if the broadcast actually
+// landed, the chain's view is precisely what changed. The retry then reads the input as
+// spent, finds the change output instead, and builds a DIFFERENT transaction carrying the
+// same message. Both confirm. The message is published twice and the treasury pays two
+// fees: about 500 sats for text, about 40,000 for a 20,000-byte image at the floor.
+//
+// So a retry re-broadcasts the bytes it already signed rather than building new ones. A
+// caller that supplies no id gets no protection, which is why the Lightning work must
+// pass one — and why the durable version of this is a row written before the broadcast,
+// not a map that a restart forgets.
+const attemptedSpends = new Map(); // request id -> { txHex, txId, fingerprint, record, result, at }
+
+// Bitcoin Core's default mempool policy accepts at most 25 unconfirmed ancestors (and
+// 101 kvB of them). Publishing stops well short of that: the deeper the chain, the more
+// of the operator's money is riding on one unconfirmed parent, and at the 2 sat/vB floor
+// a chain that long can sit for hours.
+const MAX_UNCONFIRMED_DEPTH = 10;
+
+// Never build a transaction with more inputs than this. Each one costs 68 vBytes, so the
+// cap is really a cap on how much a fragmented treasury can quietly inflate a fee.
+const MAX_INPUTS = 10;
+
+function outpointKey(txId, vout) {
+    return `${txId}:${vout}`;
+}
+
+function pruneLedger(now = Date.now()) {
+    for (const [key, at] of spentOutpoints) {
+        if (now - at > LEDGER_TTL_MS) spentOutpoints.delete(key);
     }
+    for (const [key, entry] of pendingChange) {
+        if (now - entry.at > LEDGER_TTL_MS) pendingChange.delete(key);
+    }
+    for (const [key, entry] of attemptedSpends) {
+        if (now - entry.at > LEDGER_TTL_MS) attemptedSpends.delete(key);
+    }
+}
 
-    console.log(`[Treasury] Found ${confirmed.length} confirmed UTXO(s). Balance: ${confirmed.reduce((s, u) => s + u.value, 0)} sats`);
-    return confirmed;
+/** What makes two calls "the same request": the same bytes, to the same place, at the same price. */
+function requestFingerprint({ message, payloadKind, targetAddress, feeRate, amountToSend }) {
+    return crypto.createHash('sha256')
+        .update(String(message ?? '')).update('\u0000')
+        .update(String(payloadKind ?? '')).update('\u0000')
+        .update(String(targetAddress ?? '')).update('\u0000')
+        .update(String(feeRate ?? '')).update('\u0000')
+        .update(String(amountToSend ?? ''))
+        .digest('hex');
 }
 
 /**
- * Creates and broadcasts a self-funded OP_RETURN transaction from the treasury address.
- * Change is returned to the treasury address.
+ * Records a broadcast that actually happened: its inputs are gone, and its change is
+ * spendable by the next transaction before any provider has indexed it.
  *
- * @param {string} message - UTF-8 message to embed
- * @param {string|null} targetAddress - Optional recipient address
- * @param {number|null} feeRate - sats/vByte (defaults to config.DEFAULT_FEE_RATE)
- * @param {number|null} amountToSend - Sats to send to targetAddress
- * @param {object} rootNode - BIP32 HD wallet root node
- * @param {object} config - App config
- * @returns {Promise<{txId, txHex, treasuryAddress, fee, inputValue, changeValue}>}
+ * Called ONLY after a provider has accepted the transaction. A broadcast that failed
+ * must leave the ledger untouched — see the note on determinism in
+ * createSelfFundedOpReturn.
  */
-async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountToSend, rootNode, config) {
-    const network = config.NETWORK;
-    const treasuryAddress = getTreasuryAddress(rootNode, network);
+function recordBroadcast({ inputs, txId, changeVout, changeValue, depth }) {
+    const now = Date.now();
+    for (const input of inputs) {
+        spentOutpoints.set(outpointKey(input.txId, input.vout), now);
+        pendingChange.delete(outpointKey(input.txId, input.vout));
+    }
+    if (changeVout !== null && changeValue > 0) {
+        pendingChange.set(outpointKey(txId, changeVout), {
+            txId, vout: changeVout, value: changeValue, depth, at: now,
+        });
+    }
+}
 
-    console.log(`[Treasury] Creating self-funded OP_RETURN. Treasury: ${treasuryAddress}`);
+// --- Reading what the treasury holds ---------------------------------------
 
-    // --- Fetch UTXOs ---
-    const utxos = await fetchTreasuryUtxos(treasuryAddress, config);
-    if (!utxos || utxos.length === 0) {
-        throw new Error(`Treasury has no confirmed UTXOs. Please fund: ${treasuryAddress}`);
+/**
+ * The treasury's unspent outputs, as the chain sees them.
+ *
+ * Esplora first, BlockCypher last, which is the opposite of the broadcast order and
+ * deliberate: BlockCypher's getUnspent reads only `txrefs` and so reports CONFIRMED
+ * outputs only (chain_providers.js), while the Esplora hosts report mempool outputs too.
+ * A treasury that has just published is holding its balance in an unconfirmed change
+ * output, and a view that cannot see it reports a funded wallet as empty.
+ *
+ * Cooldown reordering is on, because this is a read. It is never on for the broadcast —
+ * a host being slow must not get to decide which host declares a transaction invalid.
+ *
+ * @returns {Promise<{ok: true, utxos: object[], provider: string} | {ok: false, reason: string}>}
+ */
+async function fetchTreasuryUtxos(address, config) {
+    const result = await chainProviders.getUnspent(address, config, {
+        onlyProviders: ['blockstream.info', 'mempool.space', 'blockcypher'],
+        useCooldown: true,
+    });
+    if (!result.ok) return { ok: false, reason: result.reason };
+
+    const utxos = (result.utxos || []).map((u) => ({
+        txId: u.txId,
+        vout: u.vout,
+        value: u.value,
+        confirmed: (u.confirmations || 0) >= 1,
+    }));
+    console.log(`[Treasury] ${utxos.length} UTXO(s) via ${result.provider}: `
+        + `${utxos.filter((u) => u.confirmed).length} confirmed, `
+        + `${utxos.filter((u) => !u.confirmed).length} unconfirmed, `
+        + `${utxos.reduce((s, u) => s + u.value, 0)} sats total.`);
+    return { ok: true, utxos, provider: result.provider };
+}
+
+/**
+ * The candidate set a spend may draw on: what the chain reports, minus what this process
+ * has already spent, plus the change it has created and the chain has not yet seen.
+ *
+ * Ordering is deterministic and confirmed-first. Determinism matters more than it looks:
+ * if a broadcast's HTTP response is lost after the network accepted the transaction, the
+ * retry rebuilds from the same candidates in the same order, produces the byte-identical
+ * transaction, and the provider answers "already known" — which the classifier reads as
+ * success. Sort by anything unstable and the retry becomes a conflicting double-spend
+ * instead.
+ */
+function buildCandidates(chainUtxos) {
+    pruneLedger();
+
+    const seen = new Set();
+    const candidates = [];
+
+    for (const u of chainUtxos) {
+        const key = outpointKey(u.txId, u.vout);
+        if (spentOutpoints.has(key)) continue;
+        seen.add(key);
+        // Once a provider indexes our own change, it reports it as just another
+        // unconfirmed output — and an output we made is one we know the ancestry of. Take
+        // the depth we recorded rather than the depth we would guess, or the chain we are
+        // counting resets to 1 the moment the mempool catches up with us and the cap stops
+        // capping anything.
+        //
+        // A foreign unconfirmed output (an operator top-up, say) carries an ancestor count
+        // we cannot know. Treated as depth 1: optimistic, and self-correcting — if the real
+        // chain is too long the broadcast is refused as "too-long-mempool-chain", which
+        // classifies transient and clears with a block.
+        const known = pendingChange.get(key);
+        candidates.push({ ...u, depth: u.confirmed ? 0 : (known ? known.depth : 1) });
     }
 
-    // Pick the largest UTXO for simplicity
-    utxos.sort((a, b) => b.value - a.value);
-    const utxo = utxos[0];
-    const inputValue = utxo.value;
+    for (const [key, entry] of pendingChange) {
+        if (spentOutpoints.has(key) || seen.has(key)) continue;
+        candidates.push({
+            txId: entry.txId, vout: entry.vout, value: entry.value,
+            confirmed: false, depth: entry.depth,
+            // Marked because these are the only candidates that might not exist. A chain
+            // UTXO was reported by a provider; this one is our own optimism about a
+            // transaction that may since have been evicted from every mempool. When a
+            // broadcast comes back saying an input is already spent, this flag is what
+            // separates "our guess was wrong" from "the chain's answer was wrong".
+            fromLedger: true,
+        });
+    }
 
-    // --- Estimate fees ---
-    const opReturnBuffer = Buffer.from(message, 'utf8');
-    const opReturnOutput = bitcoin.payments.embed({ data: [opReturnBuffer] });
+    return candidates.sort((a, b) => {
+        if (a.confirmed !== b.confirmed) return a.confirmed ? -1 : 1;
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        if (a.value !== b.value) return b.value - a.value;
+        if (a.txId !== b.txId) return a.txId < b.txId ? -1 : 1;
+        return a.vout - b.vout;
+    });
+}
 
-    // Validate and size the recipient output before pricing anything, exactly as the
-    // public path does: both the fee and the dust limit depend on its script type.
+// --- Sizing -----------------------------------------------------------------
+
+// Covers the half-vByte of segwit marker/flag rounding and the one-byte spread between a
+// low-R and a high-R signature per input. op_return_creator.js carries the same margin
+// for the same reason; this path had none at all until 2026-08-08, and it is the path
+// with no customer UTXO to absorb an error.
+const FEE_SAFETY_VBYTES = 4;
+
+/**
+ * The estimated vsize of a treasury transaction: overhead, N P2WPKH inputs, the OP_RETURN
+ * output, an optional recipient output, and the change output back to the treasury.
+ *
+ * Exported so the harness can assert it against a real signed transaction. The estimate
+ * must never come out below the real size — that is what the post-signing check enforces,
+ * and what a customer's money would otherwise pay for.
+ */
+function estimateTreasuryVBytes(inputCount, payloadBytes, targetScript, { includeChange = true } = {}) {
+    let vbytes = 10.5 + 68 * inputCount + txSizing.opReturnOutputVBytes(payloadBytes) + FEE_SAFETY_VBYTES;
+    if (targetScript) vbytes += txSizing.outputVBytes(targetScript);
+    if (includeChange) vbytes += 31; // change is always P2WPKH, back to the treasury
+    return Math.ceil(vbytes);
+}
+
+/**
+ * Chooses inputs largest-first until they cover the fee and the recipient output, growing
+ * the fee as each input is added.
+ *
+ * Pure, and exported for the harness: the interesting cases (a treasury that cannot pay,
+ * one that needs three inputs, one whose only funds are an unconfirmed chain too deep to
+ * build on) are all decided here, before anything is signed.
+ */
+function selectInputs(candidates, { payloadBytes, targetScript, targetValue, feeRate }) {
+    const usable = candidates.filter((c) => c.depth < MAX_UNCONFIRMED_DEPTH);
+
+    function greedy(ordered) {
+        const chosen = [];
+        let total = 0;
+        for (const candidate of ordered) {
+            if (chosen.length >= MAX_INPUTS) break;
+            chosen.push(candidate);
+            total += candidate.value;
+            const vbytes = estimateTreasuryVBytes(chosen.length, payloadBytes, targetScript);
+            const fee = vbytes * feeRate;
+            if (total >= fee + targetValue) return { ok: true, chosen, total, fee, vbytes };
+        }
+        return { ok: false, chosen, total };
+    }
+
+    // First pass in the candidate order, which prefers confirmed money and shallow chains.
+    const preferred = greedy(usable);
+    if (preferred.ok) return preferred;
+
+    // Second pass by value alone. The input cap can end the first pass with a covering
+    // output still unexamined: anyone can send ten 294-sat outputs to the treasury address
+    // — it is the reused change address of every treasury spend, so it is on chain — and
+    // those ten confirmed crumbs then sort ahead of an unconfirmed change output holding
+    // the entire balance. The greedy pass spends all ten slots on 2,940 sats and gives up,
+    // reporting an unfunded treasury while the address holds millions. For about 3,000
+    // sats an attacker buys one publication per block; without Lightning that is an
+    // annoyance, with it a paid order that fails on money the service has.
+    //
+    // Ordering by value is still deterministic, which the lost-response retry depends on.
+    const byValue = [...usable].sort((a, b) => {
+        if (a.value !== b.value) return b.value - a.value;
+        if (a.confirmed !== b.confirmed) return a.confirmed ? -1 : 1;
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        if (a.txId !== b.txId) return a.txId < b.txId ? -1 : 1;
+        return a.vout - b.vout;
+    });
+    const byLargest = greedy(byValue);
+    if (byLargest.ok) return byLargest;
+
+    const blockedByDepth = candidates.length > 0 && usable.length === 0;
+    return {
+        ok: false,
+        chosen: preferred.chosen,
+        total: preferred.total,
+        reason: blockedByDepth ? 'unconfirmed_chain_too_deep' : 'insufficient_treasury_funds',
+        // Everything the address actually holds that we could have spent — not the value
+        // of whichever inputs the search happened to pick. Telling an operator to top up a
+        // treasury that is funded sends them looking in the wrong place entirely.
+        spendableTotal: usable.reduce((sum, c) => sum + c.value, 0),
+        candidateCount: usable.length,
+        // What it would have needed, for a message a human can act on.
+        needed: estimateTreasuryVBytes(Math.max(1, preferred.chosen.length), payloadBytes, targetScript)
+            * feeRate + targetValue,
+    };
+}
+
+// --- One spend at a time ----------------------------------------------------
+//
+// Everything from "which outputs are unspent" to "the broadcast was accepted" runs under
+// this lock. Reading the candidate set outside it is exactly the race the ledger exists
+// to close: two callers would both read, both choose the same input, and the second
+// transaction would be a conflicting double-spend of the first.
+//
+// The lock is per process, which is all the container has (one node process, one
+// container in docker-compose.yml). If this service is ever run as more than one
+// instance against the same seed, this is the thing that breaks first, and the fix is a
+// database claim rather than a promise chain.
+let queueTail = Promise.resolve();
+
+function withTreasuryLock(fn) {
+    const result = queueTail.then(fn);
+    // The queue must survive a rejection, or one failed spend deadlocks every later one.
+    queueTail = result.then(() => {}, () => {});
+    return result;
+}
+
+/**
+ * Creates, signs and broadcasts a self-funded OP_RETURN transaction. Change returns to
+ * the treasury address.
+ *
+ * Returns a classified result rather than throwing, so a caller can tell "top the
+ * treasury up" from "this message can never be published" without parsing an error
+ * string. This mirrors op_return_creator.js, which the reconcile pass already knows how
+ * to drive.
+ *
+ * Takes a request-shaped object rather than a list of positional arguments, the same
+ * shape op_return_creator.js's createOpReturnTransaction takes, so a caller that has a
+ * row in hand can drive either builder without reshuffling its fields.
+ *
+ * @param {{message: string, payloadKind?: string, targetAddress?: string,
+ *   feeRate?: number, amountToSend?: number, id?: string}} request
+ * @returns {Promise<{ok: true, txId, txHex, treasuryAddress, fee, pricedFee, vBytes,
+ *   inputValue, changeValue, inputCount, changePath, provider, alreadyBroadcast}
+ *   | {ok: false, reason, detail, permanent}>}
+ */
+async function createSelfFundedOpReturn(request, rootNode, config) {
+    return withTreasuryLock(() => buildAndBroadcast(request || {}, rootNode, config));
+}
+
+async function buildAndBroadcast(request, rootNode, config) {
+    const { message, payloadKind, targetAddress, feeRate, amountToSend } = request;
+    // Module defaults, overridden by whatever the caller passed. treasury.js used to read
+    // NETWORK from the argument and DUST_LIMIT_SATS/MIN_EFFECTIVE_FEE_RATE from the module
+    // singleton, so a caller supplying a config got real values for half its arithmetic
+    // and its own for the other half. Merging removes the split rather than documenting it.
+    const cfg = { ...appConfig, ...(config || {}) };
+    const network = cfg.NETWORK;
+    const treasuryAddress = getTreasuryAddress(rootNode, network);
+
+    // --- Have we already signed this? --------------------------------------
+    // See the note on attemptedSpends. A retry after an unclear broadcast must re-send the
+    // bytes it signed, never build fresh ones from a chain view that the first attempt may
+    // itself have changed.
+    pruneLedger();
+    const fingerprint = requestFingerprint(request);
+    const prior = request.id ? attemptedSpends.get(request.id) : null;
+    if (prior) {
+        if (prior.fingerprint !== fingerprint) {
+            // The same id carrying different content is an upstream bug, and the two
+            // possible responses are "publish both" or "publish neither". Neither is right,
+            // but only one of them is reversible.
+            return failure('idempotency_key_reused',
+                `request ${request.id} was already signed with different content; refusing to publish a second transaction under the same id`);
+        }
+        console.log(`[Treasury] Re-broadcasting the transaction already signed for ${request.id} (${prior.txId}) rather than building a new one.`);
+        const again = await chainProviders.broadcastTransaction(prior.txHex, config, prior.txId);
+        if (again.ok) {
+            recordBroadcast(prior.record);
+            attemptedSpends.delete(request.id);
+            return { ...prior.result, provider: again.provider, alreadyBroadcast: !!again.alreadyBroadcast };
+        }
+        if (again.inputsSpent) {
+            // Something else took an input, so those bytes can never confirm. Drop them and
+            // let the next attempt build against a fresh read.
+            attemptedSpends.delete(request.id);
+            return failure('treasury_inputs_stale',
+                `${again.reason} (the transaction signed earlier for ${request.id} can no longer confirm; it will be rebuilt)`);
+        }
+        return failure(
+            again.permanent ? 'broadcast_rejected' : 'broadcast_unavailable',
+            `${again.reason} (re-broadcasting ${prior.txId})`
+        );
+    }
+
+    // --- The payload -------------------------------------------------------
+    // Through payload.js, exactly as op_return_creator.js does it, and for the reason the
+    // top of CLAUDE.md is about: for an image row `message` holds BASE64, and the chain
+    // must get the decoded bytes. Embedding the stored string would publish base64 ASCII
+    // instead of a picture and price it a third too high — the same stored-length-versus
+    // -on-chain-length inversion, in the one builder that had never been taught the
+    // difference.
+    //
+    // validate() is called and not just decode(): it is what enforces that the bytes match
+    // the media type they declare. Nothing else on this path enforces it, and a row whose
+    // payloadKind disagrees with its bytes reaches the wall and the admin panel, both of
+    // which build a `data:` URL from the DECLARED kind.
+    const payloadCheck = payload.validate(message, payloadKind, {
+        maxTextBytes: MAX_ON_CHAIN_PAYLOAD_BYTES,
+        maxImageBytes: MAX_ON_CHAIN_PAYLOAD_BYTES,
+    });
+    if (!payloadCheck.ok) {
+        return failure('invalid_message', payloadCheck.error);
+    }
+    let payloadBuffer;
+    try {
+        payloadBuffer = payload.decode(message, payloadKind);
+    } catch (e) {
+        return failure('invalid_message', `payload did not decode: ${e.message}`);
+    }
+    const opReturnOutput = bitcoin.payments.embed({ data: [payloadBuffer] });
+
+    // --- The recipient -----------------------------------------------------
+    // Resolved before anything is priced: both the fee and the dust limit depend on the
+    // script this produces.
     let targetScript = null;
     if (targetAddress) {
         try {
             targetScript = bitcoin.address.toOutputScript(targetAddress, network);
         } catch (e) {
-            throw new Error(`Invalid targetAddress for this network: ${e.message}`);
+            return failure('invalid_target_address', `${targetAddress}: ${e.message}`);
         }
     }
 
-    // input + opreturn + change (P2WPKH) + overhead, plus the recipient output measured
-    // from its own script — a flat 31 undercounts a P2WSH one by 12 vBytes.
-    //
-    // The OP_RETURN output comes from txSizing, the same function the quoting and building
-    // paths use. This was `opReturnScriptLength + 9`, which assumes a one-byte script
-    // varint and so under-counts by 2 vBytes for any script over 252 bytes. Unlike
-    // op_return_creator.js there is no FEE_SAFETY_VBYTES here to absorb it, so the built
-    // fee landed just under the requested rate — at the default rate of 2 that is a
-    // transaction priced fractionally below the floor the whole service is built around.
-    // Reachable today: max_payload_size is 1000.
-    //
-    // The overhead is 10.5, not 10: version(4) + input count(1) + output count(1) +
-    // locktime(4), plus the segwit marker and flag, which are 2 witness bytes and so half
-    // a vByte. Every other estimator in the service uses 10.5. FEE_SAFETY_VBYTES then
-    // covers the rounding, exactly as in op_return_creator.js — without it this path was
-    // the only one building with no headroom at all.
-    const FEE_SAFETY_VBYTES = 4;
-    let estimatedVBytes = 68 + txSizing.opReturnOutputVBytes(opReturnBuffer.length) + 31 + 10.5 + FEE_SAFETY_VBYTES;
-    if (targetScript) estimatedVBytes += txSizing.outputVBytes(targetScript);
-    estimatedVBytes = Math.ceil(estimatedVBytes);
-
-    // Never build below the effective floor. A transaction sitting exactly on the minimum
-    // relay fee is rejected as non-standard, which is why the floor is 2 and not 1 — and
-    // this path had no floor at all, so a caller passing feeRate 1 produced a transaction
-    // the network would refuse. The customer path has enforced this since 2026-08-06.
-    const requestedFeeRate = feeRate || appConfig.DEFAULT_FEE_RATE;
-    const effectiveFeeRate = Math.max(requestedFeeRate, appConfig.MIN_EFFECTIVE_FEE_RATE);
-    if (effectiveFeeRate !== requestedFeeRate) {
-        console.warn(`[Treasury] Raised fee rate ${requestedFeeRate} to the ${effectiveFeeRate} sat/vB floor.`);
-    }
-    const fee = estimatedVBytes * effectiveFeeRate;
-
-    // A recipient output below the dust limit makes the transaction non-standard and it
-    // is rejected at broadcast. Same failure mode as the public path — clamp it here too,
-    // against the limit for this address type rather than a single constant.
+    // A recipient output below the dust limit makes the whole transaction non-standard.
+    // Intake refuses those, but clamp here too: this function is also reachable from the
+    // internal API, and the limit belongs to the recipient's own script type — a flat 546
+    // passed a 548-sat P2WSH output straight through to BlockCypher, which wants 573.
     let targetValue = 0;
     if (targetScript && amountToSend && amountToSend > 0) {
         const recipientDustLimit = txSizing.dustLimitForScript(targetScript, appConfig);
@@ -133,95 +502,288 @@ async function createSelfFundedOpReturn(message, targetAddress, feeRate, amountT
         }
     }
 
-    const changeValue = inputValue - fee - targetValue;
-
-    console.log(`[Treasury] Input: ${inputValue} | Fee: ${fee} | To recipient: ${targetValue} | Change: ${changeValue}`);
-
-    if (changeValue < 0) {
-        throw new Error(`Insufficient treasury funds. Have ${inputValue} sats, need at least ${fee + targetValue} sats (fee: ${fee}, recipient: ${targetValue}).`);
+    // --- The fee rate ------------------------------------------------------
+    // Never build below the effective floor: a transaction sitting exactly on the minimum
+    // relay fee is rejected as non-standard, which is why the floor is 2 and not 1.
+    const requestedFeeRate = feeRate || cfg.DEFAULT_FEE_RATE;
+    const effectiveFeeRate = Math.max(requestedFeeRate, cfg.MIN_EFFECTIVE_FEE_RATE);
+    if (effectiveFeeRate !== requestedFeeRate) {
+        console.warn(`[Treasury] Raised fee rate ${requestedFeeRate} to the ${effectiveFeeRate} sat/vB floor.`);
     }
 
-    // --- Build PSBT ---
-    const psbt = new bitcoin.Psbt({ network });
+    // --- What we can spend -------------------------------------------------
+    // op_return_creator.js pays a bare targetAddress the dust limit out of the service's
+    // change; this path builds no output at all without an amount. That divergence is
+    // deliberate here — this is the operator's own money, and paying 546 sats to an
+    // address nobody asked to fund is not a default worth having — but it means the
+    // recipient output must only be PRICED when it is going to exist, or every such call
+    // over-estimates by an output it never builds.
+    const recipientScriptForSizing = targetValue > 0 ? targetScript : null;
 
-    // Derive P2WPKH scriptPubKey from the treasury address — no need to fetch from API
-    const scriptPubKey = bitcoin.address.toOutputScript(treasuryAddress, network);
+    const chainUtxos = await fetchTreasuryUtxos(treasuryAddress, cfg);
+    if (!chainUtxos.ok) {
+        // Not knowing what the treasury holds is a provider problem, not a bad request.
+        // Reported transient so the caller retries rather than giving up on the message.
+        return failure('utxo_lookup_failed', `${treasuryAddress}: ${chainUtxos.reason}`);
+    }
 
-    psbt.addInput({
-        hash: utxo.tx_hash,
-        index: utxo.tx_output_n,
-        witnessUtxo: {
-            script: scriptPubKey,
-            value: inputValue,
-        },
+    const candidates = buildCandidates(chainUtxos.utxos);
+    const selection = selectInputs(candidates, {
+        payloadBytes: payloadBuffer.length, targetScript: recipientScriptForSizing, targetValue, feeRate: effectiveFeeRate,
     });
 
-    // OP_RETURN output (value = 0)
-    psbt.addOutput({ script: opReturnOutput.output, value: 0 });
+    if (!selection.ok) {
+        if (selection.reason === 'unconfirmed_chain_too_deep') {
+            return failure('unconfirmed_chain_too_deep',
+                `every spendable output is ${MAX_UNCONFIRMED_DEPTH} or more unconfirmed transactions deep; waiting for a block`);
+        }
+        return failure('insufficient_treasury_funds',
+            `treasury ${treasuryAddress} holds ${selection.spendableTotal} spendable sats across `
+            + `${selection.candidateCount} output(s), needs about ${selection.needed}`
+            + `${selection.candidateCount > MAX_INPUTS ? ` and may use at most ${MAX_INPUTS} of them` : ''}. Top it up.`);
+    }
 
-    // Optional recipient output
+    const { chosen, total: inputValue, fee, vbytes: estimatedVBytes } = selection;
+
+    const changeValue = inputValue - fee - targetValue;
+    // selectInputs only returns ok once the inputs cover this, so a negative here means
+    // the arithmetic disagrees with itself. Checked anyway: outputs exceeding inputs is
+    // the one error the network cannot forgive and the one op_return_creator.js was
+    // shipped without.
+    if (changeValue < 0) {
+        return failure('internal_error',
+            `selection returned ${inputValue} sats against a ${fee + targetValue} sat requirement`);
+    }
+
+    // --- The ceiling -------------------------------------------------------
+    // The most this transaction may take out of the treasury. One address holds the
+    // operator's whole float and the key that spends it is in this process; a bug in a
+    // quote, or a caller that should not have been trusted, must not be able to empty it
+    // in a single call.
+    //
+    // Change too small to pay out is absorbed into the fee, so it leaves the treasury
+    // too and is counted here. Measuring only the priced fee would let a transaction sit
+    // up to one dust limit over the ceiling — small, but a ceiling that is approximately
+    // enforced is not a ceiling.
+    const absorbedChange = changeValue < cfg.DUST_LIMIT_SATS ? changeValue : 0;
+    const leaving = fee + targetValue + absorbedChange;
+    if (leaving > cfg.TREASURY_MAX_SPEND_SATS) {
+        return failure('exceeds_max_spend',
+            `this transaction would take ${leaving} sats out of the treasury `
+            + `(fee ${fee} + recipient ${targetValue}${absorbedChange ? ` + ${absorbedChange} of absorbed change` : ''}), `
+            + `over the ${cfg.TREASURY_MAX_SPEND_SATS} sat per-transaction ceiling`);
+    }
+
+    console.log(`[Treasury] ${chosen.length} input(s) = ${inputValue} sats | fee ${fee} `
+        + `| recipient ${targetValue} | change ${changeValue} | ${payloadBuffer.length} byte payload`);
+
+    // --- Build -------------------------------------------------------------
+    const psbt = new bitcoin.Psbt({ network });
+    const scriptPubKey = bitcoin.address.toOutputScript(treasuryAddress, network);
+
+    for (const input of chosen) {
+        psbt.addInput({
+            hash: input.txId,
+            index: input.vout,
+            witnessUtxo: { script: scriptPubKey, value: input.value },
+        });
+    }
+
+    psbt.addOutput({ script: opReturnOutput.output, value: 0 });
     if (targetScript && targetValue > 0) {
-        console.log(`[Treasury] Adding recipient output: ${targetValue} sats → ${targetAddress}`);
         psbt.addOutput({ script: targetScript, value: targetValue });
     }
 
-    // Change back to treasury
-    if (changeValue >= appConfig.DUST_LIMIT_SATS) {
+    // Change back to the treasury, never to the change branch: treasury.js spends from
+    // m/84'/0'/0'/2/0 and nothing else, so change sent anywhere else is money this
+    // service cannot reach.
+    let changeVout = null;
+    if (changeValue >= cfg.DUST_LIMIT_SATS) {
+        changeVout = psbt.txOutputs.length;
         psbt.addOutput({ address: treasuryAddress, value: changeValue });
-    } else {
-        console.log(`[Treasury] Change (${changeValue}) below dust limit — absorbed into fee.`);
+    } else if (changeValue > 0) {
+        console.log(`[Treasury] Change (${changeValue}) below the dust limit — absorbed into the fee.`);
     }
 
-    // --- Sign ---
-    const treasuryNode = rootNode.derivePath(TREASURY_PATH);
-    const customSigner = {
+    // --- Sign --------------------------------------------------------------
+    let treasuryNode;
+    try {
+        treasuryNode = rootNode.derivePath(TREASURY_PATH);
+    } catch (e) {
+        return failure('key_derivation_failed', `${TREASURY_PATH}: ${e.message}`);
+    }
+
+    const signer = {
         publicKey: Buffer.from(treasuryNode.publicKey),
         network,
         sign: (hash) => Buffer.from(treasuryNode.sign(hash)),
         signSchnorr: (hash) => Buffer.from(treasuryNode.signSchnorr(hash)),
     };
+    const validator = (pubkey, msghash, signature) => {
+        if (Buffer.compare(pubkey, Buffer.from(treasuryNode.publicKey)) !== 0) return false;
+        return treasuryNode.verify(msghash, signature);
+    };
 
-    psbt.signInput(0, customSigner);
-    psbt.finalizeAllInputs();
+    try {
+        for (let i = 0; i < chosen.length; i++) {
+            psbt.signInput(i, signer);
+            // Checked per input rather than logged and carried on. An unsigned or wrongly
+            // signed input produces a transaction the network rejects, after the estimate
+            // said everything was fine.
+            if (!psbt.validateSignaturesOfInput(i, validator)) {
+                return failure('signature_validation_failed', `input ${i} of a ${chosen.length}-input treasury spend`);
+            }
+        }
+        psbt.finalizeAllInputs();
+    } catch (e) {
+        return failure('signature_validation_failed', e.message);
+    }
 
     const tx = psbt.extractTransaction();
     const txHex = tx.toHex();
     const txId = tx.getId();
 
     // Check the fee against the transaction that ACTUALLY got built, not the estimate.
+    // op_return_creator.js has had this since 2026-08-06, when two orders were priced
+    // below the relay minimum and only caught here.
     //
-    // The estimate is made before signing and can only ever be approximate; this is the
-    // real signed size. op_return_creator.js has had this check since the 2026-08-06 loss,
-    // when two orders were priced below the relay minimum and only caught here. This path
-    // never had it, so an under-estimate would have been discovered by the network instead
-    // — as a silent non-propagating transaction that had already spent a treasury UTXO.
+    // The fee measured here is the one the network will see — inputs minus outputs —
+    // which is not always the fee that was priced: change too small to pay out is
+    // absorbed, and that absorption is a fee the caller is entitled to be told about.
+    // Reporting the priced number instead understates what the treasury actually spent.
     const actualVBytes = tx.virtualSize();
-    const actualFeeRate = fee / actualVBytes;
-    if (actualFeeRate < appConfig.MIN_EFFECTIVE_FEE_RATE) {
-        throw new Error(
-            `Refusing to broadcast: computed fee ${fee} sats over ${actualVBytes} vBytes is `
-            + `${actualFeeRate.toFixed(3)} sat/vB, below the ${appConfig.MIN_EFFECTIVE_FEE_RATE} sat/vB floor. `
-            + `The size estimate (${estimatedVBytes} vBytes) was too low.`
-        );
+    const actualFee = inputValue - tx.outs.reduce((sum, o) => sum + o.value, 0);
+    const actualFeeRate = actualFee / actualVBytes;
+    if (actualFeeRate < cfg.MIN_EFFECTIVE_FEE_RATE) {
+        return failure('fee_below_relay_minimum',
+            `fee ${actualFee} sats over ${actualVBytes} vBytes is ${actualFeeRate.toFixed(3)} sat/vB, `
+            + `below the ${cfg.MIN_EFFECTIVE_FEE_RATE} sat/vB floor (estimate was ${estimatedVBytes} vBytes, priced at ${fee})`);
     }
-    console.log(`[Treasury] Signed TX. ID: ${txId} (${actualVBytes} vBytes, ${fee} sats, ${actualFeeRate.toFixed(2)} sat/vB)`);
+    console.log(`[Treasury] Signed ${txId} (${actualVBytes} vBytes, ${actualFee} sats, ${actualFeeRate.toFixed(2)} sat/vB)`);
 
-    // --- Broadcast ---
-    const broadcastUrl = `${config.BLOCKCYPHER_API_BASE}/txs/push?token=${config.BLOCKCYPHER_TOKEN}`;
-    try {
-        const broadcastResponse = await axios.post(broadcastUrl, { tx: txHex });
-        if (broadcastResponse.data && broadcastResponse.data.tx && broadcastResponse.data.tx.hash) {
-            console.log(`[Treasury] Broadcast successful. TXID: ${broadcastResponse.data.tx.hash}`);
+    // --- Broadcast ---------------------------------------------------------
+    // Through the provider chain, not straight at BlockCypher. A single host's refusal is
+    // not the network's verdict: dust thresholds differ between providers, and a
+    // datacarrier limit is each node operator's own setting — which is exactly how a
+    // BlockCypher rejection refunded four orders on 2026-08-06 that the Esplora hosts
+    // would have accepted. It also means "already known" is read as the success it is
+    // rather than as a failure.
+    const broadcast = await chainProviders.broadcastTransaction(txHex, config, txId);
+
+    if (broadcast.ok) {
+        const broadcastTxId = broadcast.txId || txId;
+        if (request.id) attemptedSpends.delete(request.id);
+        recordBroadcast({
+            inputs: chosen,
+            txId: broadcastTxId,
+            changeVout,
+            changeValue,
+            depth: Math.max(0, ...chosen.map((c) => c.depth)) + 1,
+        });
+        if (broadcast.alreadyBroadcast) {
+            console.log(`[Treasury] ${broadcastTxId} was already known — treating as broadcast.`);
         } else {
-            console.log(`[Treasury] Broadcast returned 2xx. TXID: ${txId}`);
+            console.log(`[Treasury] Broadcast ${broadcastTxId} via ${broadcast.provider}.`);
         }
-    } catch (err) {
-        const errMsg = err.response?.data?.error || err.message;
-        console.error(`[Treasury] Broadcast failed:`, errMsg);
-        throw new Error(`Broadcast failed: ${errMsg}`);
+        return {
+            ok: true,
+            txId: broadcastTxId,
+            txHex,
+            treasuryAddress,
+            // The treasury spends from one fixed path and returns change to it. Recorded
+            // honestly: writing a m/84'/0'/0'/1/index change path here would send
+            // wallet_scan.js hunting for earnings at an index that never received anything.
+            changePath: changeVout === null ? null : TREASURY_PATH,
+            provider: broadcast.provider,
+            fee: actualFee,
+            pricedFee: fee,
+            vBytes: actualVBytes,
+            inputValue,
+            changeValue,
+            inputCount: chosen.length,
+            alreadyBroadcast: !!broadcast.alreadyBroadcast,
+        };
     }
 
-    return { txId, txHex, treasuryAddress, fee, inputValue, changeValue };
+    // The ledger is deliberately NOT updated on a failure: nothing is known to have been
+    // spent, and marking the inputs spent would strand them until the TTL expired.
+    //
+    // What IS remembered is the signed transaction itself, so a retry re-sends these exact
+    // bytes. Rebuilding would be safe only if the chain view were unchanged, and the one
+    // case that matters — the broadcast landed and its response was lost — is exactly the
+    // case where it changed. Without this, the retry sees its own change output, builds a
+    // second transaction carrying the same message, and both confirm.
+    if (request.id) {
+        attemptedSpends.set(request.id, {
+            txHex,
+            txId,
+            fingerprint,
+            at: Date.now(),
+            record: {
+                inputs: chosen,
+                txId,
+                changeVout,
+                changeValue,
+                depth: Math.max(0, ...chosen.map((c) => c.depth)) + 1,
+            },
+            result: {
+                ok: true,
+                txId,
+                txHex,
+                treasuryAddress,
+                changePath: changeVout === null ? null : TREASURY_PATH,
+                fee: actualFee,
+                pricedFee: fee,
+                vBytes: actualVBytes,
+                inputValue,
+                changeValue,
+                inputCount: chosen.length,
+            },
+        });
+    }
+    if (broadcast.feeTooLow) {
+        return failure('fee_too_low', `${broadcast.reason} (paid ${actualFee} sats at ${effectiveFeeRate} sat/vB)`);
+    }
+    if (broadcast.inputsSpent) {
+        // For a customer payment this means the money is gone and nothing can be refunded.
+        // For the treasury it means a view of our own wallet was stale — retryable, and the
+        // next pass reads the outputs again.
+        //
+        // Only the ledger's own optimism is dropped. The rejection names no outpoint, so an
+        // earlier version marked ALL of this attempt's inputs spent — which quarantined
+        // perfectly good confirmed money for the 12-hour TTL because one unrelated input had
+        // moved, and then told the operator to top up a treasury the chain still showed as
+        // funded. A provider's answer is evidence; our guess about an unindexed change
+        // output is not, and it is the guess that gets withdrawn.
+        let dropped = 0;
+        for (const input of chosen) {
+            if (!input.fromLedger) continue;
+            pendingChange.delete(outpointKey(input.txId, input.vout));
+            dropped++;
+        }
+        return failure('treasury_inputs_stale',
+            `${broadcast.reason} (an output we believed unspent was already spent; `
+            + `${dropped} unconfirmed change entr${dropped === 1 ? 'y' : 'ies'} withdrawn, re-reading the chain on the next attempt)`);
+    }
+    return failure(
+        broadcast.permanent ? 'broadcast_rejected' : 'broadcast_unavailable',
+        `${broadcast.reason} (txid would have been ${txId})`
+    );
 }
 
-module.exports = { getTreasuryAddress, fetchTreasuryUtxos, createSelfFundedOpReturn };
+module.exports = {
+    TREASURY_PATH,
+    PERMANENT_FAILURES,
+    getTreasuryAddress,
+    fetchTreasuryUtxos,
+    createSelfFundedOpReturn,
+    // Exported for the harness: both are pure, and both decide things that must be
+    // provable without a network or a wallet.
+    estimateTreasuryVBytes,
+    selectInputs,
+    buildCandidates,
+    // Test hook. The ledger is process-global by design, so a harness that exercises two
+    // consecutive spends needs a way back to a known state.
+    __resetLedger: () => { spentOutpoints.clear(); pendingChange.clear(); attemptedSpends.clear(); },
+    __ledger: () => ({ spent: [...spentOutpoints.keys()], pending: [...pendingChange.keys()], attempted: [...attemptedSpends.keys()] }),
+};

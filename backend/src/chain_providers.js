@@ -688,9 +688,25 @@ async function getAddressSummary(address, config) {
     return { ok: true, ...result.value, provider: result.provider };
 }
 
-/** Confirmed unspent outputs for an address, used by the refund path. */
-async function getUnspent(address, config) {
-    const result = await tryProviders(config, 'getUnspent', [address], { label: `utxos ${address.slice(0, 12)}` });
+/**
+ * Unspent outputs for an address, used by the refund path and by the treasury.
+ *
+ * What comes back depends on which host answers, and the difference is load-bearing:
+ * BlockCypher's implementation reads only `txrefs`, so it reports CONFIRMED outputs
+ * only, while the Esplora hosts include mempool outputs with `confirmations: 0`. A
+ * caller that has just spent and is holding its balance in unconfirmed change sees an
+ * empty wallet if BlockCypher answers — which is why `opts` exists and why treasury.js
+ * asks the Esplora hosts first. Callers that want the stricter, confirmed-only view can
+ * simply keep the default order.
+ *
+ * @param {{onlyProviders?: string[], useCooldown?: boolean}} [opts] - passed through to
+ *   tryProviders. Never pass a cooldown for anything that broadcasts; a read is fine.
+ */
+async function getUnspent(address, config, opts = {}) {
+    const result = await tryProviders(config, 'getUnspent', [address], {
+        label: `utxos ${address.slice(0, 12)}`,
+        ...opts,
+    });
     if (!result.ok) return { ok: false, reason: result.reason };
     return { ok: true, utxos: result.value, provider: result.provider };
 }

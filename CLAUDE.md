@@ -81,7 +81,14 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A payload is only ever rendered as an inert raster type from a closed allowlist | `frontend/js/app.js` `RENDERABLE_KINDS`, `frontend/admin/admin.js` |
 | The effective fee rate is never below `MIN_EFFECTIVE_FEE_RATE` (2 sat/vB) | `config.js`, applied in `op_return_creator.js`, `refund.js` and `treasury.js` |
 | The built transaction's fee clears the relay minimum for its *actual* signed size | `op_return_creator.js` and `treasury.js`, checked after `extractTransaction` |
-| Outputs never exceed inputs — checked *before* signing | `op_return_creator.js` |
+| Outputs never exceed inputs — checked *before* signing | `op_return_creator.js`, `treasury.js` |
+| Every input's signature is validated before the transaction is finalized | `op_return_creator.js`, `treasury.js` |
+| Every broadcast asks the whole provider chain — no money path talks to one host | `op_return_creator.js`, `refund.js`, `treasury.js` |
+| One treasury spend at a time, and the process remembers what it just spent | `treasury.js` spend lock and UTXO ledger |
+| A retry re-sends the bytes it already signed; it never rebuilds | `treasury.js` `attemptedSpends` |
+| No single treasury transaction may take more than `TREASURY_MAX_SPEND_SATS` | `config.js`, refused in `treasury.js` |
+| Every builder embeds the payload's **decoded** bytes, and checks they match the declared type | `payload.js` `decode`/`validate`, called by `op_return_creator.js` and `treasury.js` |
+| The internal API validates economics at intake, exactly as the public one does | `routes/internal.js` via `validateRequestParams` |
 | A request that has any sign of payment is never deleted | `cleanup.js`, `routes/api.js` DELETE |
 | Automation never publishes a message the customer withdrew | `reconcile.js`, `archivedAt IS NULL` on both publishing passes |
 | An archived request is never on the public wall | `wall.js` `WALL_SELECT_SQL` |
@@ -415,7 +422,11 @@ A multi-kilobyte transaction at the 2 sat/vB default is also a much bigger bet o
 mempool than a 250-byte one.
 
 **The safe way to test is the treasury**, not a customer order: `POST /api/internal/embed`
-is API-key-only and spends from `m/84'/0'/0'/2/0`, so no customer money is involved. It is
+is API-key-only and spends from `m/84'/0'/0'/2/0`, so no customer money is involved. As of
+2026-08-14 it is also a real probe: it broadcasts through the provider chain, so a
+`datacarrier` refusal from BlockCypher is contested against both Esplora hosts instead of
+ending the attempt. Until then the one path nominated for testing this was the one path
+that could not ask anybody else. It is
 text-only and bound by `max_payload_size` today — and raising *that* to run a probe would
 silently raise the **public text intake limit**, which is why the image limit is a separate
 key. A probe path needs its own setting, not a borrowed one.
@@ -534,6 +545,115 @@ modal inside the same `try` as an awaited BlockCypher lookup, whose catch replac
 with one red line: a provider timeout took the customer's picture, their payment figures and
 their refund address with it. The modal is now painted first and the lookup fills its own slot,
 guarded by `histSlot.isConnected` so a late answer cannot land under a different order.
+
+## The treasury
+
+`treasury.js` publishes an OP_RETURN paid for out of the operator's own wallet at
+`m/84'/0'/0'/2/0`. It began as the free-proof path, where the only money at risk was the
+operator's and a failure meant retrying by hand.
+
+**2026-08-14 — it was hardened, because Lightning has no UTXO.** A customer paying over
+Lightning hands the service no spendable output, so the message still has to be paid for
+somehow and this wallet is the only candidate. That turns a convenience path into a money
+path, and it was missing most of what `op_return_creator.js` had learned the expensive way.
+
+What changed, and why each one matters:
+
+| Was | Now |
+|---|---|
+| broadcast POSTed straight at BlockCypher | goes through `chainProviders.broadcastTransaction` |
+| spent the single largest **confirmed** UTXO | selects multiple inputs, re-pricing the fee as each is added |
+| nothing stopped two spends colliding | one spend at a time, behind an in-process lock |
+| change unspendable until it confirmed | the change outpoint is remembered and chained |
+| no signature validation | every input validated before `finalizeAllInputs` |
+| threw opaque `Error`s | returns `{ok, reason, permanent}`, the shape `op_return_creator.js` returns |
+| nothing bounded a single spend | `TREASURY_MAX_SPEND_SATS`, default 250,000 |
+| embedded `message` as UTF-8 | goes through `payload.js`, like every other builder |
+
+Four of those need the reasoning kept, because the obvious version of each is wrong.
+
+**The broadcast could not use the contested rule.** BlockCypher alone was deciding whether
+a transaction was valid — on the one path CLAUDE.md nominates as *the safe way to test
+whether a multi-kilobyte OP_RETURN relays*, where `datacarrier` is exactly the rejection
+the contested rule exists for. The probe could not ask the other two hosts.
+
+**It embedded the stored string.** `Buffer.from(message, 'utf8')` is right for text and
+wrong for an image, whose row holds base64 — the chain would have received base64 ASCII,
+a third larger and not a valid image file. The same stored-length-versus-on-chain-length
+inversion the top of this file is about. `payload.validate` is called and not just
+`decode`, because nothing on this path enforced that a payload's bytes match the type it
+declares, and both the wall and the admin panel build a `data:` URL from the declared kind.
+
+**Two spends a few seconds apart used to collide.** A provider's idea of which outputs are
+unspent lags ours by however long propagation and indexing take, so both spends pick the
+same input and the second is a conflicting double-spend: only one message ever reaches the
+chain. On-chain that race is rare; over Lightning, invoices settle in under a second and
+two customers paying at once is an ordinary Tuesday. So the process keeps its own ledger —
+`spentOutpoints` for what it has spent, `pendingChange` for change no provider has indexed
+— and unions it with what the chain reports. Both are memory only and both may be lost: a
+restart falls back to the providers' view, which is stale but only ever *under*-reports
+what can be spent.
+
+**Selection reaches past the input cap on a second pass, and that is not a refinement.**
+The treasury address is the reused change address of every treasury spend, so it is on
+chain and anyone can pay it. Ten 294-sat outputs cost an attacker about 3,000 sats; with
+confirmed-first ordering and a hard ten-input cap they filled every slot, and the search
+gave up while an unconfirmed change output holding the whole balance sat one place further
+down the list. The refusal then told the operator to top up a wallet holding millions. When
+the first pass exhausts the cap without covering the fee, a second pass runs ordered by
+value alone.
+
+### The retry rule, which is the subtle one
+
+A failed broadcast leaves the ledger untouched — nothing is known to have been spent.
+
+It is tempting to go further and say a lost response is harmless because selection is
+deterministic, so the retry rebuilds the identical transaction and the provider answers
+"already known". **That is false exactly when it matters.** If the broadcast actually
+landed, the chain's view is precisely what changed: the retry reads its input as spent,
+finds the change output instead, and builds a *different* transaction carrying the same
+message. Both confirm. The message is published twice and the treasury pays two fees —
+about 500 sats for text, about 40,000 for a 20,000-byte image at the floor.
+
+So a retry re-sends the bytes it already signed, keyed on `request.id` in `attemptedSpends`.
+A caller supplying no id gets no protection, which is why the Lightning work must pass one.
+The same id carrying different content is refused rather than published.
+
+`inputs_already_spent` means something different here than on the customer path. For a
+customer's payment it means the money is gone and nothing can be refunded; for the treasury
+it means a view of our own wallet was stale, so it is transient. Only the ledger's own
+optimism is withdrawn — an earlier version marked *every* input of the attempt spent, which
+quarantined good confirmed money for the full TTL because one unrelated output had moved.
+
+### What is deliberately not done yet
+
+The treasury path is ready to build and broadcast. It is **not** ready to carry a paid
+order, and the gap is not in this file:
+
+- **A treasury spend writes no database row.** Nothing can be retried, alerted on,
+  confirmed, or reconciled, because there is nothing to key on. The row has to be written
+  and claimed *before* the broadcast — a row with no transaction is a stalled treasury a
+  reconciler fixes; a transaction with no row is an unattributable txid.
+- **`paymentTxId IS NOT NULL` is the definition of "paid"** in `alerts.js`, four passes in
+  `reconcile.js`, `cleanup.js`, `routes/admin.js` and both cancel guards. An order paid over
+  a rail with no on-chain payment is invisible to every one of them — archivable as
+  `abandoned_unpaid` at 7 days and redactable at 180. That is the 66-day silent failure
+  with a different cause.
+- **No notification fires from this path**, so the operator cannot moderate what it
+  publishes. `notifier.js` keys on a request id, which is the row again.
+- **`queue.js` prices 4 vBytes below what this builder spends** (`FEE_SAFETY_VBYTES`). The
+  two never meet today. Under Lightning they would, and the service eats 8 sats an order at
+  the floor, 2,000 at `MAX_FEE_RATE`.
+
+### The API contract changed
+
+`POST /api/internal/embed` and `GET /api/internal/treasury` no longer answer 500 for every
+failure. A treasury that needs topping up is `503` with `reason` and `permanent: false`; a
+transaction the network refuses is `422`. A balance that could not be read is `503` with
+`balanceKnown: false` rather than a confident `0` — the same rule the wallet view follows.
+
+`createSelfFundedOpReturn` now takes a request-shaped object, matching
+`createOpReturnTransaction`, so a caller holding a row can drive either builder.
 
 ## The public wall
 
@@ -1009,7 +1129,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **736 assertions across twelve files**, all offline:
+`/home/admin/op_returner_tests/` — **914 assertions across thirteen files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1045,6 +1165,17 @@ There is no test runner in the repo. Verification lives outside it, in
   matching the one `queue.js` charges across all six address types, and the admin token being
   remembered in sessionStorage, restored on reload, and thrown away on a 401 from the admin API
   but not from anywhere else. `axios.post` is stubbed before `notifier.js` is required.
+- `treasury.js` — 176. The treasury spending path: the estimate against real signed
+  transactions at every payload size and input count, the fee floor and the post-signing
+  relay check, the guards that refuse before anything is signed, dust and change and where
+  the money goes, broadcast classification through the provider chain, the UTXO ledger and
+  the spend lock under genuinely concurrent calls, the second selection pass that dust
+  cannot wall off, the quarantine that withdraws only its own optimism, the retry that
+  re-sends signed bytes rather than building a second transaction, the ceiling measured on
+  every term, absorbed dust change, and that an image reaches the chain as bytes rather than
+  as base64. The chain layer is stubbed on the module object before `treasury.js` is
+  required, and the broadcast stub models a mempool — it drops spent outpoints and reports
+  our own change back — because a frozen UTXO list left the depth carry-over as dead code.
 - `site_delivery.js` — 102. How the site is served and what it says about itself: the HTTPS
   redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
   cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the
@@ -1091,6 +1222,15 @@ Restoring the awaited lookup at the top of `showDetails` makes the modal stop pa
 the block explorer answers. Changing the frontend quote to `Math.ceil(vb * rate)` puts the
 surcharge shown 4 sats away from the one charged. Adding `image/svg+xml` to the admin panel's
 `IMAGE_KINDS` breaks three assertions at once, including the one binding it to the wall's list.
+
+The treasury hardening was checked this way as a matter of course rather than as a
+spot-check: **eighteen bugs reintroduced, eighteen caught.** Worth knowing if you touch that
+file — removing the second selection pass, quarantining a whole attempt on
+`inputs_already_spent`, rebuilding instead of re-broadcasting a signed transaction, sorting
+equal-value candidates unstably, taking the chain's word for an ancestor count, reporting
+the priced fee instead of the real one, a fee-blind ceiling, and embedding base64 all fail
+`treasury.js` loudly. Two of those were found by review *after* the tests were written and
+were passing: a guard is only as good as the mutation nobody thought to try.
 
 `refund.js` exports `estimateRefundVBytes`, which the harness asserts against. It takes a
 second argument (the refund output's size) and uses a 10.5-vByte overhead rather than 10,

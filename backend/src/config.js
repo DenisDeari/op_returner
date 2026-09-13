@@ -59,6 +59,24 @@ const MAX_FEE_RATE = 500; // sats/vByte
 const MIN_EFFECTIVE_FEE_RATE = 2; // sats/vByte, hard floor applied when building
 const MAX_AMOUNT_TO_SEND_SATS = 100_000_000; // 1 BTC sanity ceiling
 
+// The most a single treasury transaction may take out of the treasury — fee plus
+// recipient payout, change excluded.
+//
+// The treasury is the one address in this service that is a hot wallet: it holds the
+// operator's own float, the key that spends it lives in the same process, and it is about
+// to fund publications that customers pay for on a rail with no chargeback. Every other
+// money path spends a UTXO a customer just funded, so its worst case is bounded by what
+// that customer sent. This one is bounded by nothing at all unless it is bounded here.
+//
+// 250,000 sats is comfortably above the most expensive publication the service can
+// legitimately produce — a 20,000-byte image is about 20,110 vBytes, so 201,100 sats even
+// at 10 sat/vB — and far below a treasury balance worth defending. A text proof costs
+// about 500. Raise it with TREASURY_MAX_SPEND_SATS if a genuinely larger payout is ever
+// wanted; a transaction over the ceiling is refused as permanent, not retried.
+const TREASURY_MAX_SPEND_SATS = Number(process.env.TREASURY_MAX_SPEND_SATS) > 0
+    ? Number(process.env.TREASURY_MAX_SPEND_SATS)
+    : 250_000;
+
 // Request retention.
 //
 // Requests are archived, never deleted: a row is the only record of what a customer
@@ -190,6 +208,7 @@ module.exports = {
     MAX_FEE_RATE,
     MIN_EFFECTIVE_FEE_RATE,
     MAX_AMOUNT_TO_SEND_SATS,
+    TREASURY_MAX_SPEND_SATS,
     // Request retention
     WEBHOOK_RETIRE_AFTER_MS,
     REQUEST_ARCHIVE_AFTER_MS,
