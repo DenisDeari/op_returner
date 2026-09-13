@@ -145,6 +145,29 @@ document.addEventListener('DOMContentLoaded', () => {
         return `[${RENDERABLE_KINDS[kind]} image, ${fmt(Math.round((s.length / 4) * 3 - pad))} bytes]`;
     }
 
+    /**
+     * Tells the server that one named thing happened. Fire and forget.
+     *
+     * Sends nothing but the event name — no id, no address, no message, no order. The
+     * server keeps a daily count per name and rejects any name it does not already know
+     * (backend/src/counters.js). This exists to answer one question the database cannot:
+     * of the people who get a payment address, how many even open the panel and copy it.
+     *
+     * `keepalive` so a beacon sent as the tab is closing still goes out, and every failure
+     * is swallowed: a count is never worth a console error in a customer's browser, let
+     * alone a broken payment flow.
+     */
+    function beacon(event) {
+        try {
+            fetch('/api/beacon', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event }),
+                keepalive: true,
+            }).catch(() => {});
+        } catch { /* no such thing as a beacon worth breaking a page for */ }
+    }
+
     function ago(iso) {
         const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
         if (!Number.isFinite(mins) || mins < 0) return 'just now';
@@ -1282,8 +1305,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const foot = document.createElement('footer');
-            const when = document.createElement('span');
-            when.textContent = m.publishedAt ? ago(m.publishedAt) : '';
+            // Mirrors the server-rendered card in backend/src/wall_html.js: the date links
+            // to the message's own page. Built with DOM calls and an encoded txid, so no
+            // part of a row ever reaches the HTML parser here either.
+            const whenText = m.publishedAt ? ago(m.publishedAt) : '';
+            const txidForLink = String(m.opReturnTxId || '').toLowerCase();
+            let when;
+            if (whenText && TXID_ONLY.test(txidForLink)) {
+                when = document.createElement('a');
+                when.className = 'card-date';
+                when.href = `/m/${encodeURIComponent(txidForLink)}`;
+            } else {
+                when = document.createElement('span');
+            }
+            when.textContent = whenText;
             foot.appendChild(when);
 
             if (m.opReturnTxId) {
@@ -1319,6 +1354,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         modal.hidden = false;
+        beacon('pay_opened');
     }
     const closePayment = () => { modal.hidden = true; };
 
@@ -1393,6 +1429,9 @@ document.addEventListener('DOMContentLoaded', () => {
         navigator.clipboard.writeText(modalAddress.textContent).then(() => {
             copyBtn.textContent = 'Copied';
             setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
+            // Inside the success branch: a clipboard write that was refused (no permission,
+            // insecure context) is not a customer who has the address.
+            beacon('address_copied');
         }).catch(() => {});
     });
 

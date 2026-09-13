@@ -10,6 +10,7 @@ const eventLog = require('../event_log');
 const requestEvents = require('../request_events');
 const webhookReconcile = require('../webhook_reconcile');
 const wall = require('../wall');
+const counters = require('../counters');
 const { MAX_ON_CHAIN_PAYLOAD_BYTES } = require('../op_return_creator');
 
 function createAdminRouter(db, rootNode, config) {
@@ -34,6 +35,78 @@ function createAdminRouter(db, rootNode, config) {
         } catch (error) {
             console.error('Error computing alerts:', error.message);
             res.status(500).json({ error: 'Failed to compute alerts' });
+        }
+    });
+
+    /**
+     * GET /api/admin/funnel?days=30 — the drop-off, day by day.
+     *
+     * Four numbers per day, and the only one that is new is the first:
+     *
+     *   visits    homepage renders           (daily_counters, server-side)
+     *   quotes    requests created           (requests.createdAt — a customer who has
+     *                                         seen the full price and clicked through)
+     *   payOpened payment panel opened       (daily_counters, client beacon)
+     *   copied    address copied             (daily_counters, client beacon)
+     *   paid      requests that were paid    (requests.paymentTxId)
+     *
+     * visits→quotes is the composer's conversion; quotes→paid is the one that has been
+     * losing two of every three orders with no explanation, and copied→paid is what tells
+     * those two apart — someone who copied the address and never paid changed their mind
+     * or could not pay, which is a different fix from someone who never opened the panel.
+     *
+     * The two beacon columns are approximate and forgeable by anyone who can POST; the
+     * two from `requests` are exact. Do not mix them in one number.
+     */
+    router.get('/funnel', protect, async (req, res) => {
+        try {
+            const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+            const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+
+            const [counted, rows] = await Promise.all([
+                counters.read(db, days),
+                dbAll(db, `
+                    SELECT substr(createdAt, 1, 10) AS day,
+                           COUNT(*) AS quotes,
+                           SUM(CASE WHEN paymentTxId IS NOT NULL THEN 1 ELSE 0 END) AS paid
+                      FROM requests
+                     WHERE substr(createdAt, 1, 10) >= ?
+                     GROUP BY day
+                `, [since]),
+            ]);
+
+            const byDay = new Map();
+            const at = (day) => {
+                if (!byDay.has(day)) {
+                    byDay.set(day, { day, visits: 0, quotes: 0, payOpened: 0, copied: 0, paid: 0 });
+                }
+                return byDay.get(day);
+            };
+            for (const { day, counts } of counted) {
+                const d = at(day);
+                d.visits = counts[counters.EVENTS.HOME_VIEW] || 0;
+                d.payOpened = counts[counters.EVENTS.PAY_OPENED] || 0;
+                d.copied = counts[counters.EVENTS.ADDRESS_COPIED] || 0;
+            }
+            for (const r of rows || []) {
+                const d = at(r.day);
+                d.quotes = r.quotes || 0;
+                d.paid = r.paid || 0;
+            }
+
+            const series = [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1));
+            const totals = series.reduce((acc, d) => ({
+                visits: acc.visits + d.visits,
+                quotes: acc.quotes + d.quotes,
+                payOpened: acc.payOpened + d.payOpened,
+                copied: acc.copied + d.copied,
+                paid: acc.paid + d.paid,
+            }), { visits: 0, quotes: 0, payOpened: 0, copied: 0, paid: 0 });
+
+            res.status(200).json({ days, totals, series, generatedAt: new Date().toISOString() });
+        } catch (error) {
+            console.error('Error computing funnel:', error.message);
+            res.status(500).json({ error: 'Failed to compute funnel' });
         }
     });
 

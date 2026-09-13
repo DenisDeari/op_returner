@@ -140,6 +140,60 @@ const WALL_PAYLOAD_SQL = `
      LIMIT 1
 `;
 
+// ONE PUBLISHED MESSAGE, for its own page at /m/<txid>.
+//
+// Runs WALL_WHERE_SQL, exactly like the listing and the payload endpoint, so a message
+// that is hidden, withdrawn, redacted or never published is indistinguishable from a txid
+// that was never ours: both return nothing and the route answers the same 404. That is the
+// same reasoning as findPublicPayload — a page that 404s differently for "exists but
+// hidden" is a moderation oracle, and it would be a worse one than the payload endpoint
+// because a person can read it.
+//
+// The CASE mirrors the listing: an image row never carries its base64 here either. The
+// page renders an <img> against the payload endpoint, which is the one place image bytes
+// are served and which applies this same predicate again.
+//
+// One column the listing does not need: the block this was mined in, printed on the page
+// so a reader can check it against an explorer.
+//
+// The CONFIRMATION TIMESTAMP is deliberately NOT selected, even though it sits right next
+// to the height in the row. confirmations.js asserts that this file never so much as names
+// that column, and the rule is worth more than the decoration it would buy: a reorg
+// un-mines a transaction, and the one thing the wall must never do is decide what to show
+// based on a value that can go backwards. The height is printed, never branched on, and
+// the page renders identically whether or not it is there.
+const WALL_MESSAGE_SQL = `
+    SELECT CASE WHEN payloadKind IN ('image/webp', 'image/jpeg') THEN NULL ELSE message END AS message,
+           payloadKind,
+           opReturnTxId,
+           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt,
+           opReturnBlockHeight
+      FROM requests
+     ${WALL_WHERE_SQL}
+       AND opReturnTxId = ?
+     LIMIT 1
+`;
+
+// EVERY published message, for the sitemap.
+//
+// Deliberately not listPublicMessages(): that one is capped at MAX_LIMIT because it feeds
+// a homepage, and a sitemap that silently stopped at the hundredth message would quietly
+// stop announcing everything published afterwards. The cap here is a sanity bound, not a
+// page size.
+const WALL_SITEMAP_SQL = `
+    SELECT CASE WHEN payloadKind IN ('image/webp', 'image/jpeg') THEN NULL ELSE message END AS message,
+           payloadKind,
+           opReturnTxId,
+           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt
+      FROM requests
+     ${WALL_WHERE_SQL}
+     ORDER BY COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) DESC
+     LIMIT ?
+`;
+
+/** A sanity bound on the sitemap, far above anything this service has published. */
+const SITEMAP_MAX = 5000;
+
 let cache = null; // { at: number, rows: object[] }
 
 /**
@@ -195,6 +249,31 @@ async function findPublicPayload(db, opReturnTxId) {
     }
 }
 
+/**
+ * One published message by its transaction id, or null.
+ *
+ * Null for every refusal — unknown txid, hidden, archived, redacted, malformed — because
+ * the caller must not be able to tell those apart. See WALL_MESSAGE_SQL.
+ */
+async function findPublicMessage(db, opReturnTxId) {
+    const txid = String(opReturnTxId || '').toLowerCase();
+    if (!TXID_RE.test(txid)) return null;
+    const row = await dbGet(db, WALL_MESSAGE_SQL, [txid]);
+    return row || null;
+}
+
+/**
+ * Every published message, newest first, for the sitemap.
+ *
+ * Uncached: it is read by one crawler at a time, minutes or hours apart, and a stale
+ * sitemap is worse than a slightly slower one.
+ */
+async function listAllPublicMessages(db, limit = SITEMAP_MAX) {
+    const n = Math.min(Math.max(parseInt(limit, 10) || SITEMAP_MAX, 1), SITEMAP_MAX);
+    const rows = await dbAll(db, WALL_SITEMAP_SQL, [n]);
+    return rows || [];
+}
+
 function clampLimit(value) {
     const n = Number.parseInt(value, 10);
     if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
@@ -213,11 +292,16 @@ function invalidate() {
 module.exports = {
     listPublicMessages,
     findPublicPayload,
+    findPublicMessage,
+    listAllPublicMessages,
     invalidate,
     clampLimit,
     WALL_WHERE_SQL,
     WALL_PAYLOAD_SQL,
     WALL_SELECT_SQL,
+    WALL_MESSAGE_SQL,
+    WALL_SITEMAP_SQL,
+    SITEMAP_MAX,
     MAX_LIMIT,
     DEFAULT_LIMIT,
     CACHE_MS,

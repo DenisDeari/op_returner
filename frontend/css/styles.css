@@ -830,6 +830,58 @@ input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
 .price td:last-child { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .price tr:last-child td { border-bottom: none; }
 
+/* -- /m/<txid>, one published message ------------------------------------
+   The message is the page, so it gets the room a wall card cannot give it. Shares the
+   card's surface and border tokens deliberately: a permalink that looked like a different
+   product would undo the point of linking to it. */
+.single { margin-top: 40px; }
+.single-msg {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 28px 26px; margin-bottom: 22px;
+}
+.single-msg p {
+  font-size: 1.05rem; line-height: 1.65; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; max-width: 62ch;
+}
+.single-msg .payload-img { display: block; max-width: 100%; height: auto; border-radius: var(--r-sm); }
+
+.single-meta { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; margin-bottom: 20px; }
+.single-meta dt { color: var(--dimmer); font-size: .8rem; }
+.single-meta dd { font-size: .84rem; color: var(--dim); min-width: 0; }
+.single-meta dd code { font-family: var(--mono); font-size: .95em; word-break: break-all; }
+.single-meta a { color: var(--dim); text-decoration: none; border-bottom: 1px solid var(--line-2); }
+.single-meta a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* The wall card's date is a link to that message's page. It must not look like the "tx"
+   link beside it, which leaves the site. */
+.card-date { color: inherit; text-decoration: none; }
+.card-date:hover { color: var(--text); }
+
+/* -- /what-is-op-return -------------------------------------------------
+   Three rules, used only by the explainer page. It shares everything else with the
+   homepage's .info section deliberately: a second page that drifts into its own visual
+   language is how a small site starts looking like two small sites. */
+.plain-list { list-style: none; max-width: 68ch; margin-bottom: 14px; }
+.plain-list li {
+  position: relative; padding-left: 18px; margin-bottom: 9px;
+  color: var(--dim); font-size: .92rem; line-height: 1.6;
+}
+.plain-list li::before {
+  content: ""; position: absolute; left: 2px; top: .62em;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--dimmer);
+}
+
+/* The cost table is the widest thing on the page and the one a phone cannot shrink.
+   Scrolling the table beats wrapping "42,250 sats" onto two lines. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 6px; }
+.table-scroll .price { min-width: 460px; }
+
+.cta-link {
+  display: inline-block; color: var(--accent); font-size: .92rem; font-weight: 600;
+  text-decoration: none; border-bottom: 1px solid transparent; transition: border-color .18s var(--ease);
+}
+.cta-link:hover { border-bottom-color: var(--accent); }
+
 .steps { list-style: none; counter-reset: step; max-width: 68ch; }
 .steps li {
   position: relative; padding-left: 34px; margin-bottom: 10px;

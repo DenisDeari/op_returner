@@ -11,6 +11,7 @@ const wall = require('../wall');
 const qr = require('../qr');
 const payload = require('../payload');
 const httpHygiene = require('../http_hygiene');
+const counters = require('../counters');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -233,6 +234,42 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     });
 
     /**
+     * POST /api/beacon — records that one named, allowlisted thing happened.
+     *
+     * The two client-side events in the funnel: the payment panel was opened, and the
+     * address was copied. Both are invisible server-side, and together they are the
+     * difference between "they never got as far as paying" and "they had the address in
+     * their clipboard and still walked away" — the question 24 unpaid orders pose.
+     *
+     * WHAT IT DELIBERATELY DOES NOT DO. It stores no identifier: not the IP, not a cookie,
+     * not the request id, not a session, not the user agent. The body is read for exactly
+     * one field, that field must be one of three known strings, and everything else is
+     * discarded unread. The IP is used for the rate-limit bucket and never leaves memory.
+     * See src/counters.js — this is a tally, not analytics about people.
+     *
+     * ITS OWN BUCKET, not the intake limiter's. Sharing that one would let a visitor who
+     * merely opened the payment panel a few times lock themselves out of placing an order,
+     * which is precisely backwards. The limit here is generous because a false 429 costs a
+     * count that does not matter; it exists only so the table cannot be hammered.
+     *
+     * Answers 204 to everything, including a rejection. A beacon has no failure the client
+     * can act on, and a distinguishable error is one more thing for a page to branch on.
+     */
+    router.post('/beacon', (req, res) => {
+        try {
+            const name = String((req.body || {}).event || '');
+            if (counters.isKnownEvent(name) && name !== counters.EVENTS.HOME_VIEW) {
+                const gate = withinLimit(beaconRateLimit, clientIp(req), BEACON_WINDOWS);
+                if (gate.ok) {
+                    gate.record();
+                    counters.bump(name);
+                }
+            }
+        } catch { /* a counter must never fail a request */ }
+        return res.status(204).end();
+    });
+
+    /**
      * GET /api/wall?limit=50 — the messages customers chose to show publicly.
      *
      * Public, unauthenticated, and the only endpoint that serves one stranger's words to
@@ -385,6 +422,14 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     // nothing else bounds this table. See the note in config.js for how the limits were
     // sized. Counted only once a request is about to be created — a caller who merely
     // fails validation has cost us nothing and should keep getting real error messages.
+    // Beacon bucket. Separate from intake and feedback on purpose — see POST /beacon.
+    // HOME_VIEW is excluded from the endpoint entirely: it is counted server-side in
+    // server.js, where it cannot be forged by anything that is not actually a page render.
+    const beaconRateLimit = new Map(); // ip -> [timestamps]
+    const BEACON_WINDOW_MS = 60 * 60 * 1000;
+    const BEACON_WINDOWS = [{ ms: BEACON_WINDOW_MS, max: 120, label: 'hour' }];
+    setInterval(() => sweepRateLimit(beaconRateLimit, BEACON_WINDOW_MS), BEACON_WINDOW_MS).unref?.();
+
     const intakeRateLimit = new Map(); // ip -> [timestamps]
     const INTAKE_WINDOWS = [
         { ms: 60 * 60 * 1000, max: config.INTAKE_MAX_PER_HOUR, label: 'hour' },

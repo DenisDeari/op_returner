@@ -29,12 +29,14 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
  *   otherwise race the CREATE TABLE and fail with "no such table".
  */
 function initializeDatabase(onReady) {
-    // Four independent async chains run below (requests, wallet_state, system_settings,
-    // request_events).
+    // Five independent async chains run below (requests, wallet_state, system_settings,
+    // request_events, daily_counters).
     // onReady fires only once ALL of them have finished. The server must not begin
     // accepting traffic before that: an early request would otherwise reach a database
     // with no wallet_state row and fail with "Wallet state not initialized".
-    const pendingSteps = new Set(['requests', 'wallet_state', 'system_settings', 'request_events']);
+    const pendingSteps = new Set([
+        'requests', 'wallet_state', 'system_settings', 'request_events', 'daily_counters',
+    ]);
     function markStepDone(step) {
         pendingSteps.delete(step);
         if (pendingSteps.size === 0) {
@@ -155,6 +157,16 @@ function initializeDatabase(onReady) {
             if (indexErr) console.error("Error creating request_events index:", indexErr.message);
             markStepDone('request_events');
         });
+    });
+
+    // Website counters. Same never-fatal shape as request_events, and for a stronger
+    // reason: this table informs decisions about a web page. If it will not create, the
+    // service must still take money — counters.js already swallows its own write errors,
+    // so a missing table costs nothing but the numbers.
+    db.run(schema.CREATE_DAILY_COUNTERS_SQL, (err) => {
+        if (err) console.error("Error creating daily_counters table:", err.message);
+        else console.log("Table 'daily_counters' created or already exists.");
+        markStepDone('daily_counters');
     });
 }
 

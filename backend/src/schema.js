@@ -175,6 +175,25 @@ const CREATE_REQUEST_EVENTS_INDEX_SQL = `
         ON request_events (requestId, id);
 `;
 
+// Daily aggregate counts of named events — see src/counters.js.
+//
+// Not a money table and not analytics about people: there is no identifier of any kind in
+// it, only "this event name happened N times on this UTC day". It exists because the
+// `requests` table cannot answer what happened BEFORE a row was created, which is where
+// two thirds of all orders are lost.
+//
+// The composite primary key is what makes the counter's UPSERT work: one row per day per
+// event name, incremented in place, so the table grows by the number of event names per
+// day and not by traffic.
+const CREATE_DAILY_COUNTERS_SQL = `
+    CREATE TABLE IF NOT EXISTS daily_counters (
+        day TEXT NOT NULL,
+        name TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, name)
+    );
+`;
+
 const CREATE_WALLET_STATE_SQL = `
     CREATE TABLE IF NOT EXISTS wallet_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -203,6 +222,7 @@ function allStatements() {
         CREATE_REQUEST_EVENTS_INDEX_SQL,
         CREATE_WALLET_STATE_SQL,
         CREATE_SYSTEM_SETTINGS_SQL,
+        CREATE_DAILY_COUNTERS_SQL,
     ];
 }
 
@@ -214,5 +234,6 @@ module.exports = {
     CREATE_REQUEST_EVENTS_INDEX_SQL,
     CREATE_WALLET_STATE_SQL,
     CREATE_SYSTEM_SETTINGS_SQL,
+    CREATE_DAILY_COUNTERS_SQL,
     allStatements,
 };

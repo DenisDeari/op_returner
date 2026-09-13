@@ -670,3 +670,25 @@ tr.has-note .customer-note {
     flex-wrap: wrap;
 }
 .admin-head h1 { margin: 0; }
+
+/* ===================== Drop-off ======================================== */
+/* The same table look as #requests-table, which is scoped to that id rather than to a
+   class, so the rules are repeated here rather than shared. */
+.funnel-heads { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.funnel-step {
+    flex: 1 1 150px; background: var(--bg-inset, rgba(255,255,255,0.03));
+    border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 8px; padding: 12px 14px;
+}
+.funnel-step-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px; }
+.funnel-step-value { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.funnel-step-rate { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+.funnel-step-rate.good { color: var(--green); }
+.funnel-step-rate.bad { color: var(--accent); }
+
+#funnel-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+#funnel-table th, #funnel-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border, rgba(255,255,255,0.08)); }
+#funnel-table th:first-child, #funnel-table td:first-child { text-align: left; }
+#funnel-table th { color: var(--text-muted); font-weight: 500; font-size: 0.78rem; }
+#funnel-table td { font-variant-numeric: tabular-nums; }
+#funnel-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+.funnel-approx { font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }

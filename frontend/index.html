@@ -12,8 +12,20 @@
     <link rel="canonical" href="https://satwire.io/">
     <meta name="theme-color" content="#08090b">
 
+    <!-- Three icon paths, because three different consumers pick differently and the site
+         showed no favicon at all with only two of them.
+
+         /favicon.ico is the path a browser and Googlebot probe when the markup does not
+         settle it, and it answered 404 on every visit until 2026-08-17. It is listed first
+         and carries 16, 32 and 48 px.
+
+         favicon.png is 96x96, not 32x32. Google only shows a favicon beside a search result
+         when the file is square and 48x48 or a multiple of it — a 32x32 PNG is silently
+         ignored, which is most of why nothing appeared. The SVG has no size requirement and
+         qualifies on its own, but relying on the crawler choosing it was the bet that lost. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="icon" href="/favicon.png" sizes="32x32" type="image/png">
+    <link rel="icon" href="/favicon.png" sizes="96x96" type="image/png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 
     <!-- Shared links produced no card at all before these. og:image is the tag that decides
@@ -22,7 +34,7 @@
     <meta property="og:site_name" content="SatWire">
     <meta property="og:url" content="https://satwire.io/">
     <meta property="og:title" content="Write a message on the Bitcoin blockchain">
-    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,200 sats.">
+    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,250 sats.">
     <meta property="og:locale" content="en">
     <meta property="og:image" content="https://satwire.io/og.png">
     <meta property="og:image:type" content="image/png">
@@ -31,10 +43,10 @@
     <meta property="og:image:alt" content="SatWire — write a message on the Bitcoin blockchain.">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Write a message on the Bitcoin blockchain">
-    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,200 sats.">
+    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,250 sats.">
     <meta name="twitter:image" content="https://satwire.io/og.png">
 
-    <link rel="stylesheet" href="css/styles.css?v=13">
+    <link rel="stylesheet" href="css/styles.css?v=15">
 
     <!-- No rich result will come of this: Google wants a rating for that, and inventing one
          would be a lie. It is here so an answer engine can state what this is without
@@ -222,7 +234,7 @@
         <div class="pay">
             <div class="total" id="total-btn" role="button" tabindex="0" aria-expanded="false">
                 <div class="total-row">
-                    <strong id="total-n">2,220</strong>
+                    <strong id="total-n">2,242</strong>
                     <span>sats</span>
                     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </div>
@@ -270,8 +282,8 @@
         <div class="sec-head"><h2>What SatWire does</h2></div>
         <p>
             SatWire writes your message into the Bitcoin blockchain itself. Not a link to it,
-            not a hash of it — the text, in an <code>OP_RETURN</code> output of a real Bitcoin
-            transaction, where it stays as long as Bitcoin does. You get the transaction id and
+            not a hash of it — the text, in an <a href="/what-is-op-return"><code>OP_RETURN</code></a>
+            output of a real Bitcoin transaction, where it stays as long as Bitcoin does. You get the transaction id and
             can check it in any block explorer.
         </p>
         <p>
@@ -283,18 +295,26 @@
             anyone can pull them out of the transaction and open them, with no tool of ours.
         </p>
 
+        <!-- Der Verweis steht hier und nicht weiter unten: wer den Begriff nicht kennt,
+             braucht ihn genau an der Stelle, an der er zum ersten Mal fällt — nicht drei
+             Abschnitte später. Die Erklärseite trägt das Konzept, diese Seite das Produkt. -->
+        <p class="note">
+            New to this? <a class="cta-link" href="/what-is-op-return">What OP_RETURN is, how many
+            bytes fit, and how the price is worked out &rarr;</a>
+        </p>
+
         <h3>What it costs</h3>
         <p>
             Two parts: a flat <strong>2,000-sat service fee</strong>, and the Bitcoin network fee
             for the transaction. The network fee depends on how big your message is and how fast
-            you want it confirmed — a short line of text costs about 220 sats to publish, a
+            you want it confirmed — a short line of text costs about 440 sats to publish, a
             picture costs more because it is bigger.
         </p>
         <table class="price">
             <caption>Roughly, at the cheapest fee rate, service fee included</caption>
             <thead><tr><th>What you publish</th><th>On-chain size</th><th>Total</th></tr></thead>
             <tbody>
-                <tr><td>A line of text</td><td>~100 bytes</td><td>~2,220 sats</td></tr>
+                <tr><td>A line of text</td><td>~100 bytes</td><td>~2,440 sats</td></tr>
                 <tr><td>Picture, 160&times;120</td><td>~1,500 bytes</td><td>~5,250 sats</td></tr>
                 <tr><td>Picture, 256&times;192</td><td>~2,840 bytes</td><td>~7,930 sats</td></tr>
                 <tr><td>Picture, 512&times;384</td><td>~7,880 bytes</td><td>~18,000 sats</td></tr>
@@ -341,6 +361,15 @@
             <dd>Any software. There is no wrapper and no format of our own — the data in the
                 <code>OP_RETURN</code> is the image file itself, so a hex decode is enough.</dd>
         </dl>
+        <!-- Die Fragen hier sind Kauffragen: Konto, Dauer, was bei einem Fehlschlag
+             passiert. Fragen über OP_RETURN selbst — löschbar, verschlüsselt, ausgabefähig
+             — stehen auf der Erklärseite, damit nicht zwei Seiten um dieselben Suchbegriffe
+             konkurrieren. -->
+        <p class="note">
+            Questions about <code>OP_RETURN</code> itself — how many bytes fit, whether it can be
+            deleted, whether it is encrypted:
+            <a class="cta-link" href="/what-is-op-return">read the explainer &rarr;</a>
+        </p>
     </section>
 
     <!-- ============================ API ================================== -->
@@ -396,7 +425,7 @@
 
     <footer class="foot">
         <span>SatWire</span>
-        <span><a href="#api">API</a></span>
+        <span><a href="/what-is-op-return">What is OP_RETURN?</a> &middot; <a href="#api">API</a></span>
     </footer>
 
 </div>
@@ -432,6 +461,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=13"></script>
+<script src="js/app.js?v=15"></script>
 </body>
 </html>

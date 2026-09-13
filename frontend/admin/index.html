@@ -9,7 +9,7 @@
          security control — an auth layer in front of the path is. -->
     <meta name="robots" content="noindex, nofollow, noarchive">
     <title>SatWire Admin</title>
-    <link rel="stylesheet" href="admin.css?v=4">
+    <link rel="stylesheet" href="admin.css?v=5">
 </head>
 <body>
     <div class="container">
@@ -111,6 +111,20 @@
         </div>
 
         <!-- System Configuration -->
+        <!-- Where people drop out.
+             Visits are counted server-side; "opened" and "copied" arrive from the page and
+             are approximate — see backend/src/counters.js. Quotes and paid come from the
+             requests table and are exact. The two kinds are never added together. -->
+        <div id="funnel-container" class="section">
+            <div class="header-actions">
+                <h2>Drop-off</h2>
+                <button id="refresh-funnel-btn" class="btn btn-refresh">Refresh</button>
+            </div>
+            <div id="funnel-body">
+                <p class="muted">Loading&hellip;</p>
+            </div>
+        </div>
+
         <div id="config-container" class="section">
             <h2>System Configuration</h2>
             <div class="config-row">
@@ -174,6 +188,6 @@
         </div>
     </div>
 
-    <script src="admin.js?v=4"></script>
+    <script src="admin.js?v=5"></script>
 </body>
 </html>

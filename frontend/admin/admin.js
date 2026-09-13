@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshButton = document.getElementById('refresh-button');
     const refreshBalancesBtn = document.getElementById('refresh-balances-btn');
     const refreshAlertsBtn = document.getElementById('refresh-alerts-btn');
+    const refreshFunnelBtn = document.getElementById('refresh-funnel-btn');
+    const funnelBody = document.getElementById('funnel-body');
     const alertsBody = document.getElementById('alerts-body');
     const alertsBadge = document.getElementById('alerts-badge');
     const eventLogBody = document.getElementById('event-log-body');
@@ -54,16 +56,20 @@ document.addEventListener('DOMContentLoaded', () => {
     /**
      * fetch, shadowed for this closure only — window.fetch is untouched.
      *
-     * 14 call sites send the token; exactly TWO ever looked at a 401. That was survivable
+     * 15 call sites send the token; exactly TWO ever looked at a 401. That was survivable
      * while the token lived in memory and died on reload. Persisting it changes that: a
-     * mistyped or rotated password would stick, and the other 12 calls would fail silently
+     * mistyped or rotated password would stick, and the other 13 calls would fail silently
      * for as long as the tab stayed open, with no way back but clearing storage by hand.
      *
-     * So invalidation happens in one place instead of fourteen. Only a 401 from OUR admin
+     * So invalidation happens in one place instead of fifteen. Only a 401 from OUR admin
      * API clears it — a 401 from anywhere else means nothing here. Every authenticated call
      * goes through API_BASE_URL or WALLET_API, and both contain '/api/admin', so the test
-     * covers all fourteen; a new call site gets it for free. Reaching for window.fetch or
+     * covers all fifteen; a new call site gets it for free. Reaching for window.fetch or
      * realFetch directly would silently opt out.
+     *
+     * The fifteenth is the drop-off panel, added 2026-09-13. It reads
+     * `${API_BASE_URL}/funnel`, so it is inside the covered prefix and needs nothing of
+     * its own.
      */
     const realFetch = window.fetch.bind(window);
     function fetch(input, init) {
@@ -206,6 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderRequests(requests);
             fetchWalletBalances(); // load balances once we have a valid password
             fetchAlerts();
+            fetchFunnel();
         } catch (error) {
             requestsBody.innerHTML = `<tr><td colspan="7">Error loading requests: ${error.message}</td></tr>`;
         }
@@ -542,6 +549,112 @@ document.addEventListener('DOMContentLoaded', () => {
             `).join('')}</div>`;
         }
     }
+
+    // --- Drop-off ----------------------------------------------------------
+    //
+    // Two of every three requests ever created were never paid, and until the counters
+    // existed the service could not say where they were lost — a `requests` row is only
+    // written once the customer has already seen the full price and clicked through.
+    //
+    // The two kinds of number here must never be mixed. Visits, opened and copied are
+    // counts of events; opened and copied arrive from the page over an unauthenticated
+    // endpoint and can be inflated by anyone who can POST. Quotes and paid come from the
+    // requests table and are exact. That is why the rates below are only ever computed
+    // between numbers of the same kind.
+    const FUNNEL_DAYS = 30;
+
+    async function fetchFunnel() {
+        if (!adminPassword) {
+            funnelBody.innerHTML = '<p class="muted">Enter the admin password to see the drop-off — press Refresh on Requests.</p>';
+            return;
+        }
+
+        refreshFunnelBtn.disabled = true;
+        refreshFunnelBtn.textContent = 'Loading...';
+        try {
+            const res = await fetch(`${API_BASE_URL}/funnel?days=${FUNNEL_DAYS}`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+            if (!res.ok) {
+                funnelBody.innerHTML = `<p class="muted">Could not load the drop-off (HTTP ${res.status}).</p>`;
+                return;
+            }
+            renderFunnel(await res.json());
+        } catch (e) {
+            funnelBody.innerHTML = `<p class="muted">Could not load the drop-off: ${escapeHtml(e.message)}</p>`;
+        } finally {
+            refreshFunnelBtn.disabled = false;
+            refreshFunnelBtn.textContent = 'Refresh';
+        }
+    }
+
+    /** A percentage, or an em dash when the denominator is zero — never "0%", which reads
+     *  as a measured result rather than as nothing to measure. */
+    function rate(part, whole) {
+        if (!whole) return '&mdash;';
+        return `${Math.round((part / whole) * 100)}%`;
+    }
+
+    function renderFunnel(data) {
+        const t = (data && data.totals) || {};
+        const series = (data && data.series) || [];
+
+        const visitToQuote = rate(t.quotes, t.visits);
+        const quoteToPaid = rate(t.paid, t.quotes);
+
+        const heads = `
+            <div class="funnel-heads">
+                <div class="funnel-step">
+                    <div class="funnel-step-label">Visits</div>
+                    <div class="funnel-step-value">${escapeHtml(String(t.visits || 0))}</div>
+                    <div class="funnel-step-rate">homepage loads</div>
+                </div>
+                <div class="funnel-step">
+                    <div class="funnel-step-label">Got a price</div>
+                    <div class="funnel-step-value">${escapeHtml(String(t.quotes || 0))}</div>
+                    <div class="funnel-step-rate">${visitToQuote} of visits</div>
+                </div>
+                <div class="funnel-step">
+                    <div class="funnel-step-label">Opened payment</div>
+                    <div class="funnel-step-value">${escapeHtml(String(t.payOpened || 0))}</div>
+                    <div class="funnel-step-rate">${rate(t.copied, t.payOpened)} then copied</div>
+                </div>
+                <div class="funnel-step">
+                    <div class="funnel-step-label">Paid</div>
+                    <div class="funnel-step-value">${escapeHtml(String(t.paid || 0))}</div>
+                    <div class="funnel-step-rate ${(t.quotes && t.paid / t.quotes >= 0.5) ? 'good' : 'bad'}">${quoteToPaid} of prices given</div>
+                </div>
+            </div>`;
+
+        const rows = series.filter(d => d.visits || d.quotes || d.payOpened || d.copied || d.paid);
+        const table = !rows.length
+            ? '<p class="muted">Nothing counted yet. Visits are counted from the moment the server started.</p>'
+            : `<table id="funnel-table">
+                <thead><tr>
+                    <th>Day</th><th>Visits</th><th>Got a price</th><th>Opened</th><th>Copied</th><th>Paid</th>
+                </tr></thead>
+                <tbody>${rows.map(d => `
+                    <tr>
+                        <td>${escapeHtml(d.day)}</td>
+                        <td>${escapeHtml(String(d.visits))}</td>
+                        <td>${escapeHtml(String(d.quotes))}</td>
+                        <td>${escapeHtml(String(d.payOpened))}</td>
+                        <td>${escapeHtml(String(d.copied))}</td>
+                        <td>${escapeHtml(String(d.paid))}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>`;
+
+        funnelBody.innerHTML = heads + table + `
+            <p class="funnel-approx">
+                Last ${FUNNEL_DAYS} days. Visits, opened and copied are counts of events and are
+                approximate — the page reports the last two, and nothing authenticates that.
+                Prices given and paid come from the orders themselves and are exact. No visitor is
+                identified: there is no cookie, no address and no session behind any of these numbers.
+            </p>`;
+    }
+
+    refreshFunnelBtn.addEventListener('click', fetchFunnel);
 
     refreshAlertsBtn.addEventListener('click', fetchAlerts);
 

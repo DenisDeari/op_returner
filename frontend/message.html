@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- The page for ONE published message, at /m/<txid>.
+         Every {{TOKEN}} below is filled in by backend/src/message_page.js, in a single
+         pass, with everything escaped on the way in. Do not add a token whose value comes
+         from a customer without checking that renderer first. -->
+    <title>{{TITLE}}</title>
+    <meta name="description" content="{{DESCRIPTION}}">
+    <meta name="robots" content="{{ROBOTS}}">
+    <link rel="canonical" href="{{CANONICAL}}">
+    <meta name="theme-color" content="#08090b">
+
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="/favicon.png" sizes="96x96" type="image/png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="SatWire">
+    <meta property="og:url" content="{{CANONICAL}}">
+    <meta property="og:title" content="{{OG_TITLE}}">
+    <meta property="og:description" content="{{DESCRIPTION}}">
+    <meta property="og:locale" content="en">
+    <meta property="og:image" content="{{OG_IMAGE}}">
+    <meta property="og:image:alt" content="A message published on the Bitcoin blockchain.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{OG_TITLE}}">
+    <meta name="twitter:description" content="{{DESCRIPTION}}">
+    <meta name="twitter:image" content="{{OG_IMAGE}}">
+
+    <link rel="stylesheet" href="/css/styles.css?v=15">
+</head>
+<body>
+
+<div class="wrap">
+
+    <header class="top">
+        <a class="brand" href="/">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect width="24" height="24" rx="7" fill="url(#g)"/>
+                <path d="M5 12.5h3.2l1.6-4.2 2.4 7.4 1.7-3.2H19" stroke="#17130a" stroke-width="1.7"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+                <defs>
+                    <linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
+                        <stop stop-color="#ffb64d"/><stop offset="1" stop-color="#f7931a"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            satwire
+        </a>
+        <div class="top-right">
+            <a class="top-link" href="/">Write a message</a>
+        </div>
+    </header>
+
+    <section class="sec single">
+        <div class="sec-head">
+            <h2>Published on the Bitcoin blockchain</h2>
+            <span class="meta"><time datetime="{{PUBLISHED_ISO}}">{{PUBLISHED_TEXT}}</time></span>
+        </div>
+
+        <article class="single-msg">{{BODY}}</article>
+
+        <dl class="single-meta">
+            <dt>Transaction</dt>
+            <dd><a href="https://mempool.space/tx/{{TXID}}" target="_blank" rel="noopener nofollow"><code>{{TXID}}</code></a></dd>
+            {{BLOCK_ROW}}
+            <dt>Published</dt>
+            <dd><time datetime="{{PUBLISHED_ISO}}">{{PUBLISHED_TEXT}}</time></dd>
+        </dl>
+
+        <p class="note">
+            This message is in an <code>OP_RETURN</code> output of a real Bitcoin transaction.
+            Nobody can change or remove it — not the sender, not SatWire.
+            <a href="/what-is-op-return">How that works &rarr;</a>
+        </p>
+
+        <p>
+            <a class="cta-link" href="/">Write your own message on the blockchain &rarr;</a>
+        </p>
+    </section>
+
+    <footer class="foot">
+        <span>SatWire</span>
+        <span><a href="/what-is-op-return">What is OP_RETURN?</a> &middot; <a href="/">Write a message</a></span>
+    </footer>
+
+</div>
+
+</body>
+</html>

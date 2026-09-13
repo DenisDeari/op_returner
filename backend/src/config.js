@@ -188,8 +188,18 @@ if (NOTIFY_ENABLED && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
     console.warn('WARNING: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set. Activity notifications are disabled.');
 }
 
+// The origin this site is served from, with no trailing slash — used to build the
+// absolute URLs that a canonical tag and a sitemap must carry.
+//
+// Derived from WEBHOOK_RECEIVER_BASE_URL rather than hardcoded: that value is already
+// required at boot, already points at this deployment, and two independent notions of
+// "where this site lives" is how a sitemap ends up advertising the wrong host. Trailing
+// slashes are stripped because every caller appends a path beginning with one.
+const PUBLIC_BASE_URL = String(WEBHOOK_RECEIVER_BASE_URL || '').replace(/\/+$/, '');
+
 module.exports = {
     PORT: PORT || 3000,
+    PUBLIC_BASE_URL,
     ADMIN_PASSWORD,
     API_KEY,
     MNEMONIC,
