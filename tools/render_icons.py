@@ -109,23 +109,74 @@ def render_mark(size, pad=0.0):
     return bytes(out)
 
 
-def write_png(path, width, height, raw, color_type=6):
+def encode_png(width, height, raw, color_type=6):
+    """The PNG bytes, in memory. Split out from write_png because the .ico embeds them."""
     def chunk(tag, data):
         c = struct.pack('>I', len(data)) + tag + data
         return c + struct.pack('>I', zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack('>IIBBBBB', width, height, 8, color_type, 0, 0, 0)
-    png = (b'\x89PNG\r\n\x1a\n'
-           + chunk(b'IHDR', ihdr)
-           + chunk(b'IDAT', zlib.compress(raw, 9))
-           + chunk(b'IEND', b''))
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', ihdr)
+            + chunk(b'IDAT', zlib.compress(raw, 9))
+            + chunk(b'IEND', b''))
+
+
+def write_png(path, width, height, raw, color_type=6):
     with open(path, 'wb') as f:
-        f.write(png)
+        f.write(encode_png(width, height, raw, color_type))
+
+
+def write_ico(path, pngs):
+    """A Vista-format .ico: a directory followed by whole PNG files, one per size.
+
+    An .ico is allowed to embed PNG payloads verbatim rather than the old BMP+AND-mask
+    form, which is the only reason this can exist at all without an image library.
+
+    `pngs` is [(size, png_bytes), ...]. The size byte is 0 for 256 — the field is one
+    byte, so 256 does not fit and 0 is the documented escape. Nothing here renders at
+    256, but writing the rule down costs one line and getting it wrong is silent.
+    """
+    header = struct.pack('<HHH', 0, 1, len(pngs))
+    offset = len(header) + 16 * len(pngs)
+
+    entries = bytearray()
+    for size, data in pngs:
+        entries += struct.pack(
+            '<BBBBHHII',
+            0 if size >= 256 else size,   # bWidth
+            0 if size >= 256 else size,   # bHeight
+            0,                            # bColorCount: 0 for true colour
+            0,                            # bReserved
+            1,                            # wPlanes
+            32,                           # wBitCount (RGBA)
+            len(data),                    # dwBytesInRes
+            offset,                       # dwImageOffset
+        )
+        offset += len(data)
+
+    with open(path, 'wb') as f:
+        f.write(header)
+        f.write(entries)
+        for _, data in pngs:
+            f.write(data)
 
 
 if __name__ == '__main__':
     out_dir = sys.argv[1]
-    for size, name, pad in ((32, 'favicon.png', 0.0), (180, 'apple-touch-icon.png', 0.0)):
+
+    # favicon.png is 96 and not 32 deliberately. Google will only show a favicon in a
+    # search result when the file is square and 48x48 or a multiple of it; a 32x32 PNG is
+    # silently ignored. 96 keeps one file serving both the search result and the browser
+    # tab, which downsamples it.
+    for size, name, pad in ((96, 'favicon.png', 0.0), (180, 'apple-touch-icon.png', 0.0)):
         raw = render_mark(size, pad)
         write_png(f'{out_dir}/{name}', size, size, raw)
         print(f'{name}: {size}x{size}')
+
+    # /favicon.ico is the path Google and every browser probe when the markup does not
+    # settle it. It answered 404 on every visit until now. Three sizes, because the tab
+    # wants 16 or 32 and Google wants 48.
+    ico = [(s, encode_png(s, s, render_mark(s, 0.0))) for s in (16, 32, 48)]
+    write_ico(f'{out_dir}/favicon.ico', ico)
+    print(f'favicon.ico: {", ".join(f"{s}x{s}" for s, _ in ico)}')
