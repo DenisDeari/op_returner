@@ -132,6 +132,16 @@ app.get('/what-is-op-return', (req, res) => {
 });
 app.get('/what-is-op-return.html', (req, res) => res.redirect(301, '/what-is-op-return'));
 
+// The landing page for the thing customers actually do here: aim a message at somebody
+// else's address. Same shape as the explainer — extension-less URL, the .html spelling
+// redirects to it, so the page never competes with itself.
+const AIM_PAGE = 'send-a-message-to-a-bitcoin-address';
+app.get(`/${AIM_PAGE}`, (req, res) => {
+    res.setHeader('Cache-Control', hygiene.CACHE_REVALIDATE);
+    res.sendFile(path.join(FRONTEND_DIR, `${AIM_PAGE}.html`));
+});
+app.get(`/${AIM_PAGE}.html`, (req, res) => res.redirect(301, `/${AIM_PAGE}`));
+
 // One published message, at /m/<txid>.
 //
 // The template is read the same way the homepage's is, so an edit is live without a

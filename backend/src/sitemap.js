@@ -15,6 +15,13 @@
 
 const messagePage = require('./message_page');
 
+/**
+ * The written pages, besides the homepage. A page added here and nowhere else is a page
+ * announced to crawlers that does not exist, so this list and the routes in server.js are
+ * two halves of one thing.
+ */
+const STATIC_PAGES = ['what-is-op-return', 'send-a-message-to-a-bitcoin-address'];
+
 /** XML's five predefined entities. The same set as HTML's, and required in every field. */
 const XML_ESCAPES = {
     '&': '&amp;',
@@ -56,11 +63,13 @@ function renderSitemap(rows, baseUrl) {
     // that changes, so claiming a newer date would be a claim about nothing.
     const newest = messages.length ? lastmodOf(messages[0].publishedAt) : null;
 
+    // No lastmod on the written pages: they change when somebody edits them, which is not a
+    // date this code can know, and a fabricated one teaches a crawler to ignore the field.
     const entries = [
         urlEntry({ loc: `${baseUrl}/`, lastmod: newest, changefreq: 'daily', priority: '1.0' }),
-        // No lastmod: the explainer changes when someone edits it, which is not a date this
-        // code can know, and a fabricated one teaches a crawler to ignore the field.
-        urlEntry({ loc: `${baseUrl}/what-is-op-return`, changefreq: 'monthly', priority: '0.8' }),
+        ...STATIC_PAGES.map((page) => urlEntry({
+            loc: `${baseUrl}/${page}`, changefreq: 'monthly', priority: '0.8',
+        })),
     ];
 
     for (const row of messages) {
@@ -82,4 +91,4 @@ function renderSitemap(rows, baseUrl) {
         + `</urlset>\n`;
 }
 
-module.exports = { renderSitemap, xmlEscape, lastmodOf };
+module.exports = { renderSitemap, xmlEscape, lastmodOf, STATIC_PAGES };
