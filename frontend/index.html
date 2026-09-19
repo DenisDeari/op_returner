@@ -34,7 +34,7 @@
     <meta property="og:site_name" content="SatWire">
     <meta property="og:url" content="https://satwire.io/">
     <meta property="og:title" content="Write a message on the Bitcoin blockchain">
-    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,250 sats.">
+    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 3,250 sats.">
     <meta property="og:locale" content="en">
     <meta property="og:image" content="https://satwire.io/og.png">
     <meta property="og:image:type" content="image/png">
@@ -43,14 +43,14 @@
     <meta property="og:image:alt" content="SatWire — write a message on the Bitcoin blockchain.">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Write a message on the Bitcoin blockchain">
-    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 2,250 sats.">
+    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 3,250 sats.">
     <meta name="twitter:image" content="https://satwire.io/og.png">
 
-    <link rel="stylesheet" href="css/styles.css?v=15">
+    <link rel="stylesheet" href="css/styles.css?v=16">
 
     <!-- No rich result will come of this: Google wants a rating for that, and inventing one
          would be a lie. It is here so an answer engine can state what this is without
-         guessing. Nothing in it is a price claim the service cannot hold — the 2,000-sat
+         guessing. Nothing in it is a price claim the service cannot hold — the 3,000-sat
          service fee is real and fixed; the network fee on top is not, so it is not stated. -->
     <script type="application/ld+json">
     {
@@ -63,9 +63,9 @@
       "description": "Publishes a message or a picture permanently in a Bitcoin OP_RETURN output. No account and no signup: the customer pays a quoted amount in sats to a one-off address and receives the transaction id.",
       "offers": {
         "@type": "Offer",
-        "price": "0.00002",
+        "price": "0.00003",
         "priceCurrency": "BTC",
-        "description": "A 2,000-sat service fee, plus the Bitcoin network fee for the transaction, which depends on its size and the chosen fee rate."
+        "description": "A 3,000-sat service fee, plus the Bitcoin network fee for the transaction, which depends on its size and the chosen fee rate."
       }
     }
     </script>
@@ -163,7 +163,7 @@
                 <div id="img-budget-home">
                     <label class="imgbox-budget" id="img-budget-row">
                         <span>Budget</span>
-                        <input type="range" id="img-budget" min="3000" max="25000" step="500" value="8000"
+                        <input type="range" id="img-budget" min="4000" max="25000" step="500" value="8000"
                                aria-label="How many sats to spend on this image">
                         <b id="img-budget-n">8,000</b><span>sats</span>
                     </label>
@@ -241,7 +241,7 @@
                 <div class="breakdown" id="breakdown"><div>
                     <dl>
                         <dt>Network fee</dt><dd id="bd-net">220</dd>
-                        <dt>Service fee</dt><dd id="bd-svc">2,000</dd>
+                        <dt>Service fee</dt><dd id="bd-svc">3,000</dd>
                         <dt>To recipient</dt><dd id="bd-rec">0</dd>
                     </dl>
                 </div></div>
@@ -305,7 +305,7 @@
 
         <h3>What it costs</h3>
         <p>
-            Two parts: a flat <strong>2,000-sat service fee</strong>, and the Bitcoin network fee
+            Two parts: a flat <strong>3,000-sat service fee</strong>, and the Bitcoin network fee
             for the transaction. The network fee depends on how big your message is and how fast
             you want it confirmed — a short line of text costs about 440 sats to publish, a
             picture costs more because it is bigger.
@@ -314,11 +314,11 @@
             <caption>Roughly, at the cheapest fee rate, service fee included</caption>
             <thead><tr><th>What you publish</th><th>On-chain size</th><th>Total</th></tr></thead>
             <tbody>
-                <tr><td>A line of text</td><td>~100 bytes</td><td>~2,440 sats</td></tr>
-                <tr><td>Picture, 160&times;120</td><td>~1,500 bytes</td><td>~5,250 sats</td></tr>
-                <tr><td>Picture, 256&times;192</td><td>~2,840 bytes</td><td>~7,930 sats</td></tr>
-                <tr><td>Picture, 512&times;384</td><td>~7,880 bytes</td><td>~18,000 sats</td></tr>
-                <tr><td>Picture, 1024&times;768</td><td>~20,000 bytes</td><td>~42,250 sats</td></tr>
+                <tr><td>A line of text</td><td>~100 bytes</td><td>~3,440 sats</td></tr>
+                <tr><td>Picture, 160&times;120</td><td>~1,500 bytes</td><td>~6,250 sats</td></tr>
+                <tr><td>Picture, 256&times;192</td><td>~2,840 bytes</td><td>~8,930 sats</td></tr>
+                <tr><td>Picture, 512&times;384</td><td>~7,880 bytes</td><td>~19,000 sats</td></tr>
+                <tr><td>Picture, 1024&times;768</td><td>~20,000 bytes</td><td>~43,250 sats</td></tr>
             </tbody>
         </table>
         <p class="note">
@@ -469,6 +469,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=15"></script>
+<script src="js/app.js?v=16"></script>
 </body>
 </html>

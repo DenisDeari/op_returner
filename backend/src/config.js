@@ -41,7 +41,7 @@ const NETWORK = bitcoin.networks.bitcoin; // Or bitcoin.networks.testnet
 const NETWORK_NAME = NETWORK === bitcoin.networks.bitcoin ? 'main' : 'test3';
 
 // Fee and transaction constants
-const SERVICE_FEE_SATS = 2000;
+const SERVICE_FEE_SATS = 3000;
 const DUST_LIMIT_SATS = 546;
 const DEFAULT_FEE_RATE = 2; // sats per vByte
 

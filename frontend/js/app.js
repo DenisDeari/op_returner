@@ -2,7 +2,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     'use strict';
 
-    let SERVICE_FEE = 2000;     // config.js SERVICE_FEE_SATS, refreshed from /api/config/limits
+    let SERVICE_FEE = 3000;     // config.js SERVICE_FEE_SATS, refreshed from /api/config/limits
     const RING_CIRC = 94.25;    // 2 * pi * r, r = 15
     let MAX_BYTES = 1000;       // max_payload_size — text
     let MAX_IMAGE_BYTES = 0;    // max_image_payload_size — 0 until the server says otherwise

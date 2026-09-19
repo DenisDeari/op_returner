@@ -10,7 +10,7 @@ Plain language. Short sentences. Say the essential thing first, then the detail.
 
 The operator runs this service and makes the decisions; they do not need to be walked
 through your reasoning to approve something. Lead with what is true and what it means for
-them — "the limit is 20,000 bytes, that is about 42,000 sats for the biggest picture" —
+them — "the limit is 20,000 bytes, that is about 43,000 sats for the biggest picture" —
 not with the mechanism that produced it.
 
 Concretely:
@@ -1114,7 +1114,7 @@ What was added, all static:
 
 **Every number in that prose is real** and `site_delivery.js` is not what keeps it that way —
 a human is. The limits come from `/api/config/limits` and the picture sizes from the measured
-ladder in *Image payloads* above. The JSON-LD states only the 2,000-sat service fee, because
+ladder in *Image payloads* above. The JSON-LD states only the 3,000-sat service fee, because
 the network fee on top depends on the mempool and a `price` the service cannot hold would be
 a lie in machine-readable form.
 
