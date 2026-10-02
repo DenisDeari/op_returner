@@ -9,7 +9,7 @@
          security control — an auth layer in front of the path is. -->
     <meta name="robots" content="noindex, nofollow, noarchive">
     <title>SatWire Admin</title>
-    <link rel="stylesheet" href="admin.css?v=5">
+    <link rel="stylesheet" href="admin.css?v=6">
 </head>
 <body>
     <div class="container">
@@ -115,6 +115,16 @@
              Visits are counted server-side; "opened" and "copied" arrive from the page and
              are approximate — see backend/src/counters.js. Quotes and paid come from the
              requests table and are exact. The two kinds are never added together. -->
+        <div id="lightning-container" class="section">
+            <div class="header-actions">
+                <h2>&#9889; Lightning</h2>
+                <button id="refresh-lightning-btn" class="btn btn-refresh">Refresh</button>
+            </div>
+            <div id="lightning-body">
+                <p class="muted">Loading&hellip;</p>
+            </div>
+        </div>
+
         <div id="funnel-container" class="section">
             <div class="header-actions">
                 <h2>Drop-off</h2>
@@ -188,6 +198,6 @@
         </div>
     </div>
 
-    <script src="admin.js?v=5"></script>
+    <script src="admin.js?v=6"></script>
 </body>
 </html>

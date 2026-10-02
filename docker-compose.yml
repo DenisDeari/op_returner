@@ -20,6 +20,12 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - NOTIFY_ENABLED=${NOTIFY_ENABLED:-true}
+      # Lightning, through the phoenixd service below. Off unless all three are set;
+      # LIGHTNING_ENABLED=false is the kill switch that keeps them set.
+      - PHOENIXD_URL=${PHOENIXD_URL}
+      - PHOENIXD_PASSWORD=${PHOENIXD_PASSWORD}
+      - PHOENIXD_WEBHOOK_SECRET=${PHOENIXD_WEBHOOK_SECRET}
+      - LIGHTNING_ENABLED=${LIGHTNING_ENABLED:-true}
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
@@ -28,6 +34,20 @@ services:
       default:
         aliases:
           - webapp
+
+  # The Lightning node. Reachable only on this compose network, as http://phoenixd:9740;
+  # nothing is published. Its password, webhook secret and webhook URL are in phoenix.conf
+  # inside the volume, so they never appear in `docker inspect`. See CLAUDE.md, "Lightning".
+  phoenixd:
+    build: ./deploy/phoenixd
+    container_name: phoenixd
+    restart: unless-stopped
+    volumes:
+      - phoenixd-data:/phoenix/.phoenix
+    networks:
+      default:
+        aliases:
+          - phoenixd
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -43,6 +63,11 @@ volumes:
   op-returner-data:
     external: true
     name: op-returner_op_returner_data
+  # Holds the phoenixd seed. External, like the database volume, so no compose command can
+  # ever remove it.
+  phoenixd-data:
+    external: true
+    name: op-returner_phoenixd_data
 
 networks:
   default:

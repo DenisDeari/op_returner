@@ -46,7 +46,7 @@
     <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 3,250 sats.">
     <meta name="twitter:image" content="https://satwire.io/og.png">
 
-    <link rel="stylesheet" href="css/styles.css?v=16">
+    <link rel="stylesheet" href="css/styles.css?v=17">
 
     <!-- No rich result will come of this: Google wants a rating for that, and inventing one
          would be a lie. It is here so an answer engine can state what this is without
@@ -232,6 +232,14 @@
         </div></div>
 
         <div class="pay">
+            <!-- How the customer pays. Hidden until /api/config/limits says Lightning is
+                 offered at all; without it every order is on-chain, as it always was. The
+                 price differs slightly between the two (see app.js priceSats), so switching
+                 re-prices the total. -->
+            <div class="rail-pick" id="rail-pick" role="radiogroup" aria-label="Pay with" hidden>
+                <button type="button" role="radio" data-method="lightning" aria-checked="false">&#9889; Lightning</button>
+                <button type="button" role="radio" data-method="onchain" aria-checked="true">On-chain</button>
+            </div>
             <div class="total" id="total-btn" role="button" tabindex="0" aria-expanded="false">
                 <div class="total-row">
                     <strong id="total-n">2,242</strong>
@@ -396,7 +404,7 @@
                 <span class="verb post">POST</span>
                 <div>
                     <code>/api/message-request</code>
-                    <small>Returns an address to pay. Body: <code>message</code>, and optionally <code>targetAddress</code>, <code>amountToSend</code>, <code>feeRate</code>, <code>isPublic</code>.</small>
+                    <small>Returns an address to pay. Body: <code>message</code>, and optionally <code>targetAddress</code>, <code>amountToSend</code>, <code>feeRate</code>, <code>isPublic</code>. Send <code>paymentMethod: "lightning"</code> for a Lightning invoice instead.</small>
                 </div>
             </div>
             <div class="ep">
@@ -459,16 +467,18 @@
 <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-label="Payment">
     <div class="modal-box">
         <button class="modal-x" id="modal-x" type="button" aria-label="Close">&times;</button>
+        <div class="modal-kind" id="modal-kind">Bitcoin address</div>
         <div class="qr" id="qr-box"><img id="qr-img" alt="Payment QR code"></div>
         <div class="amt-big"><span id="modal-amount">0</span><span>sats</span></div>
         <div class="addr">
             <code id="modal-address"></code>
             <button class="btn-s" id="copy-btn" type="button">Copy</button>
         </div>
-        <div class="waiting"><i></i> Waiting for payment</div>
+        <a class="btn-s primary modal-wallet" id="modal-wallet" hidden>Open in wallet</a>
+        <div class="waiting"><i></i> <span id="modal-wait">Waiting for payment</span></div>
     </div>
 </div>
 
-<script src="js/app.js?v=16"></script>
+<script src="js/app.js?v=17"></script>
 </body>
 </html>

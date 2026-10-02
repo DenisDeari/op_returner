@@ -687,7 +687,10 @@ async function scanWallet(db, rootNode, config, options = {}) {
         // Orders can leave gaps wider than the gap limit — an abandoned order never pays,
         // so its address stays untouched — and stopping on the gap alone would step
         // straight past a later address that does hold a customer's money.
-        const minIndices = branch.id === 'receive' ? requestIndex.maxRequestIndex + 2 : 0;
+        // The change branch too: change is derived from the ORDER's index, and a Lightning
+        // order uses an index but never makes change there (the treasury pays it). A run of
+        // twenty Lightning orders would otherwise end the gap scan before later revenue.
+        const minIndices = (branch.id === 'receive' || branch.id === 'change') ? requestIndex.maxRequestIndex + 2 : 0;
         const scan = branch.mode === 'single'
             ? await scanSingle(rootNode, branch, config, { refresh, deadline })
             : await scanBranch(rootNode, branch, config, { refresh, minIndices, deadline });

@@ -197,6 +197,36 @@ if (NOTIFY_ENABLED && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
 // slashes are stripped because every caller appends a path beginning with one.
 const PUBLIC_BASE_URL = String(WEBHOOK_RECEIVER_BASE_URL || '').replace(/\/+$/, '');
 
+// Lightning, through a phoenixd node on the same Docker network. See lightning.js.
+//
+// Off unless all three are set, so a deployment without phoenixd behaves exactly as it
+// did before: intake refuses `paymentMethod: 'lightning'` and the page never offers it.
+const PHOENIXD_URL = String(process.env.PHOENIXD_URL || '').replace(/\/+$/, '');
+const PHOENIXD_PASSWORD = process.env.PHOENIXD_PASSWORD || '';
+const PHOENIXD_WEBHOOK_SECRET = process.env.PHOENIXD_WEBHOOK_SECRET || '';
+// Two switches, deliberately different:
+//   LIGHTNING_CONFIGURED  phoenixd is set up. Gates everything that RECEIVES or RETURNS
+//                         money — the webhook, invoice polling, refunds — because an
+//                         invoice already issued can still be paid.
+//   LIGHTNING_ENABLED     configured AND not switched off. Gates only what takes NEW
+//                         orders: offering Lightning on the page, and intake.
+// LIGHTNING_ENABLED=false is the kill switch, and it must never strand a payment.
+const LIGHTNING_CONFIGURED = !!(PHOENIXD_URL && PHOENIXD_PASSWORD && PHOENIXD_WEBHOOK_SECRET);
+const LIGHTNING_ENABLED = process.env.LIGHTNING_ENABLED !== 'false' && LIGHTNING_CONFIGURED;
+if (process.env.LIGHTNING_ENABLED !== 'false' && !LIGHTNING_ENABLED && (PHOENIXD_URL || PHOENIXD_PASSWORD)) {
+    console.warn('WARNING: Lightning is half-configured (PHOENIXD_URL, PHOENIXD_PASSWORD and PHOENIXD_WEBHOOK_SECRET are all needed). Lightning is off.');
+}
+
+// How long a Lightning invoice stays payable. Long enough to find a wallet and scan a
+// code; short because every open invoice holds a slice of the treasury in reserve (see
+// lightning.js treasuryCapacity), and an abandoned one keeps holding it until it expires.
+const LN_INVOICE_EXPIRY_SECONDS = 30 * 60;
+
+// Kept free in the treasury on top of every open Lightning order. The quote prices one
+// input; a fragmented treasury may need several at 68 vBytes each, and the service pays
+// for those, not the customer.
+const LN_TREASURY_MARGIN_SATS = 2000;
+
 module.exports = {
     PORT: PORT || 3000,
     PUBLIC_BASE_URL,
@@ -247,4 +277,12 @@ module.exports = {
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     NOTIFY_ENABLED,
+    // Lightning
+    PHOENIXD_URL,
+    PHOENIXD_PASSWORD,
+    PHOENIXD_WEBHOOK_SECRET,
+    LIGHTNING_CONFIGURED,
+    LIGHTNING_ENABLED,
+    LN_INVOICE_EXPIRY_SECONDS,
+    LN_TREASURY_MARGIN_SATS,
 };

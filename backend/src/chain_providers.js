@@ -12,6 +12,7 @@
 // transient failures are worth retrying later.
 
 const axios = require('axios');
+const bitcoin = require('bitcoinjs-lib');
 
 const HTTP_TIMEOUT_MS = 20000;
 // Read-only address lookups get a tighter deadline than a broadcast does. A wallet scan
@@ -55,6 +56,10 @@ const ALREADY_BROADCAST_PATTERNS = [
     'transaction already in block chain',
     'already known',
     'duplicate transaction',
+    // Bitcoin Core 28+ for a transaction that is already CONFIRMED and still has an
+    // unspent output ("Transaction outputs already in utxo set"). Older versions said
+    // "already in block chain". Either way: it is on chain, which is success.
+    'already in utxo set',
 ];
 
 // The inputs are gone, which almost always means an earlier attempt for this request
@@ -593,6 +598,127 @@ async function getTxStatus(txId, config) {
     };
 }
 
+/**
+ * Whether a transaction exists at all — in a mempool or in a block.
+ *
+ * NOT getTxStatus. Esplora's `/tx/:id/status` answers 200 {"confirmed": false} for a txid
+ * that does not exist, exactly as for one in the mempool (see the note on getTxStatus),
+ * so it can never tell "sitting in the mempool" from "never broadcast". `GET /tx/:id`
+ * answers 404 for an unknown txid, and that is the absence check money paths need: the
+ * Lightning path asks it before deciding whether a transaction it signed is on the
+ * network, and getting that wrong either marks an unpublished message as delivered or
+ * publishes a delivered one twice.
+ *
+ * Three answers, and the third is not a guess in either direction:
+ *   found: true    — some host has it (confirmed tells which)
+ *   found: false   — EVERY host answered, and every one said 404
+ *   ok: false      — anything else: a timeout, a 5xx, a rate limit on even one host
+ *
+ * Every host is asked, not the first that answers: one host's mempool can lack a
+ * transaction another has, and a single 404 is that host's view, not the network's.
+ *
+ * @returns {Promise<{ok: true, found: boolean, confirmed?: boolean, blockHeight?: number|null}
+ *   | {ok: false, reason: string}>}
+ */
+async function findTransaction(txId, config) {
+    if (!/^[0-9a-f]{64}$/i.test(String(txId || ''))) {
+        return { ok: false, reason: 'not a txid' };
+    }
+    const answers = await Promise.all(['https://blockstream.info', 'https://mempool.space'].map(async (host) => {
+        const base = esploraBase(host, config.NETWORK_NAME);
+        try {
+            const res = await axios.get(`${base}/tx/${txId}`, { timeout: LOOKUP_TIMEOUT_MS });
+            const status = (res.data && res.data.status) || {};
+            if (!res.data || res.data.txid !== String(txId).toLowerCase()) {
+                return { host, error: 'malformed transaction response' };
+            }
+            return { host, found: true, confirmed: !!status.confirmed, blockHeight: Number.isFinite(status.block_height) ? status.block_height : null };
+        } catch (error) {
+            if (error && error.response && error.response.status === 404) return { host, found: false };
+            return { host, error: extractErrorMessage(error) };
+        }
+    }));
+    const hit = answers.find((a) => a.found === true);
+    if (hit) return { ok: true, found: true, confirmed: hit.confirmed, blockHeight: hit.blockHeight, provider: hit.host };
+    const failed = answers.filter((a) => a.error);
+    if (failed.length) {
+        return { ok: false, reason: failed.map((a) => `${a.host.replace('https://', '')}: ${a.error}`).join('; ') };
+    }
+    return { ok: true, found: false };
+}
+
+/**
+ * Whether a FAILED broadcast might nonetheless have been accepted somewhere.
+ *
+ * tryProviders stops at the first definite refusal, and a host before it may have failed
+ * without saying no — a timeout or a 5xx can hide an acceptance whose answer was lost. A
+ * refusal (on policy, on fee, on spent inputs) is an answer; anything else is not. Only a
+ * failure whose every attempt was an answer proves the transaction entered no mempool.
+ */
+function mayHaveBeenAccepted(result) {
+    return (result && result.attempts ? result.attempts : []).some((a) => {
+        const c = classifyError(a.error);
+        return !c.permanent && !c.feeTooLow && !c.alreadyBroadcast;
+    });
+}
+
+/**
+ * What became of a transaction we signed: is it out there, provably gone, or unknown?
+ *
+ * The question every retry of a signed treasury transaction has to answer before deciding
+ * between "it is published", "build it again" and "wait". Getting it wrong either way
+ * costs money: believing a transaction exists when it does not records an undelivered
+ * message as delivered; believing it is gone when it is not publishes the message twice.
+ *
+ *   exists   some host has it (findTransaction), or one of its inputs is spent BY it.
+ *   dead     one of its inputs is spent by a DIFFERENT transaction that is CONFIRMED. Two
+ *            spends of one output cannot both confirm, so ours never will. A confirmed
+ *            fact needs only one host to report it.
+ *   unknown  everything else — hosts unreachable, an input spent by an unconfirmed
+ *            transaction (which could still be replaced), or simply not out there yet.
+ *            "Not found by the explorers" is deliberately NOT "dead": broadcasts go to
+ *            BlockCypher first, and a host's mempool can lack what another has.
+ *
+ * @returns {Promise<{state: 'exists'|'dead'|'unknown', confirmed?: boolean, conflict?: string, reason?: string}>}
+ */
+async function signedTxFate(txHex, config) {
+    let tx;
+    try {
+        tx = bitcoin.Transaction.fromHex(txHex);
+    } catch (e) {
+        return { state: 'unknown', reason: `cannot parse: ${e.message}` };
+    }
+    const txId = tx.getId();
+    const reasons = [];
+
+    const found = await findTransaction(txId, config);
+    if (found.ok && found.found) return { state: 'exists', confirmed: !!found.confirmed };
+    if (!found.ok) reasons.push(found.reason);
+
+    for (const input of tx.ins) {
+        const prev = Buffer.from(input.hash).reverse().toString('hex');
+        let answer = null;
+        for (const host of ['https://blockstream.info', 'https://mempool.space']) {
+            const base = esploraBase(host, config.NETWORK_NAME);
+            try {
+                const res = await axios.get(`${base}/tx/${prev}/outspend/${input.index}`, { timeout: LOOKUP_TIMEOUT_MS });
+                if (res.data && typeof res.data.spent === 'boolean') {
+                    answer = { spent: res.data.spent, spentBy: res.data.txid || null, confirmed: !!(res.data.status && res.data.status.confirmed) };
+                    break;
+                }
+            } catch (error) {
+                reasons.push(`${host.replace('https://', '')} outspend ${prev.slice(0, 12)}:${input.index}: ${extractErrorMessage(error)}`);
+            }
+        }
+        if (!answer) continue;
+        if (answer.spent && answer.spentBy === txId) return { state: 'exists', confirmed: answer.confirmed };
+        if (answer.spent && answer.spentBy && answer.spentBy !== txId && answer.confirmed) {
+            return { state: 'dead', conflict: answer.spentBy };
+        }
+    }
+    return { state: 'unknown', reason: reasons.join('; ') || 'not on any host yet, and no input spent by a confirmed conflict' };
+}
+
 /** Maps a BlockCypher /balance payload onto the shape the wallet view expects. */
 function normalizeBlockcypherBalance(d) {
     return {
@@ -712,6 +838,9 @@ async function getUnspent(address, config, opts = {}) {
 }
 
 module.exports = {
+    findTransaction,
+    signedTxFate,
+    mayHaveBeenAccepted,
     broadcastTransaction,
     findUtxoForAddress,
     getAddressStats,

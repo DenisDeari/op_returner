@@ -50,6 +50,14 @@ const KINDS = Object.freeze({
     // history never implies a consent that was not given, and from WALL_SHOWN, which
     // means restoring something after a hide.
     WALL_PUBLISHED_BY_OPERATOR: 'wall_published_by_operator',
+    // Lightning. An invoice issued, paid, or left to expire; and the Lightning address a
+    // customer gave us to send a refund to.
+    LIGHTNING_INVOICE: 'lightning_invoice',
+    LIGHTNING_PAID: 'lightning_paid',
+    LIGHTNING_EXPIRED: 'lightning_expired',
+    LIGHTNING_REFUND_ADDRESS: 'lightning_refund_address',
+    // A treasury transaction signed and recorded on the row, before its broadcast.
+    TREASURY_SIGNED: 'treasury_signed',
 });
 
 const MAX_DETAIL_CHARS = 2000;

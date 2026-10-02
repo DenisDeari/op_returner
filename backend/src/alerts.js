@@ -30,7 +30,7 @@ async function computeAlerts(db, config = {}) {
         db,
         `SELECT id, address, status, failureReason, refundFailureReason,
                 paymentReceivedSatoshis, requiredAmountSatoshis, refundAddress,
-                attemptCount, createdAt
+                attemptCount, createdAt, paymentMethod, lnRefundAddress, pendingTxId, archivedAt
          FROM requests
          WHERE paymentTxId IS NOT NULL
            AND opReturnTxId IS NULL
@@ -57,7 +57,26 @@ async function computeAlerts(db, config = {}) {
                 + `Automatic retry is still in progress (${r.attemptCount || 0}/${maxAttempts}).`;
         }
 
-        if (!r.refundAddress) {
+        const lightning = r.paymentMethod === 'lightning';
+        if (lightning) {
+            // A Lightning order has no payer address on the chain. Its refund goes to a
+            // Lightning address the customer types in, so the useful thing to say is
+            // whether they have, and what happened when we tried.
+            if (r.pendingTxId) {
+                detail += ` Paid over Lightning. A treasury transaction (${r.pendingTxId}) was signed for it and may already be on-chain — check before publishing again or refunding.`;
+            } else if (/^ln_refund_outcome_unknown/.test(r.refundFailureReason || '')) {
+                detail += ' Paid over Lightning. A refund payment was attempted and its outcome is UNKNOWN — check phoenixd\'s outgoing payments before refunding again.';
+            } else if (r.lnRefundAddress) {
+                detail += ` Paid over Lightning. Refund address: ${r.lnRefundAddress}.`;
+            } else if (r.archivedAt) {
+                detail += ' Paid over Lightning AFTER the order was withdrawn or its invoice ran out, so it will not be published. '
+                    + 'The customer\'s order page asks for a Lightning address; if they do not come back, refund it from here with one they give you.';
+            } else if (exhausted || r.status === 'op_return_failed') {
+                detail += ' Paid over Lightning. Waiting for the customer to enter a Lightning address for the refund on their order page.';
+            } else {
+                detail += ' Paid over Lightning.';
+            }
+        } else if (!r.refundAddress) {
             detail += ' No refund address on record, so it cannot be refunded automatically.';
         }
 

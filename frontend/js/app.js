@@ -38,6 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const modal = $('modal'), modalX = $('modal-x'), copyBtn = $('copy-btn');
     const qrBox = $('qr-box'), qrImg = $('qr-img');
     const modalAmount = $('modal-amount'), modalAddress = $('modal-address');
+    const modalKind = $('modal-kind'), modalWallet = $('modal-wallet'), modalWait = $('modal-wait');
+    const railPick = $('rail-pick');
 
     // --- State -------------------------------------------------------------
     // One key, unchanged from the previous build so orders already in flight in a
@@ -47,6 +49,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let orders = [];
     try { orders = JSON.parse(localStorage.getItem(STORE)) || []; } catch { orders = []; }
     const save = () => { try { localStorage.setItem(STORE, JSON.stringify(orders)); } catch { /* quota */ } };
+
+    // How the next order is paid. On-chain until the server says Lightning is offered
+    // (/api/config/limits), so a page that never hears back behaves as it always did.
+    // The customer's last choice is remembered; Lightning is the default once it exists,
+    // because it saves them the on-chain fee of their own payment.
+    const PAY_STORE = 'opr_pay_method';
+    let LIGHTNING_OK = false;
+    let payMethod = 'onchain';
 
     // --- Helpers -----------------------------------------------------------
     const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -233,6 +243,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
+     * The same, for a Lightning order — mirrors lightning.js quote().
+     *
+     * A Lightning order is published out of the treasury, and is priced from the treasury
+     * builder's own estimate (treasury.js estimateTreasuryVBytes), which carries a 4-vByte
+     * safety margin the on-chain quote does not. So it is 4 vBytes dearer per sat/vB — and
+     * the customer saves the on-chain fee of their own payment, which is far more.
+     */
+    function quoteLightningSats(bytes, feeRate, recipient, amount) {
+        let vb = 10.5 + 68 + opReturnOutputVBytes(bytes) + 4 + 31;
+        if (recipient) vb += recipientOutputVBytes(recipient);
+        return Math.ceil(vb) * feeRate + SERVICE_FEE + (recipient ? amount : 0);
+    }
+
+    /** The quote for whichever rail is selected. Everything on the page prices through this. */
+    function priceSats(bytes, feeRate, recipient, amount) {
+        return payMethod === 'lightning'
+            ? quoteLightningSats(bytes, feeRate, recipient, amount)
+            : quoteSats(bytes, feeRate, recipient, amount);
+    }
+
+    /**
      * The largest payload whose quote still fits inside `budget` sats.
      *
      * Binary search rather than algebra: quoteSats has a Math.ceil in the middle of it and
@@ -243,7 +274,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let lo = 1, hi = cap, best = 0;
         while (lo <= hi) {
             const mid = (lo + hi) >> 1;
-            if (quoteSats(mid, feeRate, recipient, amount) <= budget) { best = mid; lo = mid + 1; }
+            if (priceSats(mid, feeRate, recipient, amount) <= budget) { best = mid; lo = mid + 1; }
             else hi = mid - 1;
         }
         return best;
@@ -271,6 +302,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // until it answers — better a button that appears a beat late than one that
             // offers something this browser cannot actually produce.
             if (MAX_IMAGE_BYTES > 0) detectImageMime().then((m) => { if (m) imgBtn.hidden = false; });
+            if (d.lightning === true) {
+                LIGHTNING_OK = true;
+                railPick.hidden = false;
+                let stored = null;
+                try { stored = localStorage.getItem(PAY_STORE); } catch { /* private mode */ }
+                setPayMethod(stored === 'onchain' ? 'onchain' : 'lightning', { remember: false });
+            }
             recalc();
         })
         .catch(() => {});
@@ -576,7 +614,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const budgetCeiling = encoderCeiling != null
             ? Math.min(MAX_IMAGE_BYTES, encoderCeiling)
             : MAX_IMAGE_BYTES;
-        capBudgetSlider(quoteSats(budgetCeiling, feeRate, recipient, amount));
+        capBudgetSlider(priceSats(budgetCeiling, feeRate, recipient, amount));
         const pinned = target >= MAX_IMAGE_BYTES;
 
         if (target <= 0) {
@@ -820,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let amount = parseInt(amtIn.value, 10) || 0;
         if (!recipient) amount = 0;
 
-        const total = quoteSats(bytes, fee, recipient, amount);
+        const total = priceSats(bytes, fee, recipient, amount);
         bdNet.textContent = fmt(total - SERVICE_FEE - amount);
         bdSvc.textContent = fmt(SERVICE_FEE);
         bdRec.textContent = fmt(amount);
@@ -834,9 +872,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // rather than at the floor of 2. The total was on screen the entire time — what was
         // missing was which control had produced it.
         //
-        // Derived from quoteSats, not from totalN: that element is written from inside a
-        // requestAnimationFrame and is mid-animation whenever this runs.
-        const extra = total - quoteSats(bytes, MIN_FEE, recipient, amount);
+        // Derived from priceSats (quoteSats for an on-chain order), not from totalN: that
+        // element is written from inside a requestAnimationFrame and is mid-animation
+        // whenever this runs.
+        const extra = total - priceSats(bytes, MIN_FEE, recipient, amount);
         feeExtra.hidden = extra <= 0;
         feeExtra.textContent = extra > 0 ? `+${fmt(extra)}` : '';
         feeCostNote.textContent = extra > 0
@@ -969,11 +1008,53 @@ document.addEventListener('DOMContentLoaded', () => {
         set('archivedReason', data.archivedReason);
         set('opReturnConfirmedAt', data.opReturnConfirmedAt);
         set('opReturnBlockHeight', data.opReturnBlockHeight);
+        set('paymentMethod', data.paymentMethod);
+        set('lnInvoiceExpiresAt', data.lnInvoiceExpiresAt);
+        set('lnRefundAddress', data.lnRefundAddress);
+        // `null` is a real answer here (no refund pending), so it is written even though
+        // set() skips nulls.
+        if (data.lightningRefund !== undefined && order.lightningRefund !== data.lightningRefund) {
+            order.lightningRefund = data.lightningRefund; changed = true;
+        }
         // The server explains a retired request in `error`. Keep it — the customer
         // otherwise sees a bare status and no reason.
         if (data.status === 'archived') set('archivedNote', data.error);
         if (data.userFeedback && !order.feedbackSent) { order.feedbackSent = true; changed = true; }
         if (changed) { save(); renderOrders(); }
+        // A Lightning payment lands within a second or two of the customer pressing pay,
+        // so the dialog would otherwise sit there saying "waiting" over a paid order.
+        if (!modal.hidden && modalOrderId === id && order.status !== 'pending_payment') closePayment();
+    }
+
+    const isLightningOrder = (o) => o && o.paymentMethod === 'lightning';
+    // An unpaid Lightning invoice stops being payable at its expiry; the server archives
+    // the order a few minutes later. The PAY button goes as soon as the clock says so.
+    const invoiceExpired = (o) => isLightningOrder(o) && !!o.lnInvoiceExpiresAt
+        && Date.parse(o.lnInvoiceExpiresAt) <= Date.now();
+    const lnDrafts = {}; // refund addresses being typed, kept across the 5-second re-render
+
+    /**
+     * What a paid Lightning order that cannot be published says about its money. The
+     * server decides the state (lightning.js refundState); this only words it.
+     */
+    function lightningRefundHtml(order) {
+        const id = escapeHtml(order.requestId);
+        const state = order.lightningRefund;
+        if (state === 'needs_address' || state === 'retry_address') {
+            return `<div class="feedback ln-refund">
+                <label for="lnr-${id}">${state === 'retry_address'
+                    ? 'We could not pay that Lightning address. Check it, or enter a different one:'
+                    : 'Your message could not be published. Enter a Lightning address and we will send your payment back:'}</label>
+                <input id="lnr-${id}" class="lnr-input" data-id="${id}" type="text" inputmode="email" autocomplete="off"
+                       spellcheck="false" placeholder="name@wallet.com" value="${escapeHtml(lnDrafts[order.requestId] || '')}">
+                <div class="feedback-row">
+                    <button class="btn-s primary act-lnrefund" type="button" data-id="${id}">Send my refund</button>
+                </div>
+            </div>`;
+        }
+        if (state === 'in_progress') return '<div class="order-note">Sending your refund over Lightning…</div>';
+        if (state === 'manual') return '<div class="order-note">Your refund needs a quick manual check. The operator has been told and will send it.</div>';
+        return '';
     }
 
     function renderOrders() {
@@ -982,8 +1063,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Remember where the cursor was — a poll re-renders every 5 seconds.
         const active = document.activeElement;
-        const focusedId = active && active.classList && active.classList.contains('feedback-input')
-            ? active.dataset.id : null;
+        const focusedClass = active && active.classList
+            ? (active.classList.contains('feedback-input') ? 'feedback-input'
+                : active.classList.contains('lnr-input') ? 'lnr-input' : null)
+            : null;
+        const focusedId = focusedClass ? active.dataset.id : null;
         const caret = focusedId ? active.selectionStart : null;
 
         ordersEl.innerHTML = '';
@@ -1031,7 +1115,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 </ol>
                 <div class="order-note" style="${order.status === 'pending_payment' || (done && order.opReturnConfirmedAt) ? 'display:none' : ''}">${escapeHtml(labelFor(order))}</div>
                 ${order.archivedNote ? `<div class="order-note bad">${escapeHtml(order.archivedNote)}</div>` : ''}
-                ${order.refundTxId ? `<div class="order-note good">Your payment was refunded — <a href="https://mempool.space/tx/${encodeURIComponent(order.refundTxId)}" target="_blank" rel="noopener">view transaction ↗</a></div>` : ''}
+                ${order.refundTxId && String(order.refundTxId).startsWith('ln:') ? '<div class="order-note good">Your payment was refunded over Lightning.</div>' : ''}
+                ${order.refundTxId && !String(order.refundTxId).startsWith('ln:') ? `<div class="order-note good">Your payment was refunded — <a href="https://mempool.space/tx/${encodeURIComponent(order.refundTxId)}" target="_blank" rel="noopener">view transaction ↗</a></div>` : ''}
+                ${order.status === 'pending_payment' && invoiceExpired(order) ? '<div class="order-note bad">This Lightning invoice expired before it was paid. Create a new request to try again.</div>' : ''}
+                ${isLightningOrder(order) ? lightningRefundHtml(order) : ''}
                 ${failed && order.supportEmail ? `<div class="order-note">Need help? <a href="mailto:${escapeHtml(order.supportEmail)}?subject=SatWire%20request%20${encodeURIComponent(order.requestId)}">${escapeHtml(order.supportEmail)}</a></div>` : ''}
                 ${feedbackHtml}
                 <div class="order-foot">
@@ -1041,7 +1128,7 @@ document.addEventListener('DOMContentLoaded', () => {
                           known-live statuses rather than "anything not terminal". Inverting it
                           gives a retired order a working PAY button pointing at a dead address,
                           because the amount and address come from localStorage. */ ''}
-                    ${order.status === 'pending_payment' ? `<button class="btn-s primary act-pay" type="button" data-id="${escapeHtml(order.requestId)}">Pay ${fmt(order.requiredAmountSatoshis)} sats</button>` : ''}
+                    ${order.status === 'pending_payment' && !invoiceExpired(order) ? `<button class="btn-s primary act-pay" type="button" data-id="${escapeHtml(order.requestId)}">${isLightningOrder(order) ? '⚡ ' : ''}Pay ${fmt(order.requiredAmountSatoshis)} sats</button>` : ''}
                     ${order.txId ? `<a class="btn-s" href="https://mempool.space/tx/${encodeURIComponent(order.txId)}" target="_blank" rel="noopener">View on-chain ↗</a>` : ''}
                     <button class="btn-s act-drop" type="button" data-id="${escapeHtml(order.requestId)}">${(done || failed || order.status === 'archived') ? 'Remove' : 'Cancel'}</button>
                 </div>`;
@@ -1064,6 +1151,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            const lnInput = el.querySelector('.lnr-input');
+            if (lnInput) lnInput.addEventListener('input', () => { lnDrafts[order.requestId] = lnInput.value; });
+
             const fbInput = el.querySelector('.feedback-input');
             const fbCount = el.querySelector('.feedback-counter');
             if (fbInput && fbCount) {
@@ -1074,7 +1164,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (focusedId) {
-            const restored = ordersEl.querySelector(`.feedback-input[data-id="${CSS.escape(focusedId)}"]`);
+            const restored = ordersEl.querySelector(`.${focusedClass}[data-id="${CSS.escape(focusedId)}"]`);
             if (restored) {
                 restored.focus();
                 if (caret !== null) { try { restored.setSelectionRange(caret, caret); } catch { /* ignore */ } }
@@ -1087,9 +1177,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const pay = e.target.closest('.act-pay');
         const drop = e.target.closest('.act-drop');
         const fb = e.target.closest('.act-feedback');
+        const lnr = e.target.closest('.act-lnrefund');
         if (pay) openPayment(orders.find((o) => o.requestId === pay.dataset.id));
         if (drop) dropOrder(drop.dataset.id);
         if (fb) sendFeedback(fb.dataset.id, fb);
+        if (lnr) sendLightningRefund(lnr.dataset.id, lnr);
     });
 
     // --- API ---------------------------------------------------------------
@@ -1117,6 +1209,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     feeRate: parseInt(feeIn.value, 10),
                     amountToSend: parseInt(amtIn.value, 10) || 0,
                     isPublic: !!publicToggle.checked,
+                    paymentMethod: payMethod,
                 }),
             });
             const data = await res.json();
@@ -1130,12 +1223,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     isPublic: !!data.isPublic,
                     message: payloadBody,
                     payloadKind,
+                    paymentMethod: data.paymentMethod === 'lightning' ? 'lightning' : 'onchain',
+                    lnInvoice: data.invoice || null,
+                    lnInvoiceExpiresAt: data.invoiceExpiresAt || null,
                 });
                 msg.value = '';
                 if (image || pendingSource) clearImage();
                 recalc();
                 const fresh = orders[0];
                 if (fresh) openPayment(fresh);
+            } else if (data.code === 'lightning_unavailable') {
+                // Nothing was created and nothing was charged. Switch to on-chain so the
+                // customer sees the on-chain price before deciding to go ahead.
+                setPayMethod('onchain', { remember: false });
+                recalc();
+                alert(data.error || 'Lightning is not available for this order. Switched to on-chain — check the price and try again.');
             } else {
                 // Covers the 429 from intake throttling, whose body explains the limit.
                 alert(data.error || 'Something went wrong. Please try again.');
@@ -1156,6 +1258,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm('Cancel this request?')) return;
         try {
             const res = await fetch(`/api/request/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            // A cancelled Lightning order stays on the list. Its invoice can still be paid
+            // until it expires — a code scanned before the cancel — and if it is, this card
+            // is the only place the customer can say where the money should go back: the
+            // request id it holds is what the refund form needs.
+            if (res.ok && isLightningOrder(order)) {
+                order.status = 'archived';
+                order.archivedReason = 'cancelled_by_customer';
+                save(); renderOrders();
+                return;
+            }
             if (res.ok || res.status === 404) { removeOrder(id); return; }
             const data = await res.json();
             alert(data.error || 'Could not cancel this request.');
@@ -1193,6 +1305,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function sendLightningRefund(id, button) {
+        const box = ordersEl.querySelector(`.lnr-input[data-id="${CSS.escape(id)}"]`);
+        const address = (box && box.value.trim()) || '';
+        if (!address) { if (box) box.focus(); return; }
+
+        button.disabled = true;
+        button.textContent = 'Sending…';
+        try {
+            const res = await fetch(`/api/request/${encodeURIComponent(id)}/lightning-refund`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address }),
+            });
+            const data = await res.json();
+            const order = orders.find((o) => o.requestId === id);
+            if (order && data.lightningRefund !== undefined) {
+                order.lightningRefund = data.lightningRefund;
+                order.lnRefundAddress = address;
+            }
+            if (res.ok && order) {
+                // Shown straight away; the next poll fills in refundTxId.
+                order.status = 'refunded';
+                order.refundTxId = order.refundTxId || 'ln:';
+                delete lnDrafts[id];
+            } else if (!res.ok) {
+                alert(data.error || 'Could not send the refund.');
+            }
+            save();
+            renderOrders();
+        } catch {
+            alert('Network error. Please try again.');
+            button.disabled = false;
+            button.textContent = 'Send my refund';
+        }
+    }
+
     // A broadcast order is no longer finished the moment it broadcasts — it still has to
     // reach a block, and the server learns that separately. So it stays pollable until
     // it does, but on a much slower cadence: a confirmation takes ~10 minutes at best,
@@ -1202,6 +1350,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const lastConfirmPoll = {};
 
     function needsPolling(order) {
+        // An archived Lightning order that was never refunded may still be paid (its invoice
+        // outlives a cancel), and then it needs the refund form — so it is still asked
+        // about, slowly, like an unmined transaction.
+        const lnMayStillPay = isLightningOrder(order) && order.status === 'archived' && !order.refundTxId;
+        if (lnMayStillPay) {
+            const now = Date.now();
+            if (now - (lastConfirmPoll[order.requestId] || 0) < CONFIRM_POLL_MS) return false;
+            lastConfirmPoll[order.requestId] = now;
+            return true;
+        }
         if (!TERMINAL_STATUSES.includes(order.status)) return true;
         if (order.status !== 'op_return_broadcasted' || order.opReturnConfirmedAt) return false;
         // Stamped BEFORE the request, not after: a slow or failed fetch would otherwise
@@ -1337,12 +1495,45 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Payment modal -----------------------------------------------------
+    let invoiceTimer = null;
+    let modalOrderId = null;
+
     function openPayment(order) {
         if (!order) return;
+        modalOrderId = order.requestId;
         modalAmount.textContent = fmt(order.requiredAmountSatoshis);
-        modalAddress.textContent = order.address;
+        clearInterval(invoiceTimer);
 
-        qrBox.className = 'qr';
+        const ln = isLightningOrder(order);
+        modalKind.textContent = ln ? '⚡ Lightning invoice' : 'Bitcoin address';
+        // The full string is what Copy puts on the clipboard; the visible one is clipped by
+        // CSS, which is fine for an address and essential for a 300-character invoice.
+        const payable = ln ? (order.lnInvoice || '') : order.address;
+        modalAddress.textContent = payable;
+        modalAddress.dataset.full = payable;
+        modalWallet.hidden = !ln || !order.lnInvoice;
+        if (ln && order.lnInvoice) modalWallet.href = `lightning:${order.lnInvoice}`;
+        modalWait.textContent = 'Waiting for payment';
+        if (ln && order.lnInvoiceExpiresAt) {
+            const tick = () => {
+                const left = Date.parse(order.lnInvoiceExpiresAt) - Date.now();
+                if (left <= 0) {
+                    modalWait.textContent = 'This invoice has expired';
+                    clearInterval(invoiceTimer);
+                    return;
+                }
+                const m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
+                modalWait.textContent = `Waiting for payment · expires in ${m}:${String(sec).padStart(2, '0')}`;
+            };
+            tick();
+            invoiceTimer = setInterval(tick, 1000);
+        }
+
+        qrBox.className = ln ? 'qr ln' : 'qr';
+        // The failure path below replaces the box's contents with a message, which detaches
+        // the <img>. Put it back, or every later order opens with no code at all — more
+        // likely now that a Lightning invoice can simply run out.
+        if (!qrBox.contains(qrImg)) { qrBox.textContent = ''; qrBox.appendChild(qrImg); }
         qrImg.style.display = '';
         qrImg.src = `/api/payment-qr.svg?requestId=${encodeURIComponent(order.requestId)}`;
         qrImg.onerror = () => {
@@ -1350,13 +1541,36 @@ document.addEventListener('DOMContentLoaded', () => {
             // no longer awaiting payment. The address below stays readable either way.
             qrImg.style.display = 'none';
             qrBox.className = 'qr failed';
-            qrBox.textContent = 'This request is no longer open for payment.';
+            qrBox.textContent = invoiceExpired(order)
+                ? 'This invoice has expired.'
+                : ln
+                    // The invoice itself is still below, with Copy and Open in wallet.
+                    ? 'Could not draw the code. Copy the invoice below, or open it in your wallet.'
+                    : 'This request is no longer open for payment.';
         };
 
         modal.hidden = false;
         beacon('pay_opened');
     }
-    const closePayment = () => { modal.hidden = true; };
+    const closePayment = () => { modal.hidden = true; clearInterval(invoiceTimer); };
+
+    // --- Pay with ------------------------------------------------------------
+    function setPayMethod(method, { remember = true } = {}) {
+        payMethod = method === 'lightning' && LIGHTNING_OK ? 'lightning' : 'onchain';
+        railPick.querySelectorAll('button').forEach((b) => {
+            b.setAttribute('aria-checked', b.dataset.method === payMethod ? 'true' : 'false');
+        });
+        if (remember) { try { localStorage.setItem(PAY_STORE, payMethod); } catch { /* private mode */ } }
+    }
+
+    railPick.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-method]');
+        if (!b) return;
+        setPayMethod(b.dataset.method);
+        recalc();
+        // The image budget buys a different number of bytes on each rail.
+        if (pendingSource) { clearTimeout(budgetTimer); budgetTimer = setTimeout(reencode, 140); }
+    });
 
     // --- Disclosures -------------------------------------------------------
     optBtn.addEventListener('click', () => {
@@ -1426,7 +1640,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(modalAddress.textContent).then(() => {
+        navigator.clipboard.writeText(modalAddress.dataset.full || modalAddress.textContent).then(() => {
             copyBtn.textContent = 'Copied';
             setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
             // Inside the success branch: a clipboard write that was refused (no permission,

@@ -21,32 +21,10 @@ const chainProviders = require('./chain_providers');
 // How long a request may sit in processing_op_return before we assume the worker died.
 const STUCK_LOCK_MS = 30 * 60 * 1000;
 
-/**
- * Failure reasons that no amount of retrying will fix. Mirrors the permanent set in
- * op_return_creator, matched by prefix since failureReason carries a detail suffix.
- */
-const PERMANENT_PREFIXES = [
-    'invalid_message',
-    'missing_payment_details',
-    'insufficient_payment',
-    'invalid_target_address',
-    'change_derivation_failed',
-    'key_derivation_failed',
-    'signature_validation_failed',
-    'broadcast_rejected',
-    'fee_below_relay_minimum',
-    'inputs_already_spent',
-];
-
-function isPermanentReason(reason) {
-    if (!reason) return false;
-    return PERMANENT_PREFIXES.some((p) => String(reason).startsWith(p));
-}
-
-/** Failures where the money has already left the payment address, so no refund is possible. */
-function isNoRefundReason(reason) {
-    return !!reason && String(reason).startsWith('inputs_already_spent');
-}
+// The permanent and no-refund reason lists live in failure_reasons.js, shared with
+// lightning.js, which cannot require this module without a cycle.
+const { isPermanentReason, isNoRefundReason } = require('./failure_reasons');
+const lightning = require('./lightning');
 
 async function unstickAbandonedLocks(db) {
     const cutoff = new Date(Date.now() - STUCK_LOCK_MS).toISOString();
@@ -72,12 +50,18 @@ async function unstickAbandonedLocks(db) {
     // it would hold customer funds forever. Release it back to a refundable state.
     // Safe because attemptRefund re-checks the chain for unspent funds before spending,
     // so a refund that actually did broadcast will find nothing left to send.
+    //
+    // NOT for Lightning. An on-chain refund re-reads the chain before it spends, so
+    // releasing its lock is safe; a Lightning refund is a payment phoenixd may have sent
+    // while we died, and nothing here can see it. Releasing that lock would let the next
+    // attempt pay a second time.
     const refunds = await dbRun(
         db,
         `UPDATE requests SET status = 'op_return_failed'
          WHERE status = 'refund_processing'
            AND refundTxId IS NULL
            AND opReturnTxId IS NULL
+           AND paymentMethod IS NOT 'lightning'
            AND COALESCE(lastAttemptAt, createdAt) < ?`,
         [cutoff]
     );
@@ -85,7 +69,24 @@ async function unstickAbandonedLocks(db) {
         console.warn(`[Reconcile] Released ${refunds.changes} abandoned refund lock(s).`);
     }
 
-    return fulfilment.changes + refunds.changes;
+    // A Lightning refund interrupted mid-payment goes to a human, with a reason that
+    // neither the customer's form nor any automatic pass will retry.
+    const lightningRefunds = await dbRun(
+        db,
+        `UPDATE requests SET status = 'refund_failed',
+             refundFailureReason = 'ln_refund_outcome_unknown: interrupted while paying — check phoenixd outgoing payments before refunding again'
+         WHERE status = 'refund_processing'
+           AND refundTxId IS NULL
+           AND opReturnTxId IS NULL
+           AND paymentMethod = 'lightning'
+           AND COALESCE(lastAttemptAt, createdAt) < ?`,
+        [cutoff]
+    );
+    if (lightningRefunds.changes > 0) {
+        console.warn(`[Reconcile] ${lightningRefunds.changes} Lightning refund(s) were interrupted mid-payment. Marked for manual review.`);
+    }
+
+    return fulfilment.changes + refunds.changes + lightningRefunds.changes;
 }
 
 /**
@@ -170,7 +171,12 @@ async function retryFailedRequests(db, rootNode, config) {
         // recorded it as a failure (e.g. the broadcast propagated but the HTTP response
         // never came back). Retrying would build a doomed double-spend, and the ensuing
         // "permanent" failure would trigger a refund of money that is no longer there.
-        const spent = await chainProviders.isOutputSpent(request.paymentTxId, 0, config);
+        // Lightning orders have no payment UTXO — their paymentTxId is 'ln:<hash>' — and
+        // the treasury keeps its own record of what it signed (lightning.js), so this
+        // on-chain check does not apply to them.
+        const spent = lightning.isLightningRow(request)
+            ? { ok: false }
+            : await chainProviders.isOutputSpent(request.paymentTxId, 0, config);
         if (spent.ok && spent.spent) {
             console.warn(
                 `[Reconcile] NOT retrying ${request.id}: its payment output is already spent by ${spent.spentBy}. ` +
@@ -297,6 +303,10 @@ async function runReconciliation(db, rootNode, config) {
     console.log('[Reconcile] Starting reconciliation pass...');
     try {
         const unstuck = await unstickAbandonedLocks(db);
+        // Before the publishing passes, so a Lightning payment whose webhook never came
+        // is recorded here and published by drivePaidRequests in the same pass. onPaid is
+        // deliberately absent: drivePaidRequests is the one that publishes.
+        const invoices = await lightning.pollOpenInvoices(db, config);
         const driven = await drivePaidRequests(db, rootNode, config);
         const retried = await retryFailedRequests(db, rootNode, config);
         const refunded = await refundStrandedRequests(db, rootNode, config);
@@ -304,9 +314,10 @@ async function runReconciliation(db, rootNode, config) {
 
         console.log(
             `[Reconcile] Pass complete. Unstuck: ${unstuck}, driven: ${driven}, retried: ${retried}, ` +
-            `refunded: ${refunded}, still stranded: ${stranded.length}`
+            `refunded: ${refunded}, still stranded: ${stranded.length}` +
+            (invoices.checked ? `, Lightning invoices checked: ${invoices.checked} (paid ${invoices.paid}, expired ${invoices.expired})` : '')
         );
-        return { unstuck, driven, retried, refunded, stranded: stranded.length };
+        return { unstuck, driven, retried, refunded, stranded: stranded.length, invoices };
     } catch (error) {
         console.error('[Reconcile] Reconciliation pass failed:', error);
         return { error: error.message };

@@ -5,6 +5,7 @@ const { fulfillRequest } = require('../request_service');
 const chainProviders = require('../chain_providers');
 const notifier = require('../notifier');
 const events = require('../request_events');
+const lightning = require('../lightning');
 
 /**
  * Resolves the payer's address for a payment transaction, so a failed request can be
@@ -228,6 +229,58 @@ function createWebhookRouter(db, rootNode, config) {
         } catch (error) {
             console.error("!!! CATCH BLOCK ERROR processing webhook !!!", error);
             res.status(200).send('Webhook received but internal error occurred.');
+        }
+    });
+
+    /**
+     * POST /api/webhook/lightning — phoenixd's push notification for a settled invoice.
+     *
+     * phoenixd reaches this over the Docker network (http://webapp:3000), but the path is
+     * also public through the tunnel, so the body is untrusted twice over. Two layers:
+     *
+     *   1. The X-Phoenix-Signature HMAC, under the secret only phoenixd and this process
+     *      share. A body that fails it is dropped without a lookup.
+     *   2. Even a correctly signed body is only a doorbell. Nothing in it is acted on:
+     *      checkInvoice reads the payment from phoenixd by the hash WE stored on the row,
+     *      and requires phoenixd's own record to carry this row's id.
+     *
+     * Always answers quickly and never with an error phoenixd would retry on a schedule —
+     * the reconcile pass and the customer's own polling are the backstop for anything
+     * missed here.
+     */
+    router.post('/lightning', async (req, res) => {
+        try {
+            // CONFIGURED, not ENABLED: the kill switch stops new orders, and a payment on
+            // an invoice issued before it was thrown must still be recorded.
+            if (!config.LIGHTNING_CONFIGURED) return res.status(404).end();
+            const signature = req.headers['x-phoenix-signature'];
+            if (!lightning.verifyWebhookSignature(req.rawBody, signature, config.PHOENIXD_WEBHOOK_SECRET)) {
+                console.warn('[Webhook] Lightning notification with a bad or missing signature. Ignored.');
+                return res.status(401).end();
+            }
+
+            const body = req.body || {};
+            if (body.type !== 'payment_received') return res.status(200).end();
+
+            // externalId is our request id, and only used to find the row. The hash on
+            // the row — not the one in the body — is what gets looked up.
+            const requestId = String(body.externalId || '');
+            const row = requestId ? await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]) : null;
+            if (!row || !lightning.isLightningRow(row)) {
+                console.warn(`[Webhook] Lightning payment for an unknown order (${requestId.slice(0, 40) || 'no externalId'}). Ignored.`);
+                return res.status(200).end();
+            }
+
+            const result = await lightning.checkInvoice(db, row, config, {
+                onPaid: (fresh) => fulfillRequest(fresh, db, rootNode, config),
+            });
+            if (result.recorded) {
+                console.log(`[Webhook] Lightning payment recorded for ${row.id}.`);
+            }
+            return res.status(200).end();
+        } catch (error) {
+            console.error('[Webhook] Lightning notification failed:', error.message);
+            return res.status(200).end();
         }
     });
 

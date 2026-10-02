@@ -12,6 +12,10 @@ const webhookReconcile = require('../webhook_reconcile');
 const wall = require('../wall');
 const counters = require('../counters');
 const { MAX_ON_CHAIN_PAYLOAD_BYTES } = require('../op_return_creator');
+const lightning = require('../lightning');
+const treasury = require('../treasury');
+const chainProviders = require('../chain_providers');
+const notifier = require('../notifier');
 
 function createAdminRouter(db, rootNode, config) {
     const router = express.Router();
@@ -405,6 +409,36 @@ function createAdminRouter(db, rootNode, config) {
                 return res.status(404).json({ error: 'Request not found.' });
             }
 
+            // The last attempt to pay this refund may have gone through: phoenixd could
+            // not say. Paying again is the operator's call, and it needs saying twice.
+            if (lightning.isLightningRow(request)
+                && /^ln_refund_outcome_unknown/.test(request.refundFailureReason || '')
+                && (req.body || {}).confirmUnknownOutcome !== true) {
+                return res.status(409).json({
+                    error: 'The last refund attempt for this order has an UNKNOWN outcome — it may already have been paid. '
+                        + "Check phoenixd's outgoing payments first. Re-send with confirmUnknownOutcome to pay again anyway.",
+                    needsConfirmation: 'confirmUnknownOutcome',
+                });
+            }
+
+            // A Lightning order is refunded to a Lightning address. The operator may supply
+            // one (a customer who wrote in by email, say), and it replaces the customer's
+            // only under the same guards the customer's own form has.
+            const { lightningAddress } = req.body || {};
+            if (lightning.isLightningRow(request) && lightningAddress !== undefined) {
+                const normalized = lightning.normalizeLightningAddress(lightningAddress);
+                if (!normalized.ok) return res.status(400).json({ error: normalized.error });
+                const write = await dbRun(
+                    db,
+                    `UPDATE requests SET lnRefundAddress = ?
+                     WHERE id = ? AND opReturnTxId IS NULL AND refundTxId IS NULL AND status != 'refund_processing'`,
+                    [normalized.address, requestId]
+                );
+                if (write.changes !== 1) return res.status(409).json({ error: 'The request changed state. Refresh and retry.' });
+                requestEvents.record(db, requestId, requestEvents.KINDS.LIGHTNING_REFUND_ADDRESS, `${normalized.address} (set by the operator)`);
+                request.lnRefundAddress = normalized.address;
+            }
+
             // An operator may refund from a wider set of statuses than the automatic
             // path allows — in particular an underpaid request, which holds real money
             // but never reaches a failed state by itself.
@@ -419,6 +453,176 @@ function createAdminRouter(db, rootNode, config) {
         } catch (error) {
             console.error(`Manual refund failed for ${requestId}:`, error);
             res.status(500).json({ error: 'An error occurred during the refund.' });
+        }
+    });
+
+    /**
+     * POST /api/admin/requests/:requestId/resolve-pending  { outcome: 'published'|'dropped', force? }
+     *
+     * The way out of `treasury_tx_unresolved`: a Lightning order whose signed treasury
+     * transaction may or may not be on chain, which nothing automatic will touch. The
+     * operator looks it up and says which; this checks the chain again and refuses an
+     * answer the chain contradicts unless `force` says the operator knows better.
+     *
+     *   published  the order is recorded as delivered with that transaction.
+     *   dropped    the record is cleared; the order is an ordinary failure again — the
+     *              reconcile pass may republish it, or the customer is offered a refund.
+     */
+    router.post('/requests/:requestId/resolve-pending', protect, async (req, res) => {
+        const { requestId } = req.params;
+        const { outcome, force } = req.body || {};
+        try {
+            if (outcome !== 'published' && outcome !== 'dropped') {
+                return res.status(400).json({ error: "outcome must be 'published' or 'dropped'." });
+            }
+            const row = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+            if (!row || !lightning.isLightningRow(row)) return res.status(404).json({ error: 'Lightning request not found.' });
+            if (!row.pendingTxId || row.opReturnTxId || row.refundTxId) {
+                return res.status(409).json({ error: 'This order has no unresolved treasury transaction.' });
+            }
+            if (row.status === 'processing_op_return' || row.status === 'refund_processing') {
+                return res.status(409).json({ error: 'This order is being worked on right now. Try again in a minute.' });
+            }
+
+            // The same question every automatic retry asks (chainProviders.signedTxFate).
+            // "published" needs it to exist; "dropped" needs it provably dead — an input
+            // spent by a different, confirmed transaction. Anything else needs `force`.
+            const fate = await chainProviders.signedTxFate(row.pendingTxHex, config);
+            const contradicts = outcome === 'published' ? fate.state !== 'exists' : fate.state !== 'dead';
+            if (contradicts && force !== true) {
+                return res.status(409).json({
+                    error: outcome === 'published'
+                        ? `${row.pendingTxId} is not on chain as far as the explorers can tell (${fate.state}${fate.reason ? `: ${fate.reason}` : ''}). Send force:true if you have seen it yourself.`
+                        : fate.state === 'exists'
+                            ? `${row.pendingTxId} IS out there${fate.confirmed ? ' and confirmed' : ''}. It was published — record it as published instead.`
+                            : `${row.pendingTxId} is not provably gone: none of its inputs is spent by a confirmed conflict yet. Send force:true if you are sure it can never confirm.`,
+                    fate,
+                    needsConfirmation: 'force',
+                });
+            }
+
+            if (outcome === 'published') {
+                const write = await dbRun(
+                    db,
+                    `UPDATE requests SET status = 'op_return_broadcasted', opReturnTxId = pendingTxId, opReturnTxHex = pendingTxHex,
+                         changePath = ?, pendingTxId = NULL, pendingTxHex = NULL, failureReason = NULL
+                     WHERE id = ? AND pendingTxId = ? AND opReturnTxId IS NULL AND refundTxId IS NULL
+                       AND status NOT IN ('processing_op_return', 'refund_processing')`,
+                    [treasury.TREASURY_PATH, requestId, row.pendingTxId]
+                );
+                if (write.changes !== 1) return res.status(409).json({ error: 'The order changed state. Refresh and retry.' });
+                // The ledger learns what an unconfirmed one spent, as for any broadcast.
+                if (fate.state === 'exists' && !fate.confirmed) {
+                    treasury.noteBroadcast(row.pendingTxHex, treasury.getTreasuryAddress(rootNode, config.NETWORK), config.NETWORK);
+                }
+                requestEvents.record(db, requestId, requestEvents.KINDS.PUBLISHED, `operator confirmed ${row.pendingTxId} is on chain${contradicts ? ' (forced)' : ''}`);
+                notifier.notifyDelivered({ requestId, message: row.message, payloadKind: row.payloadKind, opReturnTxId: row.pendingTxId }, config);
+            } else {
+                const write = await dbRun(
+                    db,
+                    `UPDATE requests SET pendingTxId = NULL, pendingTxHex = NULL, status = 'op_return_failed',
+                         failureReason = ?
+                     WHERE id = ? AND pendingTxId = ? AND opReturnTxId IS NULL AND refundTxId IS NULL
+                       AND status NOT IN ('processing_op_return', 'refund_processing')`,
+                    [`treasury_tx_dropped: the operator confirmed ${row.pendingTxId} is not on chain${contradicts ? ' (forced)' : ''}`, requestId, row.pendingTxId]
+                );
+                if (write.changes !== 1) return res.status(409).json({ error: 'The order changed state. Refresh and retry.' });
+                requestEvents.record(db, requestId, requestEvents.KINDS.FULFIL_FAILED, `operator confirmed ${row.pendingTxId} is not on chain; record cleared${contradicts ? ' (forced)' : ''}`);
+            }
+            // This process may still hold the same bytes from an attempt whose answer was
+            // lost. Once the operator has settled them, a retry must never re-send them.
+            treasury.forgetAttempt(requestId);
+            lightning.invalidateTreasuryCache();
+            console.log(`[Admin] Resolved the pending treasury transaction of ${requestId} as ${outcome}${contradicts ? ' (forced)' : ''}.`);
+            res.status(200).json({ success: true, outcome });
+        } catch (error) {
+            console.error(`Resolving ${requestId} failed:`, error.message);
+            res.status(500).json({ error: 'Failed to resolve.' });
+        }
+    });
+
+    /**
+     * GET /api/admin/lightning — the phoenixd node and what the treasury owes.
+     *
+     * Read-only. `balanceSat` is spendable Lightning income; `feeCreditSat` is money
+     * phoenixd holds towards future liquidity fees, which cannot be withdrawn. The
+     * treasury figures are the ones intake decides with (lightning.canFund).
+     */
+    router.get('/lightning', protect, async (req, res) => {
+        try {
+            if (!config.LIGHTNING_CONFIGURED) return res.status(200).json({ enabled: false, configured: false });
+            const [info, balance, spendable, reserved, offered] = await Promise.all([
+                lightning.getInfo(config),
+                lightning.getBalance(config),
+                lightning.treasurySpendable(rootNode, config),
+                lightning.treasuryReserved(db, config),
+                lightning.isOfferedNow(db, rootNode, config),
+            ]);
+            const channels = info.ok ? (info.info.channels || []) : [];
+            res.status(200).json({
+                configured: true,
+                // false when LIGHTNING_ENABLED=false: taking no new Lightning orders, while
+                // still receiving payments on invoices already issued and paying refunds.
+                enabled: !!config.LIGHTNING_ENABLED,
+                // Whether the homepage is offering it right now (phoenixd up, treasury room).
+                offered,
+                reachable: info.ok && balance.ok,
+                error: info.ok ? (balance.ok ? null : balance.reason) : info.reason,
+                nodeId: info.ok ? info.info.nodeId : null,
+                channels: channels.map((c) => ({
+                    state: c.state, balanceSat: c.balanceSat, inboundLiquiditySat: c.inboundLiquiditySat, capacitySat: c.capacitySat,
+                })),
+                balanceSat: balance.ok ? balance.balanceSat : null,
+                feeCreditSat: balance.ok ? balance.feeCreditSat : null,
+                treasury: {
+                    address: treasury.getTreasuryAddress(rootNode, config.NETWORK),
+                    spendableSat: spendable.ok ? spendable.spendable : null,
+                    reservedSat: reserved,
+                    marginSat: config.LN_TREASURY_MARGIN_SATS,
+                },
+            });
+        } catch (error) {
+            console.error('Error reading Lightning status:', error.message);
+            res.status(500).json({ error: 'Failed to read Lightning status' });
+        }
+    });
+
+    /**
+     * POST /api/admin/lightning/sweep  { amountSat, feerateSatByte }
+     *
+     * Moves Lightning income on-chain into the treasury, which is what pays for every
+     * Lightning order. The destination is NOT a parameter: it is always the treasury
+     * address derived here, so this endpoint cannot send money anywhere else even with the
+     * admin password.
+     *
+     * A splice-out costs a mining fee each time, so it is a deliberate button rather than
+     * a timer. Sweeping also frees inbound liquidity for the next payments.
+     */
+    router.post('/lightning/sweep', protect, async (req, res) => {
+        try {
+            if (!config.LIGHTNING_CONFIGURED) return res.status(404).json({ error: 'Lightning is not configured.' });
+            const amountSat = Number((req.body || {}).amountSat);
+            const feerateSatByte = Number((req.body || {}).feerateSatByte);
+            if (!Number.isInteger(amountSat) || amountSat < 10_000) {
+                return res.status(400).json({ error: 'amountSat must be a whole number of at least 10,000 sats.' });
+            }
+            if (!Number.isInteger(feerateSatByte) || feerateSatByte < 1 || feerateSatByte > 100) {
+                return res.status(400).json({ error: 'feerateSatByte must be a whole number between 1 and 100.' });
+            }
+            const balance = await lightning.getBalance(config);
+            if (!balance.ok) return res.status(502).json({ error: `Could not read the Lightning balance: ${balance.reason}` });
+            if (amountSat > balance.balanceSat) {
+                return res.status(400).json({ error: `Only ${balance.balanceSat} sats are available on Lightning.` });
+            }
+            const address = treasury.getTreasuryAddress(rootNode, config.NETWORK);
+            const sent = await lightning.sendToAddress(config, { address, amountSat, feerateSatByte });
+            if (!sent.ok) return res.status(502).json({ error: `phoenixd refused the sweep: ${sent.reason}` });
+            lightning.invalidateTreasuryCache();
+            console.log(`[Admin] Swept ${amountSat} sats from Lightning to the treasury ${address}: ${sent.txId}`);
+            res.status(200).json({ success: true, txId: sent.txId, address, amountSat });
+        } catch (error) {
+            console.error('Lightning sweep failed:', error.message);
+            res.status(500).json({ error: 'The sweep failed.' });
         }
     });
 

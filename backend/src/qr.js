@@ -15,6 +15,10 @@ const qrcode = require('qrcode-generator');
 // Well under the format's real capacity. Anything longer than this is not a payment URI
 // and has no business being turned into a QR code here.
 const MAX_DATA_LENGTH = 512;
+// The most any caller may raise it to. Version 40 at the lowest error correction holds
+// 4,296 alphanumeric characters; past about 1,000 a phone camera starts to struggle, and
+// nothing this service issues comes close.
+const MAX_LIGHTNING_DATA_LENGTH = 1200;
 
 /**
  * Builds a BIP21 payment URI. Every wallet app understands this: scanning it fills in
@@ -44,8 +48,14 @@ function buildPaymentUri(address, opts = {}) {
 function toSvg(data, opts = {}) {
     const text = String(data == null ? '' : data);
     if (!text) throw new Error('nothing to encode');
-    if (text.length > MAX_DATA_LENGTH) {
-        throw new Error(`too long to encode (${text.length} characters, limit ${MAX_DATA_LENGTH})`);
+    // A Lightning invoice is a payment URI too, and a long one: a BOLT11 string with a
+    // route hint runs to roughly 400 characters before its `lightning:` prefix. Its caller
+    // raises the ceiling explicitly (routes/api.js); every other caller keeps the old one.
+    const limit = Number.isInteger(opts.maxLength) && opts.maxLength > 0
+        ? Math.min(opts.maxLength, MAX_LIGHTNING_DATA_LENGTH)
+        : MAX_DATA_LENGTH;
+    if (text.length > limit) {
+        throw new Error(`too long to encode (${text.length} characters, limit ${limit})`);
     }
 
     // Clamped, and NaN falls back to the default: these come from a query string, and a

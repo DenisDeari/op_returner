@@ -9,6 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshAlertsBtn = document.getElementById('refresh-alerts-btn');
     const refreshFunnelBtn = document.getElementById('refresh-funnel-btn');
     const funnelBody = document.getElementById('funnel-body');
+    const refreshLightningBtn = document.getElementById('refresh-lightning-btn');
+    const lightningBody = document.getElementById('lightning-body');
     const alertsBody = document.getElementById('alerts-body');
     const alertsBadge = document.getElementById('alerts-badge');
     const eventLogBody = document.getElementById('event-log-body');
@@ -56,12 +58,12 @@ document.addEventListener('DOMContentLoaded', () => {
     /**
      * fetch, shadowed for this closure only — window.fetch is untouched.
      *
-     * 15 call sites send the token; exactly TWO ever looked at a 401. That was survivable
+     * 20 call sites send the token; exactly TWO ever looked at a 401. That was survivable
      * while the token lived in memory and died on reload. Persisting it changes that: a
-     * mistyped or rotated password would stick, and the other 13 calls would fail silently
+     * mistyped or rotated password would stick, and the other 18 calls would fail silently
      * for as long as the tab stayed open, with no way back but clearing storage by hand.
      *
-     * So invalidation happens in one place instead of fifteen. Only a 401 from OUR admin
+     * So invalidation happens in one place instead of twenty. Only a 401 from OUR admin
      * API clears it — a 401 from anywhere else means nothing here. Every authenticated call
      * goes through API_BASE_URL or WALLET_API, and both contain '/api/admin', so the test
      * covers all fifteen; a new call site gets it for free. Reaching for window.fetch or
@@ -213,6 +215,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchWalletBalances(); // load balances once we have a valid password
             fetchAlerts();
             fetchFunnel();
+            fetchLightning();
         } catch (error) {
             requestsBody.innerHTML = `<tr><td colspan="7">Error loading requests: ${error.message}</td></tr>`;
         }
@@ -319,6 +322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
+                    ${req.paymentMethod === 'lightning' ? '<span class="wall-flag" title="Paid over Lightning — published from the treasury">⚡ LN</span>' : ''}
                     ${onWall ? `<span class="wall-flag${hidden ? ' hidden' : ''}" title="${hidden ? 'Hidden from the public wall' : (req.publicSource === 'operator' ? 'On the public wall — put there by you, not opted into by the customer' : 'On the public wall — the customer opted in')}">${hidden ? 'HIDDEN' : (req.publicSource === 'operator' ? 'ON WALL*' : 'ON WALL')}</span>` : ''}
                 </td>
                 <td>${note}</td>
@@ -327,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button class="button-details" data-id="${escapeHtml(req.id)}" style="background-color: #5bc0de; margin-right: 5px;">Details</button>
                     ${canFulfill ? `<button class="button-fulfill" data-id="${escapeHtml(req.id)}">Manually Fulfill</button>` : ''}
                     ${canRefund ? `<button class="button-refund" data-id="${escapeHtml(req.id)}" style="background-color: #f0ad4e; margin-left: 5px;">Refund</button>` : ''}
+                    ${req.paymentMethod === 'lightning' && req.pendingTxId && !settled && !inFlight ? `<button class="button-resolve" data-id="${escapeHtml(req.id)}" style="background-color: #c9302c; margin-left: 5px;" title="A signed treasury transaction may or may not be on chain">Resolve tx</button>` : ''}
                     ${onWall ? `<button class="button-wall" data-id="${escapeHtml(req.id)}" data-hidden="${hidden ? '1' : '0'}" style="background-color: #6f42c1; margin-left: 5px;">${hidden ? 'Show on wall' : 'Hide from wall'}</button>` : ''}
                     <button class="button-delete" data-id="${escapeHtml(req.id)}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
                 </td>
@@ -379,13 +384,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p><strong>Last attempt:</strong> ${escapeHtml(req.lastAttemptAt ? new Date(req.lastAttemptAt).toLocaleString() : 'n/a')}</p>
                 </div>` : '';
 
-            const refundSection = (req.refundAddress || req.refundTxId) ? `
+            // A Lightning order's refund goes to a Lightning address, and its id is
+            // 'ln:<paymentHash>' — no block explorer can show it, so it is never a link.
+            const lightningOrder = req.paymentMethod === 'lightning';
+            const lnRefund = String(req.refundTxId || '').startsWith('ln:');
+            const refundSection = (req.refundAddress || req.refundTxId || req.lnRefundAddress || req.refundFailureReason) ? `
                 <div class="detail-section">
                     <h3>Refund</h3>
-                    <p><strong>Refund to:</strong> ${escapeHtml(req.refundAddress || 'unknown')}</p>
-                    <p><strong>Refund TX:</strong> ${req.refundTxId
-                        ? `<a href="https://mempool.space/tx/${encodeURIComponent(req.refundTxId)}" target="_blank">${escapeHtml(req.refundTxId)}</a>`
+                    <p><strong>Refund to:</strong> ${escapeHtml((lightningOrder ? req.lnRefundAddress : req.refundAddress) || (lightningOrder ? 'no Lightning address given yet' : 'unknown'))}</p>
+                    <p><strong>Refund ${lnRefund ? 'payment' : 'TX'}:</strong> ${req.refundTxId
+                        ? (lnRefund
+                            ? escapeHtml(req.refundTxId)
+                            : `<a href="https://mempool.space/tx/${encodeURIComponent(req.refundTxId)}" target="_blank">${escapeHtml(req.refundTxId)}</a>`)
                         : 'not refunded'}</p>
+                    ${req.refundFailureReason ? `<p><strong>Last refund problem:</strong> ${escapeHtml(req.refundFailureReason)}</p>` : ''}
                     <p><strong>Refunded at:</strong> ${escapeHtml(req.refundedAt ? new Date(req.refundedAt).toLocaleString() : 'n/a')}</p>
                 </div>` : '';
 
@@ -401,7 +413,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${feedbackSection}
                 <div class="detail-section">
                     <h3>Payment Info</h3>
-                    <p><strong>Address:</strong> ${escapeHtml(req.address)}</p>
+                    ${lightningOrder
+                        ? `<p><strong>Paid with:</strong> ⚡ Lightning — published from the treasury</p>
+                           <p><strong>Payment hash:</strong> <code>${escapeHtml(req.lnPaymentHash || 'n/a')}</code></p>
+                           <p><strong>Invoice expires:</strong> ${escapeHtml(req.lnInvoiceExpiresAt ? new Date(req.lnInvoiceExpiresAt).toLocaleString() : 'n/a')}</p>
+                           ${req.pendingTxId ? `<p><strong>Signed, broadcast unconfirmed:</strong> <a href="https://mempool.space/tx/${encodeURIComponent(req.pendingTxId)}" target="_blank">${escapeHtml(req.pendingTxId)}</a></p>` : ''}`
+                        : `<p><strong>Address:</strong> ${escapeHtml(req.address)}</p>`}
                     <p><strong>Required Amount:</strong> ${escapeHtml(req.requiredAmountSatoshis)} sats</p>
                     <p><strong>Received:</strong> ${escapeHtml(req.paymentReceivedSatoshis ?? 'not recorded')} sats</p>
                     <p><strong>Confirmed at:</strong> ${escapeHtml(req.paymentConfirmedAt ? new Date(req.paymentConfirmedAt).toLocaleString() : 'n/a')}</p>
@@ -435,6 +452,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // and times out, and nothing above this line depends on the answer.
         const histSlot = modalBody.querySelector('#detail-tx-history');
         if (!histSlot) return;
+        // Nothing is ever paid to a Lightning order's derived address, and asking
+        // BlockCypher about it would spend quota for a guaranteed empty answer.
+        if (req.paymentMethod === 'lightning') {
+            histSlot.innerHTML = '<p class="muted">Lightning order — there is no on-chain payment to show.</p>';
+            return;
+        }
         try {
             const response = await fetch(`${API_BASE_URL}/address-transactions/${req.address}`, {
                 headers: { 'Authorization': `Bearer ${adminPassword}` }
@@ -588,6 +611,103 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Lightning panel --------------------------------------------------
+    // What phoenixd holds, and what the treasury has promised to open Lightning orders.
+    // Lightning income sits in phoenixd until it is swept back into the treasury, and the
+    // treasury is what pays for every Lightning order — so the two numbers that matter are
+    // "how much can be swept" and "how much room the treasury has left".
+    async function fetchLightning() {
+        if (!adminPassword) {
+            lightningBody.innerHTML = '<p class="muted">Enter the admin password to see Lightning — press Refresh on Requests.</p>';
+            return;
+        }
+        refreshLightningBtn.disabled = true;
+        refreshLightningBtn.textContent = 'Loading...';
+        try {
+            const res = await fetch(`${API_BASE_URL}/lightning`, {
+                headers: { 'Authorization': `Bearer ${adminPassword}` }
+            });
+            if (!res.ok) {
+                lightningBody.innerHTML = `<p class="muted">Could not load Lightning (HTTP ${res.status}).</p>`;
+                return;
+            }
+            renderLightning(await res.json());
+        } catch (e) {
+            lightningBody.innerHTML = `<p class="muted">Could not load Lightning: ${escapeHtml(e.message)}</p>`;
+        } finally {
+            refreshLightningBtn.disabled = false;
+            refreshLightningBtn.textContent = 'Refresh';
+        }
+    }
+
+    // An unreadable figure is a dash, never a zero — the same rule as the wallet view.
+    const satsOrDash = (n) => (n === null || n === undefined ? '&mdash;' : `${Number(n).toLocaleString()} sats`);
+
+    function renderLightning(d) {
+        // Gated on CONFIGURED, not enabled: with the kill switch thrown the operator still
+        // needs the balance, the treasury figures and the Sweep button.
+        if (!d.configured) {
+            lightningBody.innerHTML = '<p class="muted">Lightning is not set up. Set PHOENIXD_URL, PHOENIXD_PASSWORD and PHOENIXD_WEBHOOK_SECRET to turn it on.</p>';
+            return;
+        }
+        const t = d.treasury || {};
+        const room = (t.spendableSat === null || t.spendableSat === undefined)
+            ? null : t.spendableSat - (t.reservedSat || 0) - (t.marginSat || 0);
+        const inbound = (d.channels || []).reduce((sum, c) => sum + (Number(c.inboundLiquiditySat) || 0), 0);
+        lightningBody.innerHTML = `
+            ${d.reachable ? '' : `<p style="color: red;">phoenixd is not answering: ${escapeHtml(d.error || 'unknown error')}. Lightning orders are being refused.</p>`}
+            <p><strong>New Lightning orders:</strong> ${!d.enabled
+                ? 'OFF (LIGHTNING_ENABLED=false) — invoices already issued are still watched and refunds still work'
+                : d.offered ? 'offered on the homepage' : 'NOT offered right now — phoenixd is down or the treasury has too little room'}</p>
+            <p><strong>Lightning balance:</strong> ${satsOrDash(d.balanceSat)}
+               <span class="muted">— income waiting to be swept into the treasury</span></p>
+            <p><strong>Fee credit:</strong> ${satsOrDash(d.feeCreditSat)}
+               <span class="muted">— held by phoenixd towards channel fees, cannot be withdrawn</span></p>
+            <p><strong>Channels:</strong> ${(d.channels || []).length
+                ? `${(d.channels || []).length}, ${escapeHtml(inbound.toLocaleString())} sats inbound liquidity`
+                : 'none yet — the first payments go to fee credit until a channel opens'}</p>
+            <p><strong>Treasury:</strong> ${satsOrDash(t.spendableSat)} spendable,
+               ${satsOrDash(t.reservedSat)} promised to open Lightning orders,
+               <strong>${room === null ? '&mdash;' : `${room.toLocaleString()} sats`}</strong> of room for new ones</p>
+            <p class="muted"><small>Treasury address: <code>${escapeHtml(t.address || '')}</code></small></p>
+            <div class="config-row">
+                <div>
+                    <label for="sweep-amount">Sweep to treasury (sats):</label>
+                    <input type="number" id="sweep-amount" min="10000" step="1" value="${escapeHtml(Math.max(0, (d.balanceSat || 0) - 1000))}">
+                </div>
+                <div>
+                    <label for="sweep-feerate">Fee rate (sat/vB):</label>
+                    <input type="number" id="sweep-feerate" min="1" max="100" step="1" value="2">
+                </div>
+                <button id="sweep-btn" class="btn btn-primary"${d.reachable && (d.balanceSat || 0) >= 10000 ? '' : ' disabled'}>Sweep</button>
+            </div>`;
+    }
+
+    lightningBody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('#sweep-btn');
+        if (!btn) return;
+        const amountSat = parseInt(document.getElementById('sweep-amount').value, 10);
+        const feerateSatByte = parseInt(document.getElementById('sweep-feerate').value, 10);
+        if (!confirm(`Move ${amountSat.toLocaleString()} sats from Lightning into the treasury at ${feerateSatByte} sat/vB? This is an on-chain transaction and costs a mining fee.`)) return;
+        btn.disabled = true;
+        btn.textContent = 'Sweeping...';
+        try {
+            const res = await fetch(`${API_BASE_URL}/lightning/sweep`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${adminPassword}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amountSat, feerateSatByte }),
+            });
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+            alert(`Sweep sent: ${result.txId}`);
+            fetchLightning();
+        } catch (err) {
+            alert(`Sweep failed: ${err.message}`);
+            btn.disabled = false;
+            btn.textContent = 'Sweep';
+        }
+    });
+
     /** A percentage, or an em dash when the denominator is zero — never "0%", which reads
      *  as a measured result rather than as nothing to measure. */
     function rate(part, whole) {
@@ -655,6 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     refreshFunnelBtn.addEventListener('click', fetchFunnel);
+    refreshLightningBtn.addEventListener('click', fetchLightning);
 
     refreshAlertsBtn.addEventListener('click', fetchAlerts);
 
@@ -701,19 +822,70 @@ document.addEventListener('DOMContentLoaded', () => {
             showDetails(detailsButton.dataset.id);
         }
 
+        const resolveButton = event.target.closest('.button-resolve');
+        if (resolveButton) {
+            const requestId = resolveButton.dataset.id;
+            const row = allRequests.find((r) => r.id === requestId);
+            const answer = prompt(`Lightning order ${requestId} has a signed treasury transaction that may or may not be on chain:\n\n${row ? row.pendingTxId : ''}\n\nLook it up, then type "published" if it is on chain, or "dropped" if it is not.`);
+            if (answer === null) return;
+            const outcome = answer.trim().toLowerCase();
+            if (outcome !== 'published' && outcome !== 'dropped') { alert('Type published or dropped.'); return; }
+            const send = (force) => fetch(`${API_BASE_URL}/requests/${encodeURIComponent(requestId)}/resolve-pending`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${adminPassword}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ outcome, force }),
+            });
+            try {
+                let res = await send(false);
+                let result = await res.json();
+                if (res.status === 409 && result.needsConfirmation === 'force' && confirm(`${result.error}\n\nRecord it as ${outcome} anyway?`)) {
+                    res = await send(true);
+                    result = await res.json();
+                }
+                if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+                alert(`Recorded as ${outcome}.`);
+                fetchRequests();
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            }
+        }
+
         if (refundButton) {
             const requestId = refundButton.dataset.id;
-            if (confirm(`Refund the payer for request ${requestId}? This sends a real Bitcoin transaction and cannot be undone.`)) {
+            const row = allRequests.find((r) => r.id === requestId);
+            // A Lightning order is refunded to a Lightning address. The customer may have
+            // given one already; the operator can confirm it or type another (a customer
+            // who wrote in by email, say).
+            let body = null;
+            if (row && row.paymentMethod === 'lightning') {
+                const address = prompt(`Refund ${row.paymentReceivedSatoshis} sats over Lightning for request ${requestId}.\n\nLightning address to pay:`, row.lnRefundAddress || '');
+                if (address === null) return;
+                body = JSON.stringify({ lightningAddress: address.trim() });
+            }
+            if (body || confirm(`Refund the payer for request ${requestId}? This sends a real Bitcoin transaction and cannot be undone.`)) {
                 refundButton.disabled = true;
                 refundButton.textContent = 'Refunding...';
                 try {
                     const response = await fetch(`${API_BASE_URL}/refund/${encodeURIComponent(requestId)}`, {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${adminPassword}` }
+                        headers: body
+                            ? { 'Authorization': `Bearer ${adminPassword}`, 'Content-Type': 'application/json' }
+                            : { 'Authorization': `Bearer ${adminPassword}` },
+                        body: body || undefined,
                     });
-                    const result = await response.json();
-                    if (response.ok && result.success) {
-                        alert(`Refunded ${result.amount} sats. TXID: ${result.refundTxId}`);
+                    let result = await response.json();
+                    if (response.status === 409 && result.needsConfirmation === 'confirmUnknownOutcome'
+                        && confirm(`${result.error}\n\nPay this refund AGAIN?`)) {
+                        const again = await fetch(`${API_BASE_URL}/refund/${encodeURIComponent(requestId)}`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${adminPassword}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ...(body ? JSON.parse(body) : {}), confirmUnknownOutcome: true }),
+                        });
+                        result = await again.json();
+                        if (!again.ok) throw new Error(result.error || 'Refund failed.');
+                    }
+                    if (result.success) {
+                        alert(`Refunded ${result.amount} sats. ${String(result.refundTxId).startsWith('ln:') ? 'Lightning payment' : 'TXID'}: ${result.refundTxId}`);
                         fetchRequests();
                     } else {
                         throw new Error(result.error || 'Refund failed.');

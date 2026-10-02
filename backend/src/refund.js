@@ -18,6 +18,7 @@ const { dbGet, dbRun } = require('./db_utils');
 const notifier = require('./notifier');
 const txSizing = require('./tx_sizing');
 const events = require('./request_events');
+const lightning = require('./lightning');
 
 // Statuses from which an AUTOMATIC refund may begin.
 //
@@ -89,6 +90,12 @@ async function attemptRefund(request, db, rootNode, config, options = {}) {
     }
     if (!allowedStatuses.includes(request.status)) {
         return { ok: false, reason: `not_refundable_from_status_${request.status}` };
+    }
+    // A Lightning payment has no UTXO at the payment address and no payer address on the
+    // chain. It goes back over Lightning, to an address the customer gives us — a
+    // different money path with its own at-most-once rules (lightning.js).
+    if (lightning.isLightningRow(request)) {
+        return lightning.attemptLightningRefund(request, db, config, { ...options, allowStatuses: allowedStatuses });
     }
     if (!request.refundAddress) {
         // We only learn the payer's address from the funding transaction. Older rows

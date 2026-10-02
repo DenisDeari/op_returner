@@ -132,6 +132,17 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | The admin password can be guessed 5 times per address per 15 minutes, then not at all | `routes/auth.js` |
 | A lockout is per client address — never global, which would be a DoS handle | `routes/auth.js` |
 | "Who is this" has one definition, shared by every limiter | `http_hygiene.js` `clientIp` |
+| No Lightning invoice the treasury cannot pay for — this order plus every open one plus a margin | `lightning.js` `canFund`, at intake, under `acquireIntakeLock` |
+| A Lightning payment is believed only from phoenixd, by OUR stored hash, carrying OUR request id | `lightning.js` `checkInvoice` |
+| A webhook body is a doorbell: HMAC-checked, then only triggers a lookup | `routes/webhook.js` `POST /lightning` |
+| A signed treasury transaction is on the row before it is broadcast, or it is not broadcast | `treasury.js` `onSigned`, `lightning.js` `fulfilLightning` |
+| A Lightning refund is paid at most once; an unknown outcome goes to a human, never a retry | `lightning.js` `attemptLightningRefund`, `reconcile.js` `unstickAbandonedLocks` |
+| `paymentTxId` is a txid only when `paymentMethod` is not `lightning` | every caller listed under *Lightning* |
+| A Lightning order's derived address is never shown — nothing watches it | `routes/api.js` `publicRequestView` |
+| A sweep goes to the treasury address and nowhere else; the destination is not a parameter | `routes/admin.js` `POST /lightning/sweep` |
+| Whether signed bytes are on chain is `signedTxFate`: exists / dead (input spent by a CONFIRMED other tx) / unknown → wait. Never `/tx/:id/status`, never "the explorers lack it" | `chain_providers.js`, used by `treasury.js` and `lightning.js` |
+| Bytes a silent host might have taken are kept as possibly-accepted and never rebuilt | `chain_providers.js` `mayHaveBeenAccepted`, `treasury.js` |
+| One worker per Lightning order; a second one writes nothing | `lightning.js` `fulfilling`, `request_service.js` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -162,6 +173,8 @@ backend/src/
   wall.js               the public message wall query, its cache, and why each term exists
   confirm_watch.js      notices when a published OP_RETURN actually reaches a block
   qr.js                 BIP21 payment URIs rendered as SVG QR codes
+  lightning.js          Lightning: phoenixd client, pricing, treasury capacity, payment, publishing, refunds
+  failure_reasons.js    which failures are permanent, and which must never auto-refund
   routes/wallet.js      admin-only, strictly read-only wallet API
   routes/auth.js        the admin bearer check, shared by admin.js and wallet.js
 ```
@@ -625,25 +638,17 @@ it means a view of our own wallet was stale, so it is transient. Only the ledger
 optimism is withdrawn — an earlier version marked *every* input of the attempt spent, which
 quarantined good confirmed money for the full TTL because one unrelated output had moved.
 
-### What is deliberately not done yet
+### The four gaps Lightning needed closed — closed 2026-10-02
 
-The treasury path is ready to build and broadcast. It is **not** ready to carry a paid
-order, and the gap is not in this file:
+This section used to list what stood between the treasury and a paid order. All four are
+now done; see **Lightning** below for how.
 
-- **A treasury spend writes no database row.** Nothing can be retried, alerted on,
-  confirmed, or reconciled, because there is nothing to key on. The row has to be written
-  and claimed *before* the broadcast — a row with no transaction is a stalled treasury a
-  reconciler fixes; a transaction with no row is an unattributable txid.
-- **`paymentTxId IS NOT NULL` is the definition of "paid"** in `alerts.js`, four passes in
-  `reconcile.js`, `cleanup.js`, `routes/admin.js` and both cancel guards. An order paid over
-  a rail with no on-chain payment is invisible to every one of them — archivable as
-  `abandoned_unpaid` at 7 days and redactable at 180. That is the 66-day silent failure
-  with a different cause.
-- **No notification fires from this path**, so the operator cannot moderate what it
-  publishes. `notifier.js` keys on a request id, which is the row again.
-- **`queue.js` prices 4 vBytes below what this builder spends** (`FEE_SAFETY_VBYTES`). The
-  two never meet today. Under Lightning they would, and the service eats 8 sats an order at
-  the floor, 2,000 at `MAX_FEE_RATE`.
+| Gap | Closed by |
+|---|---|
+| a treasury spend wrote no database row | the order's row is claimed first, and the signed transaction is written to it (`pendingTxId`/`pendingTxHex`) BEFORE the broadcast, through `treasury.js` `options.onSigned` |
+| `paymentTxId IS NOT NULL` could not see a Lightning payment | a paid Lightning order gets `paymentTxId = 'ln:<paymentHash>'`, so every existing "is it paid?" check covers it unchanged |
+| no notification from this path | publishing goes through `request_service.js` `fulfillRequest`, which notifies exactly as for on-chain |
+| `queue.js` priced 4 vBytes below the builder | a Lightning order is priced from `treasury.estimateTreasuryVBytes` itself (`lightning.js` `quote`) |
 
 ### The API contract changed
 
@@ -654,6 +659,142 @@ transaction the network refuses is `422`. A balance that could not be read is `5
 
 `createSelfFundedOpReturn` now takes a request-shaped object, matching
 `createOpReturnTransaction`, so a caller holding a row can drive either builder.
+
+## Lightning
+
+Added 2026-10-02. A customer can pay over Lightning instead of on-chain. The node is
+**phoenixd** (ACINQ), in its own container on the compose network; `lightning.js` holds
+everything specific to it.
+
+A Lightning payment hands the service no UTXO, so the customer's own payment cannot pay
+for the OP_RETURN transaction. **The treasury pays instead**, and the Lightning income
+accumulates in phoenixd until the operator sweeps it back on-chain into the treasury
+(admin panel, "Sweep"). The treasury therefore needs a float, and the Lightning income is
+what refills it.
+
+### One order, start to finish
+
+| Step | Where | What protects it |
+|---|---|---|
+| quote | `lightning.js` `quote`, via `queue.js` | priced from the treasury builder's own estimate, safety margin included; `frontend/js/app.js` `quoteLightningSats` mirrors it and `tests/lightning.js` asserts parity across six address types |
+| can we pay for it? | `lightning.js` `canFund`, at intake | treasury spendable ≥ this order + every open Lightning order + `LN_TREASURY_MARGIN_SATS`; an unreadable balance is a "no"; over `TREASURY_MAX_SPEND_SATS` is refused here, not after payment |
+| one at a time | `lightning.js` `acquireIntakeLock` | held from the check until the invoice is written, so two orders cannot both claim the same room |
+| invoice | `routes/api.js` intake | phoenixd `createinvoice` with `externalId` = request id, 30-minute expiry; no BlockCypher webhooks; the derived address is never shown |
+| payment | `lightning.js` `checkInvoice` | believed only from phoenixd `GET /payments/incoming/<hash>` — the hash from OUR row, and phoenixd's record must name this row's id. Three callers (signed webhook, status poll, reconcile) race safely: `paymentTxId IS NULL` is the once-only guard |
+| publish | `lightning.js` `fulfilLightning` | `fulfillRequest` routes here; the treasury signs, the row records the signed bytes, THEN it broadcasts |
+| refund | `lightning.js` `attemptLightningRefund` | the customer types a Lightning address once the order has failed for good; paid at most once |
+
+### Why `paymentTxId = 'ln:<hash>'`
+
+Because `paymentTxId IS NOT NULL` is "paid" in a dozen queries, and the alternative — a
+new column and editing every one of them — fails silently the day one is missed. The cost
+is the opposite discipline: **anything that treats `paymentTxId` as a real transaction must
+branch on `paymentMethod` first.** Those places today: `reconcile.js` `retryFailedRequests`
+(no `isOutputSpent` for Lightning), `refund.js` (branches to `lightning.js` before touching
+the chain), the status endpoint's self-heal (asks phoenixd, not BlockCypher), and the admin
+details modal (no block-explorer lookup). Forgetting one fails closed: `ln:…` is not a txid
+and every provider refuses it.
+
+`paymentReceivedSatoshis` is what the customer paid (`requestedSat`), never what phoenixd
+kept after liquidity fees (`receivedSat`) — the underpaid alert compares it to the price.
+
+### A crash can never publish the same message twice
+
+`treasury.js` keeps signed-but-unconfirmed bytes in memory (`attemptedSpends`) so a retry
+re-sends them rather than building a second transaction. Memory dies with the process. So
+`fulfilLightning` passes `onSigned`, which writes `pendingTxId`/`pendingTxHex` to the row
+**before** the broadcast — only while the row is still `processing_op_return` — and if that
+write fails, nothing is broadcast at all.
+
+**Every retry of signed bytes re-sends the same bytes first, and only then asks what became
+of them** (`chainProviders.signedTxFate`). This rule was arrived at the hard way — two review
+rounds on 2026-10-02 each found a way the obvious version published a message twice or
+recorded an unpublished one:
+
+| `signedTxFate` says | Meaning | Action |
+|---|---|---|
+| `exists` | a host has it, or one of its inputs is spent BY it | published |
+| `dead` | one of its inputs is spent by a DIFFERENT, CONFIRMED transaction | it can never confirm: rebuild |
+| `unknown` | anything else | keep the bytes, re-send and ask again next pass (`treasury_tx_unresolved` / `broadcast_unavailable`) |
+
+What is deliberately NOT evidence, each of which looked like it was:
+
+- **`GET /tx/:id/status`** — Esplora answers `{"confirmed": false}` for a txid that does
+  not exist. Believing it recorded a never-broadcast message as delivered, unrefundable.
+- **"inputs missing or spent"** on a re-send — Bitcoin Core says "already known" only while
+  one of a transaction's outputs is unspent. An OP_RETURN never is; once the change has been
+  spent by the next order, a transaction that DID confirm gets exactly this answer.
+- **A refusal after a silent host** — `tryProviders` stops at the first definite "no", so a
+  host before it that timed out may have accepted. `chainProviders.mayHaveBeenAccepted`
+  detects that; such bytes are kept as possibly-accepted, never rebuilt.
+- **"The explorers do not have it"** — broadcasts go to BlockCypher first, and one host's
+  mempool can lack what another holds. Only a CONFIRMED conflicting spend proves death.
+
+`treasury_tx_unresolved` is therefore not permanent: retries keep re-sending the same bytes
+and asking. It never auto-refunds (`failure_reasons.js`), and a refund is refused while
+`pendingTxId` is set. When the attempts run out it is the operator's: the admin panel's
+**Resolve tx** button (`POST /api/admin/requests/:id/resolve-pending`) records it as
+`published` or `dropped`, and refuses either answer the chain contradicts unless forced.
+Dropping also makes this process forget the bytes; with the same inputs unspent, the rebuild
+signs the identical transaction, so a wrong "dropped" still cannot double-publish.
+
+One worker per order: reconcile releases a `processing_op_return` lock after 30 minutes on
+the assumption the worker died. One merely queued behind the treasury lock is alive, so
+`fulfilLightning` keeps an in-process set and a second worker is answered
+`fulfilment_in_progress`, which `request_service.js` treats like "Lock not acquired" —
+nothing is written, no attempt is burned.
+
+### Refunds
+
+There is no payer address for a Lightning payment, so the customer's order page asks for
+a Lightning address (`user@domain`, LUD-16) once `lightning.refundState` says
+`needs_address`. phoenixd resolves it and pays (`/paylnaddress`). The address is validated
+narrowly (`LN_ADDRESS_RE`): phoenixd fetches `https://<domain>/.well-known/lnurlp/<user>`
+for us, so no IP literals, ports or single-label hosts like `webapp`.
+
+Three outcomes, three owners:
+
+| phoenixd says | Recorded as | Who acts |
+|---|---|---|
+| sent | `refunded`, `refundTxId = 'ln:<hash>'` | nobody |
+| failed — address or route | `refund_failed`, `ln_refund_failed: …` | the customer, with another address |
+| failed — our node cannot pay (no balance, channel opening/closing) | `ln_refund_node_not_ready: …` | the operator, from the admin panel once phoenixd can pay |
+| timeout, dropped connection, "already paid", "in progress" | `ln_refund_outcome_unknown: …` | the operator, after checking phoenixd's outgoing payments |
+
+**An unknown outcome is never retried automatically** — not by the form, not by reconcile.
+For the same reason `reconcile.js` never releases a stuck Lightning refund lock back into a
+refundable state (it releases on-chain ones, which re-read the chain before spending); it
+marks it `ln_refund_outcome_unknown` instead. A refund is also refused while a signed
+treasury transaction is unaccounted for (`publication_unresolved`): the message may already
+be on chain.
+
+### Liquidity, and the first payments
+
+phoenixd buys inbound liquidity automatically (2,000,000 sats at a time, about 1% plus a
+mining fee). On a node with no channel, a payment too small to cover that goes into **fee
+credit**: the customer's payment succeeds and the order publishes normally, but the money is
+not spendable — it pre-pays the channel. Until a channel exists, **Lightning refunds fail as
+`ln_refund_node_not_ready`** and wait for the operator. One payment large enough to open the
+channel ends that phase.
+
+### Offering it at all
+
+`/api/config/limits` sends `lightning: true` only when phoenixd answers AND the treasury has
+room for a 200-byte text at the floor rate (`lightning.isOffered`, cached 30 s). The page
+defaults to Lightning when offered; an order intake still refuses is answered with
+`code: 'lightning_unavailable'` and the page switches the customer to on-chain. A refusal for
+a low treasury sends the operator one Telegram message per six hours.
+
+`LIGHTNING_ENABLED=false` in `.env` is the kill switch; it needs `docker compose up -d webapp`.
+It stops NEW orders only. Everything that receives or returns money — the webhook, invoice
+polling, refunds, the sweep — keys on `LIGHTNING_CONFIGURED` instead, because an invoice
+issued before the switch stays payable for half an hour and that money must be seen.
+
+The offer decision is cached and refreshed in the background; `/api/config/limits` never
+waits on phoenixd or an explorer. Public status responses carry only the reason CODE for a
+Lightning order (`insufficient_treasury_funds`, not the treasury's address and balance), and
+a refund address whose domain resolves to a private network is refused before phoenixd is
+asked to fetch from it.
 
 ## The public wall
 
@@ -767,7 +908,8 @@ the public wall of every message the moment it got mined.
 `chain_providers.js` sorts broadcast errors into buckets. Getting this wrong is
 expensive, so check it when touching provider code:
 
-- **already broadcast** (`txn-already-known`) → this is *success*, not failure
+- **already broadcast** (`txn-already-known`, and Core 28+'s "Transaction outputs already
+  in utxo set" for a confirmed one) → this is *success*, not failure
 - **fee too low** → retryable, and worth trying the other providers
 - **inputs already spent** → an earlier attempt probably confirmed; never auto-refund
 - **dust** → permanent, but only after every provider has been asked (see below)
@@ -1129,7 +1271,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **914 assertions across thirteen files**, all offline:
+`/home/admin/op_returner_tests/` — **1,103 assertions across fourteen files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1165,6 +1307,17 @@ There is no test runner in the repo. Verification lives outside it, in
   matching the one `queue.js` charges across all six address types, and the admin token being
   remembered in sessionStorage, restored on reload, and thrown away on a 401 from the admin API
   but not from anywhere else. `axios.post` is stubbed before `notifier.js` is required.
+- `lightning.js` — 189. Lightning end to end, against the real routers and a FAKE phoenixd
+  running as an actual HTTP server (so auth, form encoding and the webhook HMAC are real):
+  the price covers what the treasury spends and the page shows the same price; no invoice
+  the treasury cannot fund, including two orders at once; a payment believed only from
+  phoenixd; webhook, poll and reconcile racing; expiry and its grace; cancel-then-pay; the
+  signed transaction on the row before broadcast and every restart case; refunds paid once,
+  with the unknown outcome going to a human. The fake chain models what fooled the first
+  version: Esplora's status quirk, Core's "already known" only while an output is unspent,
+  a silent host before a refusal, and conflicts that are or are not yet confirmed.
+  **Fifty-seven bugs reintroduced, fifty-seven caught** (2026-10-02) — rerun that if you
+  touch `lightning.js`, `treasury.js` or `signedTxFate`.
 - `treasury.js` — 176. The treasury spending path: the estimate against real signed
   transactions at every payload size and input count, the fee floor and the post-signing
   relay check, the guards that refuse before anything is signed, dust and change and where
@@ -1255,6 +1408,14 @@ in the `op-returner_op_returner_data` Docker volume.
 compose-file or env changes need `up -d`. **Editing a file under `backend/src/` changes
 nothing until that restart**, so a "fixed" money path is still broken until you do it.
 
+**phoenixd** is its own compose service, built from `deploy/phoenixd/Dockerfile` — the
+official arm64 release, pinned by SHA-256 to ACINQ's signed checksums. Its data (seed,
+channels, `phoenix.conf`) is the external volume `op-returner_phoenixd_data`. To upgrade:
+verify the new `SHA256SUMS.asc` with gpg against key `E434ED292E85643A`, change both `ARG`s,
+then `docker compose build phoenixd && docker compose up -d phoenixd`. Restarting it is safe
+when no payment is in flight; the webapp copes with it being down (Lightning is simply not
+offered).
+
 Schema migrations are additive `ALTER TABLE ADD COLUMN` statements in `database.js`,
 applied on boot. The HTTP listener and the scheduled jobs both start only after
 `initializeDatabase` signals ready — do not move `app.listen` back out of that callback,
@@ -1262,7 +1423,12 @@ or early requests will hit a database with no `wallet_state` row.
 
 ## Secrets
 
-`.env` holds the wallet mnemonic, admin password, BlockCypher token, Telegram bot token
-and Cloudflare tunnel token. It is gitignored (as is `.env.*`, so backups cannot be
+`.env` holds the wallet mnemonic, admin password, BlockCypher token, Telegram bot token,
+Cloudflare tunnel token, and phoenixd's API password and webhook secret (`PHOENIXD_*`, the
+same values as in `phoenix.conf` inside the phoenixd volume).
+
+**The phoenixd seed is a second wallet.** It lives only in `seed.dat` in the phoenixd
+volume, and it is not derived from the main mnemonic: the operator must back up its 12
+words separately, or a lost volume loses the Lightning balance. Never print it. It is gitignored (as is `.env.*`, so backups cannot be
 committed either). `docker-compose.yml` passes them by reference. Never print these
 values, and never copy `.env` to a path that is not ignored.

@@ -41,7 +41,12 @@ const app = express();
 app.disable('x-powered-by');
 
 // --- Middleware ---
-app.use(express.json());
+// The raw bytes are kept alongside the parsed body: phoenixd signs the exact body it
+// sends (routes/webhook.js, POST /lightning), and re-serialising the parsed JSON would not
+// reproduce it byte for byte.
+app.use(express.json({
+    verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 
 // HTTP hygiene: force TLS, keep /admin out of search results, and decide what may be
 // cached. The logic lives in src/http_hygiene.js so that it can be tested — requiring this

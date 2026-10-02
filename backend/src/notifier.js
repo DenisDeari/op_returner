@@ -261,9 +261,9 @@ function preview(message, payloadKind) {
 
 // --- Lifecycle notifications ---------------------------------------------
 
-function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshis, targetAddress }, config) {
+function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshis, targetAddress, paymentMethod }, config) {
     fire(
-        `🟡 <b>New order</b>\n\n` +
+        `🟡 <b>New order</b>${paymentMethod === 'lightning' ? ' ⚡ Lightning' : ''}\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Awaiting <b>${esc(requiredAmountSatoshis)} sats</b>` +
         (targetAddress ? `\nRecipient: <code>${esc(targetAddress)}</code>` : '') +
@@ -298,6 +298,10 @@ function notifyFailed({ requestId, message, payloadKind, reason, amount, termina
     let refundLine = '';
     if (refund?.ok) {
         refundLine = `\n\n↩️ Automatically refunded ${esc(refund.amount)} sats.`;
+    } else if (terminal && refund?.reason === 'awaiting_lightning_refund_address') {
+        // Not a problem for the operator yet: the customer's page now asks them where to
+        // send the money, and the refund goes out the moment they answer.
+        refundLine = `\n\n⚡ Paid over Lightning. The customer is being asked for a Lightning address to refund to.`;
     } else if (terminal) {
         refundLine = `\n\n⚠️ <b>Not refunded automatically</b> (${esc(refund?.reason || 'no refund possible')}). Needs you.`;
     }
@@ -315,11 +319,36 @@ function notifyFailed({ requestId, message, payloadKind, reason, amount, termina
 }
 
 function notifyRefunded({ requestId, amount, refundTxId, refundAddress }, config) {
+    // A Lightning refund's id is 'ln:<paymentHash>', which no block explorer can show.
+    const lightningRefund = String(refundTxId || '').startsWith('ln:');
     fire(
-        `↩️ <b>Refund sent</b> — ${esc(amount)} sats\n\n` +
+        `↩️ <b>Refund sent</b>${lightningRefund ? ' ⚡' : ''} — ${esc(amount)} sats\n\n` +
         `To: <code>${esc(refundAddress)}</code>\n` +
-        `https://mempool.space/tx/${esc(refundTxId)}\n` +
+        (lightningRefund
+            ? `Over Lightning, payment <code>${esc(String(refundTxId).slice(3, 19))}…</code>\n`
+            : `https://mempool.space/tx/${esc(refundTxId)}\n`) +
         `Order <code>${esc(shortId(requestId))}</code>`,
+        config
+    );
+}
+
+/**
+ * A customer asked to pay over Lightning and was turned away, because the treasury could
+ * not cover the order. They were offered on-chain instead, so nobody lost money — but the
+ * operator wants to know the treasury is low before the next one.
+ *
+ * At most once every six hours: a run of refused orders is one fact, not many, and the
+ * hourly notification budget belongs to real orders.
+ */
+let lastLightningRefusalAt = 0;
+const LIGHTNING_REFUSAL_EVERY_MS = 6 * 60 * 60 * 1000;
+function notifyLightningRefused({ detail }, config) {
+    if (Date.now() - lastLightningRefusalAt < LIGHTNING_REFUSAL_EVERY_MS) return;
+    lastLightningRefusalAt = Date.now();
+    fire(
+        `⚡ <b>Lightning order refused</b>\n\n` +
+        `${esc(truncate(detail, 400))}\n\n` +
+        `The customer was offered on-chain payment instead. Top up the treasury to take Lightning orders this size.`,
         config
     );
 }
@@ -372,6 +401,20 @@ function notifyCustomerMessage({ requestId, feedback }, config) {
     );
 }
 
+/**
+ * A Lightning refund that the customer cannot fix: our node could not pay, or the outcome
+ * is unknown. Either way it waits for the operator, and the customer's page says so.
+ */
+function notifyLightningRefundStuck({ requestId, amount, address, reason }, config) {
+    fire(
+        `⚠️ <b>Lightning refund needs you</b> — ${esc(amount)} sats\n\n` +
+        `To: <code>${esc(address)}</code>\n` +
+        `${esc(truncate(reason, 300))}\n\n` +
+        `Order <code>${esc(shortId(requestId))}</code>`,
+        config
+    );
+}
+
 module.exports = {
     send,
     sendPhoto,
@@ -387,5 +430,7 @@ module.exports = {
     notifyCustomerMessage,
     notifyAdminLockout,
     notifyArchiveFunded,
+    notifyLightningRefused,
+    notifyLightningRefundStuck,
     MAX_PER_HOUR,
 };

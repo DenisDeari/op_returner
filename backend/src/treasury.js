@@ -401,11 +401,47 @@ function withTreasuryLock(fn) {
  *   inputValue, changeValue, inputCount, changePath, provider, alreadyBroadcast}
  *   | {ok: false, reason, detail, permanent}>}
  */
-async function createSelfFundedOpReturn(request, rootNode, config) {
-    return withTreasuryLock(() => buildAndBroadcast(request || {}, rootNode, config));
+async function createSelfFundedOpReturn(request, rootNode, config, options = {}) {
+    return withTreasuryLock(() => buildAndBroadcast(request || {}, rootNode, config, options));
 }
 
-async function buildAndBroadcast(request, rootNode, config) {
+/**
+ * Whether this process is holding signed bytes for `requestId` from an attempt whose
+ * broadcast never got a clean answer. A caller with a durable copy of the same bytes
+ * (lightning.js) asks this first: if the answer is yes, calling createSelfFundedOpReturn
+ * re-sends them AND updates the ledger, which a re-broadcast from outside cannot do.
+ */
+function hasAttemptedSpend(requestId) {
+    pruneLedger();
+    return !!requestId && attemptedSpends.has(requestId);
+}
+
+/**
+ * Tells the ledger about a treasury transaction this process did not build — one signed by
+ * an earlier process and re-sent after a restart (lightning.js). Its inputs are spent and
+ * its change, if any, is spendable now, exactly as if recordBroadcast had seen it go out.
+ *
+ * Depth is unknown, so the change is taken as one unconfirmed transaction deep: the same
+ * optimistic, self-correcting guess buildCandidates makes for any foreign output.
+ */
+function noteBroadcast(txHex, treasuryAddress, network) {
+    try {
+        const tx = bitcoin.Transaction.fromHex(txHex);
+        const treasuryScript = bitcoin.address.toOutputScript(treasuryAddress, network);
+        const changeVout = tx.outs.findIndex((o) => Buffer.compare(Buffer.from(o.script), treasuryScript) === 0);
+        recordBroadcast({
+            inputs: tx.ins.map((i) => ({ txId: Buffer.from(i.hash).reverse().toString('hex'), vout: i.index })),
+            txId: tx.getId(),
+            changeVout: changeVout === -1 ? null : changeVout,
+            changeValue: changeVout === -1 ? 0 : tx.outs[changeVout].value,
+            depth: 1,
+        });
+    } catch (e) {
+        console.warn(`[Treasury] Could not note an externally re-sent transaction: ${e.message}`);
+    }
+}
+
+async function buildAndBroadcast(request, rootNode, config, options = {}) {
     const { message, payloadKind, targetAddress, feeRate, amountToSend } = request;
     // Module defaults, overridden by whatever the caller passed. treasury.js used to read
     // NETWORK from the argument and DUST_LIMIT_SATS/MIN_EFFECTIVE_FEE_RATE from the module
@@ -437,17 +473,39 @@ async function buildAndBroadcast(request, rootNode, config) {
             attemptedSpends.delete(request.id);
             return { ...prior.result, provider: again.provider, alreadyBroadcast: !!again.alreadyBroadcast };
         }
-        if (again.inputsSpent) {
-            // Something else took an input, so those bytes can never confirm. Drop them and
-            // let the next attempt build against a fresh read.
+        // Any failed re-send: ask what became of these bytes before deciding anything.
+        //
+        // "Inputs already spent" is NOT proof that something else took an input. Bitcoin
+        // Core only answers "already known" while one of a transaction's outputs is
+        // unspent; an OP_RETURN output never is, so once our change has been spent by the
+        // next order, a transaction that DID confirm is answered exactly like one that was
+        // double-spent away. Rebuilding on that answer published the same message twice.
+        const fate = await chainProviders.signedTxFate(prior.txHex, cfg);
+        if (fate.state === 'exists') {
+            console.log(`[Treasury] ${prior.txId} for ${request.id} is already on the network${fate.confirmed ? ' (confirmed)' : ''} — treating as broadcast.`);
+            // A confirmed transaction is in every provider's view already; only an
+            // unconfirmed one needs the ledger to remember what it spent and made.
+            if (!fate.confirmed) recordBroadcast(prior.record);
+            attemptedSpends.delete(request.id);
+            return { ...prior.result, provider: 'lookup', alreadyBroadcast: true };
+        }
+        if (fate.state === 'dead') {
+            // An input is spent by a different, CONFIRMED transaction: ours can never
+            // confirm. Safe to build again.
             attemptedSpends.delete(request.id);
             return failure('treasury_inputs_stale',
-                `${again.reason} (the transaction signed earlier for ${request.id} can no longer confirm; it will be rebuilt)`);
+                `${prior.txId} for ${request.id} conflicts with confirmed ${fate.conflict} and can never confirm; it will be rebuilt`);
         }
-        return failure(
-            again.permanent ? 'broadcast_rejected' : 'broadcast_unavailable',
-            `${again.reason} (re-broadcasting ${prior.txId})`
-        );
+        if (again.permanent && !again.inputsSpent && !chainProviders.mayHaveBeenAccepted(again)) {
+            // Every host answered, and every answer was no, on the bytes' own merits. No
+            // mempool holds them.
+            attemptedSpends.delete(request.id);
+            return failure('broadcast_rejected', `${again.reason} (re-sending ${prior.txId})`);
+        }
+        // Not provably out there, not provably gone. Keep the bytes and try again later:
+        // the chain usually settles the question within a block or two.
+        return failure(again.inputsSpent ? 'treasury_tx_unresolved' : 'broadcast_unavailable',
+            `${again.reason} (re-sending ${prior.txId}; ${fate.reason})`);
     }
 
     // --- The payload -------------------------------------------------------
@@ -661,6 +719,25 @@ async function buildAndBroadcast(request, rootNode, config) {
     }
     console.log(`[Treasury] Signed ${txId} (${actualVBytes} vBytes, ${actualFee} sats, ${actualFeeRate.toFixed(2)} sat/vB)`);
 
+    // --- Make it durable before it can matter -------------------------------
+    // attemptedSpends below is memory, and a restart forgets it. A caller that holds a
+    // row (a paid Lightning order) records the signed bytes on that row HERE, before the
+    // broadcast, so that a crash between "the network accepted it" and "we wrote it down"
+    // leaves a transaction to re-send rather than a gap that a retry fills with a second,
+    // different transaction carrying the same message.
+    //
+    // If the record cannot be written, nothing is broadcast. Publishing a transaction we
+    // have no durable trace of is the one outcome this hook exists to rule out, and not
+    // publishing yet costs nothing but a retry.
+    if (typeof options.onSigned === 'function') {
+        try {
+            await options.onSigned({ txId, txHex });
+        } catch (e) {
+            return failure('pending_record_failed',
+                `could not record signed transaction ${txId} before broadcasting it: ${e.message}`);
+        }
+    }
+
     // --- Broadcast ---------------------------------------------------------
     // Through the provider chain, not straight at BlockCypher. A single host's refusal is
     // not the network's verdict: dust thresholds differ between providers, and a
@@ -713,7 +790,14 @@ async function buildAndBroadcast(request, rootNode, config) {
     // case that matters — the broadcast landed and its response was lost — is exactly the
     // case where it changed. Without this, the retry sees its own change output, builds a
     // second transaction carrying the same message, and both confirm.
-    if (request.id) {
+    // Only an UNCLEAR outcome is remembered — but "clear" needs every host to have
+    // answered. A refusal from the third host proves nothing about the first if the
+    // first timed out: it may have accepted and lost its reply (mayHaveBeenAccepted). When
+    // every attempt was a refusal, the transaction entered no mempool, re-sending it can
+    // only fail again, and the next attempt should build against a fresh read.
+    const doubt = chainProviders.mayHaveBeenAccepted(broadcast);
+    const unclear = !broadcast.permanent || doubt;
+    if (request.id && unclear) {
         attemptedSpends.set(request.id, {
             txHex,
             txId,
@@ -766,17 +850,29 @@ async function buildAndBroadcast(request, rootNode, config) {
             + `${dropped} unconfirmed change entr${dropped === 1 ? 'y' : 'ies'} withdrawn, re-reading the chain on the next attempt)`);
     }
     return failure(
-        broadcast.permanent ? 'broadcast_rejected' : 'broadcast_unavailable',
+        broadcast.permanent && !doubt ? 'broadcast_rejected' : 'broadcast_unavailable',
         `${broadcast.reason} (txid would have been ${txId})`
     );
 }
 
+/** Drops this process's memory of bytes signed for `requestId`. Only for an operator who has settled them by hand. */
+function forgetAttempt(requestId) {
+    attemptedSpends.delete(requestId);
+}
+
 module.exports = {
     TREASURY_PATH,
+    // For a caller that must read and act on the treasury's state as one step — lightning.js
+    // resolving a transaction signed before a restart — without another spend in between.
+    withTreasuryLock,
     PERMANENT_FAILURES,
     getTreasuryAddress,
     fetchTreasuryUtxos,
     createSelfFundedOpReturn,
+    hasAttemptedSpend,
+    forgetAttempt,
+    noteBroadcast,
+    MAX_UNCONFIRMED_DEPTH,
     // Exported for the harness: both are pure, and both decide things that must be
     // provable without a network or a wallet.
     estimateTreasuryVBytes,

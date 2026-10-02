@@ -130,6 +130,36 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // the base64 length and NOT what goes on chain. Nothing may price from it — see
     // payload.js byteLength().
     'ADD COLUMN payloadKind TEXT',
+    // Lightning. See lightning.js for the whole lifecycle.
+    //
+    // paymentMethod is NULL for on-chain, the only thing that existed before, and
+    // 'lightning' otherwise. Same reasoning as payloadKind: NULL already means the right
+    // thing for every older row, so nothing is backfilled.
+    //
+    // A paid Lightning order also gets `paymentTxId = 'ln:<paymentHash>'`. That is not a
+    // txid and is deliberately not one: `paymentTxId IS NOT NULL` is the definition of
+    // "paid" in alerts.js, reconcile.js, cleanup.js, routes/admin.js and both cancel
+    // guards, and an order paid over a rail that wrote nothing there was invisible to
+    // every one of them. Anything that treats paymentTxId as a real transaction must
+    // branch on paymentMethod first — and fails closed (an unparseable txid) if it forgets.
+    'ADD COLUMN paymentMethod TEXT',
+    'ADD COLUMN lnPaymentHash TEXT',
+    'ADD COLUMN lnInvoice TEXT',
+    'ADD COLUMN lnInvoiceExpiresAt TEXT',
+    // The Lightning address the customer gave us for a refund, once their order failed.
+    // There is no payer address to read off the chain for a Lightning payment, so this is
+    // the only way the money can go back.
+    'ADD COLUMN lnRefundAddress TEXT',
+    // A treasury transaction that has been SIGNED but not yet confirmed as broadcast.
+    //
+    // Written before the broadcast, never after. treasury.js remembers signed bytes in
+    // memory so a retry re-sends them rather than building a second transaction carrying
+    // the same message — but memory does not survive a restart, and a crash between "the
+    // network accepted it" and "we recorded it" is exactly when the retry would otherwise
+    // rebuild from a chain view the first broadcast had already changed. Both confirm, the
+    // message is published twice, and the treasury pays twice.
+    'ADD COLUMN pendingTxId TEXT',
+    'ADD COLUMN pendingTxHex TEXT',
 ];
 
 // The only index on `requests`.

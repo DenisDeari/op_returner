@@ -1036,6 +1036,60 @@ input[type=range] { width: 100%; accent-color: var(--accent); display: block; }
   animation: ping 1.8s var(--ease) infinite;
 }
 
+/* ============================ Lightning ================================= */
+
+/* Pay-with switch, in the pay row. Two pills in one track; the checked one lifts. */
+.rail-pick {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: rgba(0,0,0,.35);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+}
+.rail-pick[hidden] { display: none; }
+.rail-pick button {
+  background: none;
+  border: none;
+  border-radius: 100px;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: .8rem;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.rail-pick button:hover { color: var(--text); }
+.rail-pick button[aria-checked="true"] { background: var(--surface-2); color: var(--text); }
+.rail-pick button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(247,147,26,.3); }
+
+/* The payment dialog says which rail it is showing, because the two codes look alike. */
+.modal-kind {
+  font-size: .72rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+  margin-bottom: 10px;
+}
+/* An invoice is a much longer string than an address, so its code gets more room. */
+.qr.ln { width: 236px; height: 236px; }
+.modal-wallet { display: inline-block; margin-top: 12px; text-decoration: none; }
+.modal-wallet[hidden] { display: none; }
+
+/* The refund form on a failed Lightning order. Shares the feedback box's look. */
+.ln-refund input {
+  width: 100%;
+  background: rgba(0,0,0,.4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: .82rem;
+  padding: 9px 11px;
+}
+.ln-refund input:focus { outline: none; border-color: rgba(247,147,26,.5); }
+.ln-refund .feedback-row { margin-top: 8px; }
+
 /* ============================ Responsive ================================ */
 
 @media (max-width: 900px) { .wall { columns: 2; } }

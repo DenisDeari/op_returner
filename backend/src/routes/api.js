@@ -12,6 +12,7 @@ const qr = require('../qr');
 const payload = require('../payload');
 const httpHygiene = require('../http_hygiene');
 const counters = require('../counters');
+const lightning = require('../lightning');
 
 /**
  * Validates the economic parameters of a request BEFORE a payment address is issued.
@@ -103,12 +104,30 @@ const PUBLIC_REQUEST_FIELDS = [
     // deliberately absent — see above.
     'isPublic', 'publicAt',
     'archivedAt', 'archivedReason',
+    // Lightning. The invoice is what the customer pays, so it is theirs to see; the
+    // refund address is one they typed in themselves.
+    'paymentMethod', 'lnInvoice', 'lnInvoiceExpiresAt', 'lnRefundAddress',
 ];
 
-function publicRequestView(row) {
+function publicRequestView(row, config) {
     const view = {};
     for (const field of PUBLIC_REQUEST_FIELDS) {
         if (row[field] !== undefined) view[field] = row[field];
+    }
+    if (lightning.isLightningRow(row)) {
+        // A Lightning order still derives an on-chain address — the schema requires one
+        // and it keeps the index sequence unbroken — but nothing watches it: no webhook is
+        // registered and no poll looks at it. Handing it to the customer invites a payment
+        // that nobody would ever see. The amount and invoice are what they pay.
+        delete view.address;
+        view.lightningRefund = lightning.refundState(row, config);
+        // The code, not the sentence. A treasury failure names the treasury address and
+        // its balance ("holds 3101 spendable sats… Top it up"), and a refund failure
+        // carries phoenixd's or a stranger's LNURL server's own words — operator material,
+        // and the latter would turn this endpoint into a probe of what phoenixd can reach.
+        const code = (reason) => (reason ? String(reason).split(':')[0] : reason);
+        if (view.failureReason !== undefined) view.failureReason = code(view.failureReason);
+        if (view.refundFailureReason !== undefined) view.refundFailureReason = code(view.refundFailureReason);
     }
     return view;
 }
@@ -215,6 +234,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
     router.get('/config/limits', async (req, res) => {
         try {
             const limits = await readPayloadLimits(db);
+            const lightningOffered = await lightning.isOffered(db, rootNode, config);
             res.json({
                 maxPayloadSize: limits.maxTextBytes,
                 // What the client-side image encoder targets. Zero would be a coherent way
@@ -226,6 +246,11 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 serviceFeeSats: config.SERVICE_FEE_SATS,
                 minFeeRate: config.MIN_FEE_RATE,
                 maxFeeRate: config.MAX_FEE_RATE,
+                // Whether to offer Lightning: it is configured, phoenixd answers, and the
+                // treasury has room for a typical order (lightning.isOffered, cached 30s).
+                // A particular order is still decided at intake, which refuses it with
+                // code 'lightning_unavailable' and the page falls back to on-chain.
+                lightning: lightningOffered,
             });
         } catch (error) {
             console.error('Error fetching payload limits:', error.message);
@@ -372,11 +397,32 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
             const row = await dbGet(
                 db,
-                'SELECT id, address, requiredAmountSatoshis, status, archivedAt, webhooksRetiredAt FROM requests WHERE id = ?',
+                `SELECT id, address, requiredAmountSatoshis, status, archivedAt, webhooksRetiredAt,
+                        paymentMethod, lnInvoice, lnInvoiceExpiresAt
+                 FROM requests WHERE id = ?`,
                 [requestId]
             );
             if (!row) {
                 return res.status(404).json({ error: 'Request not found.' });
+            }
+
+            // A Lightning order's code is its invoice, uppercased: BOLT11 is
+            // case-insensitive and an all-caps string fits QR's alphanumeric mode, which
+            // makes a smaller, easier-to-scan code. Same refusals, for the same reason —
+            // never draw a payable code for something that can no longer be paid.
+            if (lightning.isLightningRow(row)) {
+                if (row.archivedAt || !(Date.parse(row.lnInvoiceExpiresAt || '') > Date.now())) {
+                    return res.status(410).json({ error: 'This request is no longer open for payment.' });
+                }
+                if (row.status !== 'pending_payment' || !row.lnInvoice) {
+                    return res.status(409).json({ error: 'This request is not awaiting payment.' });
+                }
+                const lnUri = `lightning:${row.lnInvoice}`.toUpperCase();
+                const lnSvg = qr.toSvg(lnUri, { scale: req.query.scale, maxLength: 1200 });
+                res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+                res.setHeader('Cache-Control', 'public, max-age=300');
+                res.setHeader('X-Payment-Uri', lnUri);
+                return res.send(lnSvg);
             }
 
             // Never render a payable code for an address nothing is watching.
@@ -439,7 +485,9 @@ function createApiRouter(db, rootNode, config, requestQueue) {
 
     // --- Authenticated Endpoints ---
     router.post('/message-request', optionalApiKey, async (req, res) => {
-        const { message, targetAddress, feeRate, amountToSend, isPublic, payloadKind } = req.body;
+        const { message, targetAddress, feeRate, amountToSend, isPublic, payloadKind, paymentMethod } = req.body;
+        // Held from the treasury check until the invoice exists — see acquireIntakeLock.
+        let releaseLightningIntake = null;
 
         try {
             const limits = await readPayloadLimits(db);
@@ -478,6 +526,42 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             }
             const wantsPublic = isPublic === true;
 
+            // Rejected rather than defaulted when it is anything but the two known
+            // values: an unrecognised method silently becoming on-chain would quote an
+            // address to someone who asked for an invoice.
+            if (paymentMethod !== undefined && paymentMethod !== null
+                && paymentMethod !== 'onchain' && paymentMethod !== lightning.LIGHTNING) {
+                return res.status(400).json({ error: "paymentMethod must be 'onchain' or 'lightning'." });
+            }
+            const wantsLightning = paymentMethod === lightning.LIGHTNING;
+
+            // NEVER TAKE MONEY FOR A TRANSACTION WE CANNOT BROADCAST — the Lightning
+            // version. An on-chain order pays for its own transaction out of the UTXO the
+            // customer sends; a Lightning order is paid for by the treasury, so the
+            // treasury has to be seen holding the money BEFORE an invoice exists. Checked
+            // here with the rest of the economics, ahead of the rate limiter, so a refusal
+            // costs the customer nothing and they can simply pay on-chain instead.
+            if (wantsLightning) {
+                if (!config.LIGHTNING_ENABLED) {
+                    return res.status(503).json({ code: 'lightning_unavailable', error: 'Lightning payments are not available right now. Please pay on-chain.' });
+                }
+                const q = lightning.quote({ messageBytes: payloadCheck.bytes, targetAddress: targetAddress || null, feeRate, amountToSend }, config);
+                releaseLightningIntake = await lightning.acquireIntakeLock();
+                const funding = await lightning.canFund(db, rootNode, config, q.treasuryCost, { feeRate: q.feeRate });
+                if (!funding.ok) {
+                    console.warn(`[API] Lightning refused at intake (${funding.reason}): ${funding.detail}`);
+                    if (funding.reason === 'treasury_low') {
+                        notifier.notifyLightningRefused({ detail: funding.detail }, config);
+                    }
+                    return res.status(503).json({
+                        code: 'lightning_unavailable',
+                        error: funding.reason === 'over_ceiling'
+                            ? 'This order is too large to pay over Lightning. Please pay on-chain.'
+                            : 'Lightning payments are not available for this order right now. Please pay on-chain.',
+                    });
+                }
+            }
+
             // Throttled here, after validation and immediately before anything is
             // consumed. A caller presenting a valid API key is the operator or the
             // internal service and is exempt.
@@ -496,7 +580,8 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 recordIntake = gate.record;
             }
 
-            const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config, payloadCheck.kind);
+            const result = await requestQueue.add(message, targetAddress, feeRate, amountToSend, db, rootNode, config, payloadCheck.kind,
+                wantsLightning ? lightning.LIGHTNING : undefined);
             if (recordIntake) recordIntake();
 
             // Immediately after the INSERT and BEFORE registerWebhook, which awaits two
@@ -532,7 +617,56 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             // payloadCheck.bytes, not the length of `message`: for an image the latter is
             // the base64 string, so the event log would record a number a third larger
             // than what went on chain and disagree with what the customer was charged.
-            events.record(db, result.newRequestId, events.KINDS.CREATED, `${payloadCheck.bytes} bytes ${payloadCheck.kind}, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}`);
+            events.record(db, result.newRequestId, events.KINDS.CREATED, `${payloadCheck.bytes} bytes ${payloadCheck.kind}, ${feeRate || config.DEFAULT_FEE_RATE} sat/vB, quote ${result.requiredAmountSatoshis} sats${targetAddress ? `, recipient ${targetAddress}` : ''}${wantsLightning ? ', Lightning' : ''}`);
+
+            if (wantsLightning) {
+                // No BlockCypher webhooks: nothing will ever be paid to this row's derived
+                // address. phoenixd tells us about the payment instead (webhook.js).
+                const invoice = await lightning.createInvoice(config, {
+                    amountSat: result.requiredAmountSatoshis,
+                    description: `SatWire ${result.newRequestId.slice(0, 8)}`,
+                    externalId: result.newRequestId,
+                    expirySeconds: config.LN_INVOICE_EXPIRY_SECONDS,
+                });
+                if (!invoice.ok) {
+                    // The row exists and its index is spent, but it can never be paid.
+                    // Archived with every money guard, so it is nobody's problem later.
+                    console.error(`[API] phoenixd would not create an invoice for ${result.newRequestId}: ${invoice.reason}`);
+                    await dbRun(
+                        db,
+                        `UPDATE requests SET archivedAt = ?, archivedReason = 'lightning_invoice_failed'
+                         WHERE id = ? AND archivedAt IS NULL AND paymentTxId IS NULL AND opReturnTxId IS NULL AND refundTxId IS NULL`,
+                        [new Date().toISOString(), result.newRequestId]
+                    );
+                    return res.status(503).json({ code: 'lightning_unavailable', error: 'Lightning payments are not available right now. Please pay on-chain.' });
+                }
+                const expiresAt = new Date(Date.now() + config.LN_INVOICE_EXPIRY_SECONDS * 1000).toISOString();
+                await dbRun(
+                    db,
+                    'UPDATE requests SET lnPaymentHash = ?, lnInvoice = ?, lnInvoiceExpiresAt = ? WHERE id = ?',
+                    [invoice.paymentHash, invoice.invoice, expiresAt, result.newRequestId]
+                );
+                events.record(db, result.newRequestId, events.KINDS.LIGHTNING_INVOICE, `invoice ${invoice.paymentHash}, expires ${expiresAt}`);
+
+                notifier.notifyNewOrder({
+                    requestId: result.newRequestId,
+                    message,
+                    payloadKind: payloadCheck.kind,
+                    requiredAmountSatoshis: result.requiredAmountSatoshis,
+                    targetAddress,
+                    paymentMethod: lightning.LIGHTNING,
+                }, config);
+
+                return res.status(201).json({
+                    requestId: result.newRequestId,
+                    paymentMethod: lightning.LIGHTNING,
+                    invoice: invoice.invoice,
+                    invoiceExpiresAt: expiresAt,
+                    requiredAmountSatoshis: result.requiredAmountSatoshis,
+                    isPublic: wantsPublic,
+                    message: 'Pay the Lightning invoice to embed your message.',
+                });
+            }
 
             const webhookManager = require('../webhook_manager');
             const hookId = await webhookManager.registerWebhook(result.address, config);
@@ -565,6 +699,8 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         } catch (error) {
             console.error(`Error in /api/message-request:`, error);
             res.status(500).json({ error: "Failed to process message request." });
+        } finally {
+            if (releaseLightningIntake) releaseLightningIntake();
         }
     });
 
@@ -608,11 +744,27 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                     opReturnTxId: row.opReturnTxId,
                     opReturnConfirmedAt: row.opReturnConfirmedAt,
                     refundTxId: row.refundTxId,
+                    // A Lightning order withdrawn and THEN paid — a code scanned before the
+                    // cancel — holds the customer's money with no way to publish it. The
+                    // page needs to know so it can ask where to send it back.
+                    paymentMethod: row.paymentMethod,
+                    lnRefundAddress: row.lnRefundAddress,
+                    lightningRefund: lightning.refundState(row, config),
                     error: row.opReturnTxId
                         ? 'This request was withdrawn, but it had already been paid and was published.'
                         : row.refundTxId
                             ? 'This request was cancelled and your payment was refunded.'
-                            : row.archivedReason === 'cancelled_by_customer'
+                            : (row.paymentTxId && lightning.isLightningRow(row))
+                                ? 'This request was withdrawn, but your Lightning payment arrived anyway. Tell us where to send it back.'
+                                : row.paymentTxId
+                                    // On-chain money that arrived after the order closed. The
+                                    // operator was alerted (cleanup.js recordUnexpectedPayment)
+                                    // and refunds it by hand. Never "create a new one": that
+                                    // invites a second payment.
+                                    ? 'A payment arrived for this request after it was closed. The operator has been alerted and will refund it.'
+                                : row.archivedReason === 'lightning_invoice_expired'
+                                    ? 'The Lightning invoice expired without being paid. Please create a new request.'
+                                    : row.archivedReason === 'cancelled_by_customer'
                                 ? 'This request was cancelled.'
                                 : 'This request expired without payment. Please create a new one.',
                 });
@@ -624,7 +776,30 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             const lastCheck = selfHealCache[requestId] || 0;
             const shouldCheck = (now - lastCheck) > 30000;
 
-            if ((row.status === 'pending_payment' || row.status === 'payment_detected') && ageInSeconds > 15 && shouldCheck) {
+            // A Lightning order's payment is a question for phoenixd, not BlockCypher, and
+            // the answer is local and instant — so it is asked on the poll itself rather
+            // than after 15 seconds. checkInvoice records it and starts publishing; this
+            // handler only re-reads the row it changed.
+            if (lightning.isLightningRow(row)) {
+                if (row.status === 'pending_payment' && !row.paymentTxId && config.LIGHTNING_CONFIGURED) {
+                    const checked = await lightning.checkInvoiceThrottled(db, row, config, {
+                        onPaid: (fresh) => fulfillRequest(fresh, db, rootNode, config),
+                    });
+                    if (checked.recorded || checked.state === 'expired') {
+                        const fresh = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+                        if (fresh && fresh.archivedAt) {
+                            return res.status(200).json({
+                                id: fresh.id, status: 'archived', archivedAt: fresh.archivedAt,
+                                archivedReason: fresh.archivedReason, createdAt: fresh.createdAt,
+                                message: fresh.message, payloadKind: fresh.payloadKind,
+                                paymentMethod: fresh.paymentMethod,
+                                error: 'The Lightning invoice expired without being paid. Please create a new request.',
+                            });
+                        }
+                        if (fresh) Object.assign(row, fresh);
+                    }
+                }
+            } else if ((row.status === 'pending_payment' || row.status === 'payment_detected') && ageInSeconds > 15 && shouldCheck) {
                 selfHealCache[requestId] = now;
                 try {
                     const apiUrl = `${config.BLOCKCYPHER_API_BASE}/addrs/${row.address}/full?token=${config.BLOCKCYPHER_TOKEN}&limit=5`;
@@ -695,7 +870,7 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 }
             }
 
-            const responseBody = publicRequestView(row);
+            const responseBody = publicRequestView(row, config);
             if (row.status === 'op_return_failed' && config.SUPPORT_EMAIL) {
                 responseBody.supportEmail = config.SUPPORT_EMAIL;
             }
@@ -767,6 +942,89 @@ function createApiRouter(db, rootNode, config, requestQueue) {
         }
     });
 
+    /**
+     * POST /api/request/:requestId/lightning-refund  { address: "name@wallet.com" }
+     *
+     * Where a failed Lightning order's money goes back to. A Lightning payment leaves no
+     * payer address anywhere we can read it, so the customer has to tell us — and they
+     * are only asked once their order has failed for good (lightning.refundState).
+     *
+     * The request id is the bearer capability here, as it is for every per-order endpoint:
+     * whoever holds it is the person who placed the order. The address can be replaced
+     * only while no refund has gone out and the last attempt definitely failed; an
+     * attempt whose outcome is unknown is the operator's, never the form's.
+     *
+     * The refund is attempted immediately, so the answer says whether it went through.
+     */
+    const lnRefundRateLimit = new Map(); // ip -> [timestamps]
+    const LN_REFUND_WINDOWS = [{ ms: 60 * 60 * 1000, max: 10, label: 'hour' }];
+    setInterval(() => sweepRateLimit(lnRefundRateLimit, 60 * 60 * 1000), 60 * 60 * 1000).unref?.();
+
+    router.post('/request/:requestId/lightning-refund', async (req, res) => {
+        const { requestId } = req.params;
+        try {
+            const normalized = lightning.normalizeLightningAddress((req.body || {}).address);
+            if (!normalized.ok) {
+                return res.status(400).json({ error: normalized.error });
+            }
+
+            const gate = withinLimit(lnRefundRateLimit, clientIp(req), LN_REFUND_WINDOWS);
+            if (!gate.ok) {
+                return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+            }
+
+            const row = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+            if (!row || !lightning.isLightningRow(row)) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+            const state = lightning.refundState(row, config);
+            if (state !== 'needs_address' && state !== 'retry_address') {
+                const why = state === 'refunded' ? 'This order has already been refunded.'
+                    : state === 'in_progress' ? 'A refund is already being sent.'
+                        : state === 'manual' ? 'This refund needs the operator to look at it. They have been told.'
+                            : 'This order is not waiting for a refund.';
+                return res.status(409).json({ error: why, lightningRefund: state });
+            }
+            gate.record();
+
+            // Conditional on the same money guards the refund itself uses, so an address
+            // can never be swapped under a refund that is already paying.
+            const write = await dbRun(
+                db,
+                `UPDATE requests SET lnRefundAddress = ?
+                 WHERE id = ? AND paymentMethod = 'lightning' AND paymentTxId IS NOT NULL
+                   AND opReturnTxId IS NULL AND refundTxId IS NULL AND pendingTxId IS NULL
+                   AND status != 'refund_processing'`,
+                [normalized.address, requestId]
+            );
+            if (write.changes !== 1) {
+                return res.status(409).json({ error: 'This order changed while you were typing. Reload and try again.' });
+            }
+            events.record(db, requestId, events.KINDS.LIGHTNING_REFUND_ADDRESS, normalized.address);
+
+            const fresh = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+            const { attemptRefund } = require('../refund');
+            const result = await attemptRefund(fresh, db, rootNode, config, {
+                allowStatuses: lightning.customerRefundStatuses(fresh),
+            });
+            const after = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+
+            if (result.ok) {
+                return res.status(200).json({ success: true, amount: result.amount, lightningRefund: 'refunded' });
+            }
+            return res.status(502).json({
+                success: false,
+                lightningRefund: lightning.refundState(after, config),
+                error: lightning.refundState(after, config) === 'retry_address'
+                    ? 'We could not pay that Lightning address. Check it, or try a different one.'
+                    : 'The refund could not be completed automatically. The operator has been told and will sort it out.',
+            });
+        } catch (error) {
+            console.error(`Error in lightning-refund for ${requestId}:`, error);
+            res.status(500).json({ error: 'Failed to process the refund.' });
+        }
+    });
+
     router.delete('/request/:requestId', optionalApiKey, async (req, res) => {
         const { requestId } = req.params;
         console.log(`DELETE /api/request/${requestId}`);
@@ -774,6 +1032,16 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             // Never let a cancel destroy the record of a paid request. Doing so would
             // discard the customer's message and refund address — the only record of
             // what their money was for. The cleanup job has the same guard.
+            // A Lightning invoice can be settled in the second before the cancel arrives,
+            // with the webhook still in flight. Ask phoenixd first, so a paid order is
+            // refused here rather than archived and then found holding money.
+            const lnRow = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
+            if (lightning.isLightningRow(lnRow) && !lnRow.paymentTxId && !lnRow.archivedAt && config.LIGHTNING_CONFIGURED) {
+                await lightning.checkInvoice(db, lnRow, config, {
+                    onPaid: (fresh) => fulfillRequest(fresh, db, rootNode, config),
+                });
+            }
+
             const existing = await dbGet(
                 db,
                 'SELECT paymentTxId, paymentReceivedSatoshis, opReturnTxId, refundTxId FROM requests WHERE id = ?',

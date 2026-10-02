@@ -12,6 +12,8 @@ const { attemptRefund } = require('./refund');
 const { dbGet, dbRun } = require('./db_utils');
 const notifier = require('./notifier');
 const events = require('./request_events');
+const lightning = require('./lightning');
+const { isNoRefundReason } = require('./failure_reasons');
 
 /**
  * Attempts to fulfill a request by creating and broadcasting an OP_RETURN transaction.
@@ -54,10 +56,25 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
         events.record(db, requestId, events.KINDS.FULFIL_ATTEMPT, `attempt ${attemptNumber}`);
         let result;
         try {
-            result = await opReturnCreator.createOpReturnTransaction(request, rootNode, config.NETWORK, config);
+            // A Lightning payment left no UTXO to spend, so the treasury pays for the
+            // transaction instead. Both builders return the same shape; everything below
+            // records them identically.
+            result = lightning.isLightningRow(request)
+                ? await lightning.fulfilLightning(request, db, rootNode, config)
+                : await opReturnCreator.createOpReturnTransaction(request, rootNode, config.NETWORK, config);
         } catch (opReturnError) {
             console.error(`[RequestService] OP_RETURN creation threw for ${requestId}:`, opReturnError);
             result = { ok: false, reason: 'internal_error', detail: opReturnError.message, permanent: false };
+        }
+
+        // Another live worker in this process is already publishing this order (a lock
+        // reconcile released while that worker sat queued behind the treasury lock). That is
+        // not a failure of the order: record nothing, leave the row to the worker that holds
+        // it, exactly as for "Lock not acquired". Writing a failure here burned attempts and
+        // flipped the status under the live worker, which then refused to broadcast.
+        if (result && result.reason === 'fulfilment_in_progress') {
+            console.log(`[RequestService] ${requestId} is already being published by another worker; leaving it to that one.`);
+            return { success: false, error: 'Lock not acquired' };
         }
 
         // --- Success ------------------------------------------------------
@@ -66,7 +83,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
                 db,
                 `UPDATE requests
                  SET status = 'op_return_broadcasted', opReturnTxId = ?, opReturnTxHex = ?,
-                     changePath = ?, failureReason = NULL,
+                     changePath = ?, failureReason = NULL, pendingTxId = NULL, pendingTxHex = NULL,
                      attemptCount = COALESCE(attemptCount, 0) + 1, lastAttemptAt = ?
                  WHERE id = ?`,
                 [result.opReturnTxId, result.signedTxHex, result.changePath || null, new Date().toISOString(), requestId]
@@ -118,7 +135,9 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
         // Never auto-refund a failure that means the money has already left the payment
         // address — there is nothing to return, and pretending otherwise would mark a
         // possibly-delivered request as refund_failed and hide it from review.
-        const refundable = !NO_REFUND_FAILURES.has(result.reason);
+        // isNoRefundReason also covers a Lightning order whose treasury transaction may
+        // already be on chain (treasury_tx_unresolved).
+        const refundable = !NO_REFUND_FAILURES.has(result.reason) && !isNoRefundReason(result.reason);
         if (terminal && autoRefund && refundable) {
             // Re-read so the refund sees the status we just wrote.
             const fresh = await dbGet(db, 'SELECT * FROM requests WHERE id = ?', [requestId]);
