@@ -1409,7 +1409,10 @@ compose-file or env changes need `up -d`. **Editing a file under `backend/src/` 
 nothing until that restart**, so a "fixed" money path is still broken until you do it.
 
 **phoenixd** is its own compose service, built from `deploy/phoenixd/Dockerfile` — the
-official arm64 release, pinned by SHA-256 to ACINQ's signed checksums. Its data (seed,
+official **JVM** release on OpenJDK 21, pinned by SHA-256 to ACINQ's signed checksums. Not
+the native arm64 binary: on this Pi 4 it dies with SIGILL (exit 132) seconds after start,
+because the Cortex-A72 lacks the ARMv8 crypto and atomics extensions it assumes (found on
+the first real start, 2026-10-02). The JVM build runs in about 150 MB. Its data (seed,
 channels, `phoenix.conf`) is the external volume `op-returner_phoenixd_data`. To upgrade:
 verify the new `SHA256SUMS.asc` with gpg against key `E434ED292E85643A`, change both `ARG`s,
 then `docker compose build phoenixd && docker compose up -d phoenixd`. Restarting it is safe
