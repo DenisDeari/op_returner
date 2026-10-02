@@ -8,7 +8,7 @@
          service feels like but not what anyone types into a search box. The words that
          matter — blockchain, OP_RETURN, Bitcoin — did not appear on this page at all. -->
     <title>Write a Message on the Bitcoin Blockchain — SatWire</title>
-    <meta name="description" content="Publish a message or picture permanently in a Bitcoin OP_RETURN output. No account, no signup. Pay in sats, get the transaction id in minutes.">
+    <meta name="description" content="Publish a message or picture permanently in a Bitcoin OP_RETURN output. No account, no signup. Pay with Lightning or on-chain; get the transaction id in minutes.">
     <link rel="canonical" href="https://satwire.io/">
     <meta name="theme-color" content="#08090b">
 
@@ -34,7 +34,7 @@
     <meta property="og:site_name" content="SatWire">
     <meta property="og:url" content="https://satwire.io/">
     <meta property="og:title" content="Write a message on the Bitcoin blockchain">
-    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 3,250 sats.">
+    <meta property="og:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. Pay with Lightning or on-chain. No account, no signup. From about 3,250 sats.">
     <meta property="og:locale" content="en">
     <meta property="og:image" content="https://satwire.io/og.png">
     <meta property="og:image:type" content="image/png">
@@ -43,7 +43,7 @@
     <meta property="og:image:alt" content="SatWire — write a message on the Bitcoin blockchain.">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Write a message on the Bitcoin blockchain">
-    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. No account, no signup. From about 3,250 sats.">
+    <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. Pay with Lightning or on-chain. No account, no signup. From about 3,250 sats.">
     <meta name="twitter:image" content="https://satwire.io/og.png">
 
     <link rel="stylesheet" href="css/styles.css?v=17">
@@ -60,7 +60,14 @@
       "url": "https://satwire.io/",
       "applicationCategory": "UtilitiesApplication",
       "operatingSystem": "Any",
-      "description": "Publishes a message or a picture permanently in a Bitcoin OP_RETURN output. No account and no signup: the customer pays a quoted amount in sats to a one-off address and receives the transaction id.",
+      "description": "Publishes a message or a picture permanently in a Bitcoin OP_RETURN output. No account and no signup: the customer pays a quoted amount in sats, with a Lightning invoice or on-chain to a one-off address, and receives the transaction id.",
+      "featureList": [
+        "Pay with the Lightning Network or on-chain",
+        "Text messages up to 1,000 bytes",
+        "Pictures up to 20,000 bytes, resized and encoded in the browser",
+        "Messages can be aimed at any Bitcoin address",
+        "No account and no signup"
+      ],
       "offers": {
         "@type": "Offer",
         "price": "0.00003",
@@ -99,7 +106,7 @@
          only description of the product. -->
     <section class="hero">
         <h1>Write a message on the <em>Bitcoin blockchain</em></h1>
-        <p>Permanently, in an OP_RETURN output. In minutes.</p>
+        <p>Permanently, in an OP_RETURN output. Pay with Lightning or on-chain.</p>
     </section>
 
     <!-- Without JavaScript the composer is inert and the wall is empty. Two sentences are
@@ -295,8 +302,9 @@
             can check it in any block explorer.
         </p>
         <p>
-            There is no account and no signup. You type a message, we quote a price, you pay a
-            one-off address, and the transaction is broadcast. You can publish a
+            There is no account and no signup. You type a message, we quote a price, you pay
+            &mdash; a <strong>Lightning</strong> invoice, or a one-off Bitcoin address &mdash; and
+            the transaction is broadcast. You can publish a
             <strong>picture</strong> the same way: it is resized and re-encoded to WebP in your
             own browser, so the original file never leaves your device and its GPS data never
             goes anywhere. The bytes that reach the chain are a complete, valid image file —
@@ -333,11 +341,22 @@
             The limits are 1,000 bytes for text and 20,000 bytes for a picture. The composer
             above shows the exact price before you pay anything.
         </p>
+        <!-- Lightning: the same two parts. It is a few sats dearer than on-chain because it
+             is priced from the treasury builder's own estimate, which carries a 4-vByte
+             safety margin (8 sats at the cheapest rate) — see lightning.js quote. What it
+             saves the customer is the fee their own wallet charges to SEND an on-chain
+             payment, which is not part of our price at all. Keep this paragraph true if
+             either changes. -->
+        <p>
+            <strong>Paying with Lightning</strong> costs the same two parts, a few sats more for
+            the treasury's safety margin, and you skip the on-chain fee your own wallet charges
+            to send a payment. Your message goes out within seconds of paying.
+        </p>
 
         <h3>How it works</h3>
         <ol class="steps">
             <li>Write your message, or attach a picture and pick a budget.</li>
-            <li>You get a Bitcoin address and an exact amount.</li>
+            <li>You get an exact amount, and a Lightning invoice or a Bitcoin address to pay it to.</li>
             <li>You pay it. Nothing else is required of you.</li>
             <li>SatWire builds a transaction carrying your bytes and broadcasts it.</li>
             <li>You get the transaction id, and the message is on the chain forever.</li>
@@ -360,16 +379,27 @@
                 think before you pay. Showing your message on the public wall here is a separate
                 choice, and that one the operator can undo.</dd>
 
+            <dt>Can I pay with Lightning?</dt>
+            <dd>Yes. Choose Lightning next to the price and you get an invoice instead of an
+                address. Pay it from any Lightning wallet: your message is published within
+                seconds, and you skip the on-chain fee of sending a payment. An invoice is valid
+                for 30 minutes.</dd>
+
             <dt>Do I need an account or a wallet connection?</dt>
-            <dd>Neither. You pay from any Bitcoin wallet to an address we show you once.</dd>
+            <dd>Neither. You pay from any wallet &mdash; a Lightning invoice, or a Bitcoin address
+                we show you once.</dd>
 
             <dt>How long does it take?</dt>
-            <dd>The transaction is broadcast within seconds of your payment arriving. How long
-                it then takes to be mined into a block depends on the fee rate you chose.</dd>
+            <dd>Over Lightning, the transaction is broadcast within seconds of paying. On-chain,
+                it goes out once your payment has its first confirmation &mdash; about ten
+                minutes on average. How long it then takes to be mined into a block depends on
+                the fee rate you chose.</dd>
 
             <dt>What if it cannot be published?</dt>
-            <dd>The payment is sent back to the address it came from, automatically. In the rare
-                case that is not possible, the operator is alerted and sorts it out by hand.</dd>
+            <dd>An on-chain payment is sent back to the address it came from, automatically. For
+                a Lightning payment, your order asks for a Lightning address and the money goes
+                back there. In the rare case neither works, the operator is alerted and sorts it
+                out by hand.</dd>
 
             <dt>Can other software read my picture, or only SatWire?</dt>
             <dd>Any software. There is no wrapper and no format of our own — the data in the
