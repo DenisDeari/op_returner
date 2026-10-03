@@ -41,6 +41,11 @@ const app = express();
 app.disable('x-powered-by');
 
 // --- Middleware ---
+// First of all: the admin panel and its API answer only from the home network. SatWire is
+// run from the bookkeeping app on the Pi now; see http_hygiene.js adminFromHomeOnly. Ahead
+// of express.static too, which would otherwise serve frontend/admin/ from the general mount.
+app.use(['/admin', '/api/admin'], hygiene.adminFromHomeOnly);
+
 // The raw bytes are kept alongside the parsed body: phoenixd signs the exact body it
 // sends (routes/webhook.js, POST /lightning), and re-serialising the parsed JSON would not
 // reproduce it byte for byte.

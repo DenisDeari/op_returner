@@ -1,13 +1,16 @@
 // backend/src/http_hygiene.js
 //
-// The three pieces of HTTP hygiene that sit in front of everything else: forcing TLS,
-// keeping the admin panel out of search results, and deciding what may be cached.
+// The pieces of HTTP hygiene that sit in front of everything else: forcing TLS, keeping
+// the admin out of reach of the internet and out of search results, and deciding what may
+// be cached.
 //
 // They live here rather than inline in server.js for one reason: server.js opens the
 // production database and binds a port the moment it is required, so nothing in it can be
 // tested. This module is side-effect free — the same reason schema.js is.
 //
 // None of this is a money path. It is in front of one.
+
+const net = require('net');
 
 const HSTS_MAX_AGE_SECONDS = 15552000; // 180 days
 
@@ -46,6 +49,58 @@ function forceHttps(req, res, next) {
         res.setHeader('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE_SECONDS}`);
     }
     return next();
+}
+
+/**
+ * A peer address that can only be the LAN, the VPN, Docker or this machine.
+ *
+ * Deliberately not lightning.js `isPrivateAddress`, which answers the opposite question
+ * ("must I refuse to pay this host?") and so calls anything that is not an IP private. Here
+ * private means ALLOWED, so anything unrecognised is not.
+ */
+function isPrivatePeer(address) {
+    const ip = String(address || '').replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+    if (net.isIPv4(ip)) {
+        const [a, b] = ip.split('.').map(Number);
+        return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
+            || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+    }
+    if (net.isIPv6(ip)) {
+        const v = ip.toLowerCase();
+        return v === '::1' || /^f[cd]/.test(v) || /^fe[89ab]/.test(v);
+    }
+    return false;
+}
+
+/**
+ * Shuts the admin panel and the admin API to the internet.
+ *
+ * Since 2026-10-03 SatWire is run from the bookkeeping app on the Pi (NetWorthTracker,
+ * `/satwire`), which reaches this API from inside the home network with the password held
+ * server-side. Nothing needs the old open path any more — Cloudflare, the tunnel, then only
+ * the bearer password in front of every endpoint that refunds, sweeps or deletes — so it is
+ * closed, here in the code rather than in Cloudflare's dashboard, where a later edit could
+ * quietly reopen it.
+ *
+ * Both of these must hold:
+ *
+ *   - No Cloudflare headers. Every request through the tunnel carries `cf-connecting-ip` and
+ *     `cf-ray`, added at the edge; a client cannot remove them. Either one means "came in
+ *     from the internet", whatever else is true.
+ *   - A private peer address. The tunnel itself connects from a private address — that is
+ *     why the first test exists — so this one is for a direct hit on the published port
+ *     from a public address: a port forward, or an IPv6 route nobody meant to open.
+ *
+ * A plain 404: from outside there is nothing here. The bearer check still runs behind this
+ * for everyone it lets through.
+ */
+function adminFromHomeOnly(req, res, next) {
+    const viaCloudflare = !!(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
+    if (!viaCloudflare && isPrivatePeer(req.socket && req.socket.remoteAddress)) return next();
+    if (String(req.baseUrl || req.originalUrl || '').startsWith('/api')) {
+        return res.status(404).json({ error: 'Not found' });
+    }
+    return res.status(404).type('text/plain').send('Not found');
 }
 
 /**
@@ -111,6 +166,8 @@ function clientIp(req) {
 
 module.exports = {
     forceHttps,
+    adminFromHomeOnly,
+    isPrivatePeer,
     noIndexAdmin,
     markCacheable,
     staticCacheHeaders,
