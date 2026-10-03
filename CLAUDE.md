@@ -1120,7 +1120,10 @@ outspend check in `signedTxFate`), and the cooldown still demotes whichever host
 misbehaves. Broadcasts keep their own order — BlockCypher first. And the wallet view asks
 less: the change branch is no longer walked, it is looked up at exactly the indices a paid
 on-chain order can have used (`loadRequestIndex` → `changeIndices`), and the treasury at
-`/2/0` only. That took a full scan from ~170 lookups to ~105 on the live wallet.
+`/2/0` only. Measured on the live wallet after the change: a full Refresh is 160 lookups
+(receive 140, change 19, treasury 1) where the walks had made it roughly 290, and it
+finished complete in 29 s with nothing stale. The receive branch is most of it and is
+walked on purpose — a late payment can land on any index ever issued.
 
 **That demotion is opt-in, and broadcasts must never use it** — see the note in
 `tryProviders` about who gets to declare a transaction invalid. A wallet scan tripping a
