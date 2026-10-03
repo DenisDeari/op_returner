@@ -129,7 +129,10 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A wall image reserves its height before the bytes arrive | `styles.css` `.payload-img` |
 | The admin bearer token is `sessionStorage` only — never `localStorage` | `frontend/admin/admin.js` |
 | A rejected admin token is thrown away centrally, not at 14 call sites | `frontend/admin/admin.js`, shadowed `fetch` |
-| `/admin` and `/api/admin` answer only from the home network — anything via Cloudflare, or from a public peer, gets a 404 | `http_hygiene.js` `adminFromHomeOnly`, mounted first in `server.js` |
+| `/admin` and `/api/admin` answer only from the home network — anything via Cloudflare, or from a public peer, gets a 404 | `http_hygiene.js` `adminFromHomeOnly`, mounted first, on every path, in `server.js` |
+| The admin is recognised by the DECODED, normalised path — never by the raw prefix | `http_hygiene.js` `isAdminPath` |
+| `X-Forwarded-For` is never a client address — Cloudflare's header, or else the socket | `http_hygiene.js` `clientIp` |
+| Port 3000 is published on IPv4 only | `docker-compose.yml` |
 | The admin password can be guessed 5 times per address per 15 minutes, then not at all | `routes/auth.js` |
 | A lockout is per client address — never global, which would be a DoS handle | `routes/auth.js` |
 | "Who is this" has one definition, shared by every limiter | `http_hygiene.js` `clientIp` |
@@ -1194,9 +1197,25 @@ closes it: `/admin` and `/api/admin` answer **404** to any request that
 - comes from a peer address that is not private (LAN, VPN, Docker, loopback): a port forward or
   an IPv6 route nobody meant to open.
 
-It is mounted **first** in `server.js`, ahead of the static mounts, because the general
-`express.static(FRONTEND_DIR)` would otherwise serve `frontend/admin/` too. The bearer check
-below still runs for everything the gate lets through; the two are separate locks.
+It is mounted **first** in `server.js`, **on every path**, and recognises the admin by
+`isAdminPath`: the path decoded, backslashes turned into slashes, normalised and lowercased.
+A raw prefix mount (`app.use(['/admin', '/api/admin'])`, the first version) was bypassed through
+the tunnel by `/%2Fadmin/admin.js`, `//admin/…`, `/%61dmin/…` and `/js/%2e%2e/admin/…`: the
+general `express.static(FRONTEND_DIR)` decodes and normalises on its own and served the panel's
+source (no data, but every admin route by name). `site_delivery.js` section 13 runs the real static
+server against those paths. The bearer check below still runs for everything the gate lets
+through; the two are separate locks.
+
+Two things the gate made necessary:
+
+- **`clientIp` ignores `X-Forwarded-For`.** Admin requests never carry `cf-connecting-ip` now, so
+  the old fallback chain ended at `X-Forwarded-For` — whatever the client typed. A LAN device could
+  rotate it for unlimited password guesses, or claim the bookkeeping app's address and lock it out.
+  Without Cloudflare's header the socket address counts.
+- **Port 3000 is published on IPv4 only.** On `[::]` Docker relays an IPv6 connection into the
+  container from the bridge gateway — a private address that passes the gate. The Pi has no global
+  IPv6 today, which is exactly when nobody would notice it changing. The tunnel reaches the app on
+  the compose network (`webapp:3000`), the bookkeeping app through `host.docker.internal`.
 
 The old panel still works from inside the network (`http://<pi>:3000/admin`) and is kept as a
 fallback. The Cloudflare Access application on `satwire.io/admin` described below is now
@@ -1325,7 +1344,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **1,147 assertions across fifteen files**, all offline:
+`/home/admin/op_returner_tests/` — **1,182 assertions across fifteen files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1386,7 +1405,7 @@ There is no test runner in the repo. Verification lives outside it, in
   as base64. The chain layer is stubbed on the module object before `treasury.js` is
   required, and the broadcast stub models a mempool — it drops spent outpoints and reports
   our own change back — because a frozen UTXO list left the depth carry-over as dead code.
-- `site_delivery.js` — 130. How the site is served and what it says about itself: the HTTPS
+- `site_delivery.js` — 165. How the site is served and what it says about itself: the HTTPS
   redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
   cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the
   shipped `og.png`, that the JSON-LD parses and states only a price the service can hold, the
@@ -1394,8 +1413,10 @@ There is no test runner in the repo. Verification lives outside it, in
   that it is per address, that a correct password clears it, that the unconfigured-server branch
   never counts, and that one lockout is one Telegram message — and that the admin answers only
   from the home network: a 404 for anything through Cloudflare or from a public peer, from the
-  tunnel's own private address too, and the gate mounted ahead of every static mount and API
-  router. Reads the shipped files off disk.
+  tunnel's own private address too, the gate mounted on every path ahead of every static mount and
+  API router, encoded and dot-segment paths recognised as admin, the real `express.static` refusing
+  them through the tunnel (section 13 — a mutation back to the raw prefix fails 7 checks), and
+  `X-Forwarded-For` never taken as the client. Reads the shipped files off disk.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real
