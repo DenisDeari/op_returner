@@ -1325,7 +1325,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **1,119 assertions across fifteen files**, all offline:
+`/home/admin/op_returner_tests/` — **1,147 assertions across fifteen files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1386,13 +1386,16 @@ There is no test runner in the repo. Verification lives outside it, in
   as base64. The chain layer is stubbed on the module object before `treasury.js` is
   required, and the broadcast stub models a mempool — it drops spent outpoints and reports
   our own change back — because a frozen UTXO list left the depth carry-over as dead code.
-- `site_delivery.js` — 102. How the site is served and what it says about itself: the HTTPS
+- `site_delivery.js` — 130. How the site is served and what it says about itself: the HTTPS
   redirect and the three things it must never do, HSTS only over TLS, the admin `noindex`, the
   cache rule for versioned versus unversioned URLs, the head tags, the real dimensions of the
   shipped `og.png`, that the JSON-LD parses and states only a price the service can hold, the
   wall's ETag gating, the reserved image height, and the admin password throttle — the lockout,
   that it is per address, that a correct password clears it, that the unconfigured-server branch
-  never counts, and that one lockout is one Telegram message. Reads the shipped files off disk.
+  never counts, and that one lockout is one Telegram message — and that the admin answers only
+  from the home network: a 404 for anything through Cloudflare or from a public peer, from the
+  tunnel's own private address too, and the gate mounted ahead of every static mount and API
+  router. Reads the shipped files off disk.
 
 `wall.js` lifts the candidate SQL **out of `reconcile.js` and executes it**, rather than
 restating it. A restated copy keeps passing after somebody deletes the guard from the real
