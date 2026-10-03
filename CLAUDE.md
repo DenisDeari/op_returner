@@ -129,6 +129,7 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | A wall image reserves its height before the bytes arrive | `styles.css` `.payload-img` |
 | The admin bearer token is `sessionStorage` only — never `localStorage` | `frontend/admin/admin.js` |
 | A rejected admin token is thrown away centrally, not at 14 call sites | `frontend/admin/admin.js`, shadowed `fetch` |
+| `/admin` and `/api/admin` answer only from the home network — anything via Cloudflare, or from a public peer, gets a 404 | `http_hygiene.js` `adminFromHomeOnly`, mounted first in `server.js` |
 | The admin password can be guessed 5 times per address per 15 minutes, then not at all | `routes/auth.js` |
 | A lockout is per client address — never global, which would be a DoS handle | `routes/auth.js` |
 | "Who is this" has one definition, shared by every limiter | `http_hygiene.js` `clientIp` |
@@ -177,6 +178,7 @@ backend/src/
   failure_reasons.js    which failures are permanent, and which must never auto-refund
   routes/wallet.js      admin-only, strictly read-only wallet API
   routes/auth.js        the admin bearer check, shared by admin.js and wallet.js
+                        (behind http_hygiene.js adminFromHomeOnly, which keeps the internet out)
 ```
 
 `reconcile.js` runs on startup and every 30 minutes. It is the reason a dropped request
@@ -1178,6 +1180,29 @@ Neither of those is a security control. The one that is went in on **2026-08-12*
 Access application now covers `satwire.io/admin`, so `/admin`, `/admin/` and `/admin/admin.js`
 all 302 to a Cloudflare login. Anonymously fetching `admin.js` returns 0 matches for
 `requireAdmin`, `adminPassword` or the refund route, where it used to return 51 kB of source.
+
+### Since 2026-10-03 the admin is not on the internet at all
+
+SatWire is run from the **bookkeeping app** on the Pi (repo `NetWorthTracker`, page `/satwire`,
+port 4001, reachable over the LAN or WireGuard only). Its backend calls `/api/admin/*` on the
+host's port 3000 with the admin password, which it holds server-side; the browser never sees
+it. So nothing needs the open path any more, and `http_hygiene.js` **`adminFromHomeOnly`**
+closes it: `/admin` and `/api/admin` answer **404** to any request that
+
+- carries `cf-connecting-ip` or `cf-ray` — every request through the tunnel does; Cloudflare adds
+  them at the edge and a client cannot strip them — or
+- comes from a peer address that is not private (LAN, VPN, Docker, loopback): a port forward or
+  an IPv6 route nobody meant to open.
+
+It is mounted **first** in `server.js`, ahead of the static mounts, because the general
+`express.static(FRONTEND_DIR)` would otherwise serve `frontend/admin/` too. The bearer check
+below still runs for everything the gate lets through; the two are separate locks.
+
+The old panel still works from inside the network (`http://<pi>:3000/admin`) and is kept as a
+fallback. The Cloudflare Access application on `satwire.io/admin` described below is now
+redundant — the origin answers 404 behind it either way — and can be removed or left.
+**If the admin ever has to be reachable from the internet again**, that is a decision, not a
+fix: remove the mount and re-read the rest of this section first.
 
 ### Access does NOT cover the admin API, and that is deliberate
 
