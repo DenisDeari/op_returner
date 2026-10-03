@@ -5,8 +5,12 @@ services:
     build: .
     container_name: op_returner
     restart: unless-stopped
+    # IPv4 only. With "3000:3000" Docker also listens on [::], and an IPv6 connection is relayed
+    # into the container from the bridge gateway — a private address that passes the admin's
+    # home-network check. The tunnel reaches the app on the compose network (webapp:3000) and
+    # the bookkeeping app through host.docker.internal; neither needs IPv6 here.
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
     environment:
       - PORT=3000
       - NODE_ENV=production

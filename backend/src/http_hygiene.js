@@ -11,6 +11,7 @@
 // None of this is a money path. It is in front of one.
 
 const net = require('net');
+const path = require('path');
 
 const HSTS_MAX_AGE_SECONDS = 15552000; // 180 days
 
@@ -73,6 +74,28 @@ function isPrivatePeer(address) {
 }
 
 /**
+ * Whether a request path names the admin panel or the admin API — judged the way the static
+ * file server and the router will finally read it, not the way it arrived.
+ *
+ * Matching the raw prefix was not enough: the general static mount decodes and normalises
+ * before it looks on disk, so `/%2Fadmin/admin.js`, `//admin/admin.js`, `/%61dmin/…` and
+ * `/js/../admin/index.html` all reached frontend/admin/ while `app.use('/admin')` never saw
+ * them. So: decode, turn backslashes into slashes, normalise, lowercase (Express routes are
+ * case-insensitive), then compare. A path that does not even decode counts as admin, which only
+ * ever means "asked from outside → 404".
+ */
+function isAdminPath(rawPath) {
+    let p;
+    try {
+        p = decodeURIComponent(String(rawPath || '/'));
+    } catch {
+        return true;
+    }
+    p = path.posix.normalize(`/${p.replace(/\\/g, '/')}`).toLowerCase();
+    return p === '/admin' || p.startsWith('/admin/') || p === '/api/admin' || p.startsWith('/api/admin/');
+}
+
+/**
  * Shuts the admin panel and the admin API to the internet.
  *
  * Since 2026-10-03 SatWire is run from the bookkeeping app on the Pi (NetWorthTracker,
@@ -93,11 +116,16 @@ function isPrivatePeer(address) {
  *
  * A plain 404: from outside there is nothing here. The bearer check still runs behind this
  * for everyone it lets through.
+ *
+ * Mounted on every path, first, and decides by `isAdminPath` — see there for why a prefix
+ * mount was not enough.
  */
 function adminFromHomeOnly(req, res, next) {
+    const target = req.path || req.url;
+    if (!isAdminPath(target)) return next();
     const viaCloudflare = !!(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
     if (!viaCloudflare && isPrivatePeer(req.socket && req.socket.remoteAddress)) return next();
-    if (String(req.baseUrl || req.originalUrl || '').startsWith('/api')) {
+    if (/^\/*api/i.test(String(target))) {
         return res.status(404).json({ error: 'Not found' });
     }
     return res.status(404).type('text/plain').send('Not found');
@@ -149,17 +177,22 @@ function staticCacheHeaders(res, filePath) {
 /**
  * The real client address.
  *
- * This app sits behind Cloudflare and a tunnel, so `req.ip` is the proxy's address and is
- * identical for every visitor — keying a rate limit on it alone would make one global
- * bucket that any single user could exhaust for everyone.
+ * This app sits behind Cloudflare and a tunnel, so the socket address of a public request is
+ * the tunnel's and is identical for every visitor — keying a rate limit on it alone would make
+ * one global bucket that any single user could exhaust for everyone. Cloudflare's own header
+ * says who it really is, and a client cannot set or remove it at the edge.
+ *
+ * Anything that did NOT come through the tunnel — since 2026-10-03 that is every admin request
+ * — is keyed on the socket address. `X-Forwarded-For` is deliberately ignored: nothing in front
+ * of this app sets it except Cloudflare, which also sets cf-connecting-ip, so on its own it is
+ * whatever the client typed. Trusting it let a LAN device rotate it for unlimited password
+ * guesses, or spoof the bookkeeping app's address and lock the operator out.
  *
  * Moved here from routes/api.js when the admin auth throttle needed the same answer. Two
  * copies of "who is this" is how one limiter ends up bucketing differently from the other.
  */
 function clientIp(req) {
     return req.headers['cf-connecting-ip']
-        || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-        || req.ip
         || req.socket?.remoteAddress
         || 'unknown';
 }
@@ -167,6 +200,7 @@ function clientIp(req) {
 module.exports = {
     forceHttps,
     adminFromHomeOnly,
+    isAdminPath,
     isPrivatePeer,
     noIndexAdmin,
     markCacheable,

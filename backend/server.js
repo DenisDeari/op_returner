@@ -42,9 +42,10 @@ app.disable('x-powered-by');
 
 // --- Middleware ---
 // First of all: the admin panel and its API answer only from the home network. SatWire is
-// run from the bookkeeping app on the Pi now; see http_hygiene.js adminFromHomeOnly. Ahead
-// of the static mounts too: the general one would otherwise serve frontend/admin/ as well.
-app.use(['/admin', '/api/admin'], hygiene.adminFromHomeOnly);
+// run from the bookkeeping app on the Pi now; see http_hygiene.js adminFromHomeOnly. On every
+// path, judged after decoding: the general static mount would otherwise serve frontend/admin/
+// to `/%2Fadmin/…` and friends.
+app.use(hygiene.adminFromHomeOnly);
 
 // The raw bytes are kept alongside the parsed body: phoenixd signs the exact body it
 // sends (routes/webhook.js, POST /lightning), and re-serialising the parsed JSON would not
