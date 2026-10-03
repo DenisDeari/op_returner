@@ -254,6 +254,14 @@ async function scanBranch(rootNode, branch, config, options = {}) {
     const gapLimit = options.gapLimit ?? config.WALLET_GAP_LIMIT;
     const maxIndices = options.maxIndices ?? config.WALLET_MAX_SCAN_INDICES;
     const minIndices = options.minIndices ?? 0;
+    // When the database knows exactly which indices of a branch this service can have
+    // used, ask about those and nothing else — no gap walk. Every lookup costs a request
+    // to a free block explorer, and blockstream.info now rate-limits this network: the
+    // gap walk over the change and treasury branches was most of a scan for addresses that
+    // can never hold anything.
+    if (Array.isArray(options.onlyIndices)) {
+        return scanIndices(rootNode, branch, config, options);
+    }
     // One window is one batched provider call. Sized to the gap limit so the scan can
     // usually decide to stop after a single round trip, but never larger than the batch
     // the provider will accept.
@@ -355,6 +363,62 @@ async function scanBranch(rootNode, branch, config, options = {}) {
         scanned: addresses.length,
         errors,
     };
+}
+
+/**
+ * Looks up exactly the given indices of a branch, in batches, with the same per-entry
+ * shape, deadline and incompleteness rules as the gap walk above.
+ */
+async function scanIndices(rootNode, branch, config, options = {}) {
+    const refresh = !!options.refresh;
+    const deadline = options.deadline ?? null;
+    const maxIndices = options.maxIndices ?? config.WALLET_MAX_SCAN_INDICES;
+    const indices = [...new Set(options.onlyIndices)]
+        .filter((i) => Number.isInteger(i) && i >= 0)
+        .sort((a, b) => a - b);
+    const windowSize = Math.max(1, Math.min(chainProviders.SUMMARY_BATCH_SIZE, (config.WALLET_GAP_LIMIT || 20) + 5));
+
+    const addresses = [];
+    let errors = 0;
+    let incompleteReason = null;
+
+    for (let start = 0; start < indices.length && start < maxIndices; start += windowSize) {
+        const derived = indices.slice(start, Math.min(start + windowSize, maxIndices)).map((at) => {
+            const path = `${branch.path}/${at}`;
+            try {
+                return { index: at, path, address: deriveAddress(rootNode, path, branch.type, config.NETWORK) };
+            } catch (error) {
+                return { index: at, path, address: null, error: `could not derive: ${error.message}` };
+            }
+        });
+        const summaries = await getSummaries(derived.filter((d) => d.address).map((d) => d.address), config, { refresh, deadline });
+        for (const d of derived) {
+            if (!d.address) { addresses.push(d); errors += 1; continue; }
+            const summary = summaries.get(d.address);
+            if (!summary || !summary.ok) {
+                addresses.push({ ...d, error: (summary && summary.reason) || 'no answer from any provider' });
+                errors += 1;
+                continue;
+            }
+            addresses.push({
+                index: d.index, path: d.path, address: d.address,
+                confirmed: summary.confirmed, unconfirmed: summary.unconfirmed,
+                totalReceived: summary.totalReceived, totalSent: summary.totalSent, txCount: summary.txCount,
+                stale: !!summary.stale, cachedAt: summary.cachedAt || null,
+            });
+        }
+        if (deadline !== null && Date.now() > deadline && start + windowSize < indices.length) {
+            incompleteReason = 'The block explorers were too slow to finish checking every address in time.';
+            break;
+        }
+    }
+    if (!incompleteReason && indices.length > maxIndices) {
+        incompleteReason = `Stopped at the ${maxIndices}-address limit; this branch has ${indices.length} addresses in use. Raise WALLET_MAX_SCAN_INDICES.`;
+    }
+    if (!incompleteReason && errors > 0) {
+        incompleteReason = `${errors} address${errors > 1 ? 'es' : ''} could not be read, so this figure may be too low.`;
+    }
+    return { addresses, incomplete: !!incompleteReason, incompleteReason, scanned: addresses.length, errors };
 }
 
 /** Looks up exactly one path, with no children. */
@@ -491,11 +555,18 @@ async function loadRequestIndex(db) {
     const rows = await dbAll(
         db,
         `SELECT id, address, status, requiredAmountSatoshis, paymentReceivedSatoshis,
-                opReturnTxId, refundTxId, createdAt
+                opReturnTxId, refundTxId, createdAt, "index" AS idx, changePath,
+                paymentMethod, paymentTxId
          FROM requests`
     );
     const byAddress = new Map();
     let maxIndex = -1;
+    // Every change index this service can have paid to. op_return_creator.js derives
+    // change at m/.../1/<the order's own index>, and only an order that was PAID ON-CHAIN
+    // ever builds one: an unpaid order never publishes, and a Lightning order is published
+    // by the treasury, whose change goes back to /2/0. changePath, where recorded, is
+    // counted too, and index 0 always, in case an early build reused it.
+    const changeIndices = new Set([0]);
     for (const row of rows) {
         byAddress.set(row.address, {
             requestId: row.id,
@@ -503,6 +574,11 @@ async function loadRequestIndex(db) {
             settled: !!(row.opReturnTxId || row.refundTxId),
             createdAt: row.createdAt,
         });
+        if (row.paymentTxId && row.paymentMethod !== 'lightning' && Number.isInteger(row.idx)) {
+            changeIndices.add(row.idx);
+        }
+        const recorded = /\/1\/(\d+)$/.exec(row.changePath || '');
+        if (recorded) changeIndices.add(Number(recorded[1]));
     }
     // The highest index this wallet has ever handed out. Taken from BOTH the requests
     // table and wallet_state, because cleanup.js deletes old unfunded request rows while
@@ -520,7 +596,7 @@ async function loadRequestIndex(db) {
     } catch (error) {
         console.warn(`[Wallet] Could not read wallet_state: ${error.message}`);
     }
-    return { byAddress, maxRequestIndex: maxIndex };
+    return { byAddress, maxRequestIndex: maxIndex, changeIndices: [...changeIndices].sort((a, b) => a - b) };
 }
 
 function summariseBranch(branch, scan, requestIndex) {
@@ -687,13 +763,18 @@ async function scanWallet(db, rootNode, config, options = {}) {
         // Orders can leave gaps wider than the gap limit — an abandoned order never pays,
         // so its address stays untouched — and stopping on the gap alone would step
         // straight past a later address that does hold a customer's money.
-        // The change branch too: change is derived from the ORDER's index, and a Lightning
-        // order uses an index but never makes change there (the treasury pays it). A run of
-        // twenty Lightning orders would otherwise end the gap scan before later revenue.
-        const minIndices = (branch.id === 'receive' || branch.id === 'change') ? requestIndex.maxRequestIndex + 2 : 0;
+        const minIndices = branch.id === 'receive' ? requestIndex.maxRequestIndex + 2 : 0;
+        // The change and treasury branches are not walked at all: the database knows every
+        // index this service can have used there (loadRequestIndex), and treasury.js only
+        // ever touches /2/0. Walking them cost ~95 explorer requests per scan for addresses
+        // that cannot hold anything — and the change walk could stop early anyway, on a
+        // run of twenty Lightning orders, which use an order index but never make change.
+        const onlyIndices = branch.id === 'change' ? requestIndex.changeIndices
+            : branch.id === 'treasury' ? [0]
+                : undefined;
         const scan = branch.mode === 'single'
             ? await scanSingle(rootNode, branch, config, { refresh, deadline })
-            : await scanBranch(rootNode, branch, config, { refresh, minIndices, deadline });
+            : await scanBranch(rootNode, branch, config, { refresh, minIndices, deadline, onlyIndices });
         scanned.push(summariseBranch(branch, scan, requestIndex));
     }
 

@@ -184,7 +184,8 @@ function recordBroadcast({ inputs, txId, changeVout, changeValue, depth }) {
 /**
  * The treasury's unspent outputs, as the chain sees them.
  *
- * Esplora first, BlockCypher last, which is the opposite of the broadcast order and
+ * Esplora first (mempool.space, then blockstream.info — see ESPLORA_ONLY in
+ * chain_providers.js), BlockCypher last, which is the opposite of the broadcast order and
  * deliberate: BlockCypher's getUnspent reads only `txrefs` and so reports CONFIRMED
  * outputs only (chain_providers.js), while the Esplora hosts report mempool outputs too.
  * A treasury that has just published is holding its balance in an unconfirmed change
@@ -197,7 +198,7 @@ function recordBroadcast({ inputs, txId, changeVout, changeValue, depth }) {
  */
 async function fetchTreasuryUtxos(address, config) {
     const result = await chainProviders.getUnspent(address, config, {
-        onlyProviders: ['blockstream.info', 'mempool.space', 'blockcypher'],
+        onlyProviders: ['mempool.space', 'blockstream.info', 'blockcypher'],
         useCooldown: true,
     });
     if (!result.ok) return { ok: false, reason: result.reason };

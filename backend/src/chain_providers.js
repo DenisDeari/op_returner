@@ -547,7 +547,12 @@ async function getAddressStats(address, config, options = {}) {
  * wallet scan. Never use it for a broadcast: see the note in `tryProviders` about who
  * gets to declare a transaction invalid.
  */
-const ESPLORA_ONLY = Object.freeze(['blockstream.info', 'mempool.space']);
+// mempool.space first since 2026-10-03. It used to be last because every request to it
+// timed out — which turned out to be one dead server address Node insisted on (config.js,
+// autoSelectFamily) — while blockstream.info now answers this network's IP with 429 Too
+// Many Requests most of the time. Read load goes where it is answered; the cooldown still
+// demotes whichever host misbehaves. Broadcasts are NOT ordered by this (see tryProviders).
+const ESPLORA_ONLY = Object.freeze(['mempool.space', 'blockstream.info']);
 
 /**
  * Resolves the payer's address by reading the funding transaction's inputs from a
@@ -698,7 +703,7 @@ async function signedTxFate(txHex, config) {
     for (const input of tx.ins) {
         const prev = Buffer.from(input.hash).reverse().toString('hex');
         let answer = null;
-        for (const host of ['https://blockstream.info', 'https://mempool.space']) {
+        for (const host of ['https://mempool.space', 'https://blockstream.info']) {
             const base = esploraBase(host, config.NETWORK_NAME);
             try {
                 const res = await axios.get(`${base}/tx/${prev}/outspend/${input.index}`, { timeout: LOOKUP_TIMEOUT_MS });
@@ -807,7 +812,7 @@ async function getAddressSummary(address, config) {
     // otherwise spend the API quota that the money paths depend on.
     const result = await tryProviders(config, 'getAddressSummary', [address], {
         label: `address-summary ${address.slice(0, 12)}`,
-        onlyProviders: ['blockstream.info', 'mempool.space'],
+        onlyProviders: ESPLORA_ONLY,
         useCooldown: true,
     });
     if (!result.ok) return { ok: false, reason: result.reason };

@@ -37,6 +37,28 @@ if (!API_KEY) {
 // exists. wallet_scan.js keeps its own lazy call; initEccLib is idempotent.
 bitcoin.initEccLib(require('tiny-secp256k1'));
 
+// Try every address a host resolves to, not just the first.
+//
+// Node <20 connects ONLY to the first address a name resolves to. mempool.space resolves
+// to seven servers, and from this network one of them (103.165.192.204) never accepts a
+// TCP connection — and it is the one the router lists first. So every request to
+// mempool.space hung for the full 8-second timeout: 4 of 4 when measured on 2026-10-03.
+// CLAUDE.md had recorded it as "times out most of the time" without the cause.
+//
+// autoSelectFamily is Node's happy-eyeballs: it tries the resolved addresses in turn,
+// moving on after AUTO_SELECT_ATTEMPT_MS without a connection. It is the default from
+// Node 20; this container runs 18. Set here because every module on a network path
+// requires config, so no request can be made before it is on.
+const net = require('net');
+if (typeof net.setDefaultAutoSelectFamily === 'function') {
+    net.setDefaultAutoSelectFamily(true);
+    // Generous for a TCP handshake (mempool.space answers in ~25 ms, Blockstream in ~200),
+    // short enough that one dead server costs half a second, not a whole request.
+    if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === 'function') {
+        net.setDefaultAutoSelectFamilyAttemptTimeout(500);
+    }
+}
+
 const NETWORK = bitcoin.networks.bitcoin; // Or bitcoin.networks.testnet
 const NETWORK_NAME = NETWORK === bitcoin.networks.bitcoin ? 'main' : 'test3';
 

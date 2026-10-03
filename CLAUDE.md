@@ -1102,12 +1102,25 @@ Three things here are load-bearing:
   spent the allowance the webhooks depend on. Balance lookups therefore go to the Esplora
   hosts only. Do not "optimise" this back to BlockCypher batching.
 
-Connections from this machine to mempool.space time out most of the time — not always,
-it does get through intermittently. Every resolver returns the same addresses, so it is
-not DNS. It is still a provider, but it is ordered last for balance lookups, and any host
-that times out or rate-limits is demoted for 60 seconds so a scan does not pay the same
-failure once per address. Admin-panel explorer links point at blockstream.info for the
-same reason.
+**Explorer access from this network, as found on 2026-10-03** (the panel had shown 40
+addresses with figures up to 52 days old):
+
+- **mempool.space** resolves to seven servers and one of them, `103.165.192.204`, never
+  accepts a TCP connection from here — and the router lists it first. Node before 20
+  connects only to the first address, so every request timed out (4 of 4 measured). This
+  is what the old note "times out most of the time" was. `config.js` now turns on
+  `net.setDefaultAutoSelectFamily` (500 ms per address), and the same requests answer in
+  ~1 s via `.205`/`.206`. Curl never showed it: it moves on by itself.
+- **blockstream.info** answers this whole connection — the Pi and the Mac share one public
+  IP — with `429 Too Many Requests`, without a Retry-After. Nothing else on the Pi calls it;
+  it is SatWire's own lookups, and the wallet view is the heaviest of them.
+
+So reads now ask **mempool.space first** (`ESPLORA_ONLY`, the treasury UTXO read, the
+outspend check in `signedTxFate`), and the cooldown still demotes whichever host
+misbehaves. Broadcasts keep their own order — BlockCypher first. And the wallet view asks
+less: the change branch is no longer walked, it is looked up at exactly the indices a paid
+on-chain order can have used (`loadRequestIndex` → `changeIndices`), and the treasury at
+`/2/0` only. That took a full scan from ~170 lookups to ~105 on the live wallet.
 
 **That demotion is opt-in, and broadcasts must never use it** — see the note in
 `tryProviders` about who gets to declare a transaction invalid. A wallet scan tripping a
@@ -1284,7 +1297,7 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **1,103 assertions across fourteen files**, all offline:
+`/home/admin/op_returner_tests/` — **1,119 assertions across fifteen files**, all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1331,6 +1344,9 @@ There is no test runner in the repo. Verification lives outside it, in
   a silent host before a refusal, and conflicts that are or are not yet confirmed.
   **Fifty-seven bugs reintroduced, fifty-seven caught** (2026-10-02) — rerun that if you
   touch `lightning.js`, `treasury.js` or `signedTxFate`.
+- `wallet_view.js` — 16. What the wallet view asks the explorers: change only at the indices
+  paid on-chain orders can have used, the treasury at `/2/0` only, receive still past the
+  highest index ever issued; and that the app reaches every server a host resolves to.
 - `treasury.js` — 176. The treasury spending path: the estimate against real signed
   transactions at every payload size and input count, the fee floor and the post-signing
   relay check, the guards that refuse before anything is signed, dust and change and where
