@@ -243,6 +243,30 @@ const CREATE_WALLET_STATE_SQL = `
     );
 `;
 
+// Upvotes on the public wall. One row per (message, voter), so the primary key IS the
+// one-vote rule and a second vote from the same voter is an INSERT OR IGNORE no-op.
+//
+// Keyed on opReturnTxId, never the request id: the request id is a bearer capability
+// (GET /api/request-status/:id is public) and the txid is what the wall already prints.
+//
+// `voter` is NOT an IP address. It is an HMAC of the client's address (an IPv6 one cut to
+// its /64) under a random key that lives only in system_settings, truncated to 128 bits —
+// see wall_votes.js. Nothing in this table can be turned back into an address without that
+// key, and nothing else in the database is keyed on it.
+//
+// No FOREIGN KEY, for the reason request_events has none: foreign_keys is off on this
+// database. A vote on a message that is later hidden stays in the table and is simply never
+// shown — un-hiding brings it back with its votes, the same way it restores the customer's
+// own choice.
+const CREATE_WALL_VOTES_SQL = `
+    CREATE TABLE IF NOT EXISTS wall_votes (
+        opReturnTxId TEXT NOT NULL,
+        voter TEXT NOT NULL,
+        at TEXT NOT NULL,
+        PRIMARY KEY (opReturnTxId, voter)
+    );
+`;
+
 const CREATE_SYSTEM_SETTINGS_SQL = `
     CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY,
@@ -265,6 +289,7 @@ function allStatements() {
         CREATE_WALLET_STATE_SQL,
         CREATE_SYSTEM_SETTINGS_SQL,
         CREATE_DAILY_COUNTERS_SQL,
+        CREATE_WALL_VOTES_SQL,
     ];
 }
 
@@ -277,5 +302,6 @@ module.exports = {
     CREATE_WALLET_STATE_SQL,
     CREATE_SYSTEM_SETTINGS_SQL,
     CREATE_DAILY_COUNTERS_SQL,
+    CREATE_WALL_VOTES_SQL,
     allStatements,
 };

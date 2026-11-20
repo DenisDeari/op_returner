@@ -41,6 +41,11 @@
 /** Mirror of RENDERABLE_KINDS in frontend/js/app.js. Inert raster only — never SVG. */
 const IMAGE_KINDS = new Set(['image/webp', 'image/jpeg']);
 
+/** The upvote arrow. A constant of ours, mirrored by VOTE_ICON_PATH in frontend/js/app.js. */
+const VOTE_ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
+    + '<path d="M8 3.5 3 9h3.2v4h3.6V9H13L8 3.5Z" stroke="currentColor" stroke-width="1.5"'
+    + ' stroke-linejoin="round"/></svg>';
+
 /** A Bitcoin txid and nothing else. Checked before a txid is put in an attribute. */
 const TXID_RE = /^[0-9a-f]{64}$/;
 
@@ -129,9 +134,20 @@ function renderCard(row) {
             + ` rel="noopener nofollow">tx ↗</a>`
         : '';
 
+    // The upvote button. Its only attribute value from a row is the validated txid, and
+    // the count is forced through Number() first, so a non-numeric `votes` renders as 0
+    // rather than as text. It needs JavaScript to do anything — app.js handles the click by
+    // delegation on #wall — and is rendered here so first paint already shows the count.
+    const votes = Math.max(0, Math.floor(Number(row && row.votes) || 0));
+    const voteHtml = hasTxid
+        ? `<button class="vote" type="button" data-txid="${escapeHtml(txid)}" aria-pressed="false"`
+            + ` aria-label="Upvote this message">${VOTE_ICON}`
+            + `<span class="vote-n">${votes > 0 ? escapeHtml(String(votes)) : ''}</span></button>`
+        : '';
+
     return `<article class="note-card${isImage ? ' is-image' : ''}">`
         + body
-        + `<footer>${whenHtml}${linkHtml}</footer>`
+        + `<footer>${whenHtml}<span class="card-acts">${voteHtml}${linkHtml}</span></footer>`
         + `</article>`;
 }
 
@@ -187,6 +203,7 @@ module.exports = {
     formatWhen,
     IMAGE_KINDS,
     TXID_RE,
+    VOTE_ICON,
     WALL_MARKER,
     COUNT_MARKER,
 };

@@ -29,13 +29,14 @@ const db = new sqlite3.Database(DB_FILE, (err) => {
  *   otherwise race the CREATE TABLE and fail with "no such table".
  */
 function initializeDatabase(onReady) {
-    // Five independent async chains run below (requests, wallet_state, system_settings,
-    // request_events, daily_counters).
+    // Six independent async chains run below (requests, wallet_state, system_settings,
+    // request_events, daily_counters, wall_votes).
     // onReady fires only once ALL of them have finished. The server must not begin
     // accepting traffic before that: an early request would otherwise reach a database
     // with no wallet_state row and fail with "Wallet state not initialized".
     const pendingSteps = new Set([
         'requests', 'wallet_state', 'system_settings', 'request_events', 'daily_counters',
+        'wall_votes',
     ]);
     function markStepDone(step) {
         pendingSteps.delete(step);
@@ -169,6 +170,16 @@ function initializeDatabase(onReady) {
         if (err) console.error("Error creating daily_counters table:", err.message);
         else console.log("Table 'daily_counters' created or already exists.");
         markStepDone('daily_counters');
+    });
+
+    // Wall upvotes. Never fatal, same shape as daily_counters: a vote is a nicety on a
+    // web page and must never stand between the service and taking money. If the table
+    // will not create, the wall listing (which counts from it) fails and the homepage
+    // falls back to the client render — server.js serveHome already swallows that.
+    db.run(schema.CREATE_WALL_VOTES_SQL, (err) => {
+        if (err) console.error("Error creating wall_votes table:", err.message);
+        else console.log("Table 'wall_votes' created or already exists.");
+        markStepDone('wall_votes');
     });
 }
 

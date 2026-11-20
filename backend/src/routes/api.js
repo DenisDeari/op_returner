@@ -8,6 +8,7 @@ const notifier = require('../notifier');
 const txSizing = require('../tx_sizing');
 const events = require('../request_events');
 const wall = require('../wall');
+const wallVotes = require('../wall_votes');
 const qr = require('../qr');
 const payload = require('../payload');
 const httpHygiene = require('../http_hygiene');
@@ -369,6 +370,59 @@ function createApiRouter(db, rootNode, config, requestQueue) {
             res.status(500).json({ error: 'Could not load that image.' });
         }
     });
+
+    /**
+     * POST   /api/wall/:opReturnTxId/vote — upvote one wall message.
+     * DELETE /api/wall/:opReturnTxId/vote — take that upvote back.
+     *
+     * Free, anonymous, one per client address per message; see wall_votes.js for what is
+     * stored (a keyed hash, never the address) and why. Answers { votes, voted }.
+     *
+     * Three guards, cheapest first:
+     *   - the `X-SatWire-Vote: 1` header. There is no CORS on this origin, so a custom header
+     *     cannot be sent cross-site without a preflight that fails; a plain <form> on some
+     *     other page therefore cannot cast votes with a visitor's address.
+     *   - its own per-address rate limit, separate from intake and beacons for the same reason
+     *     those two are separate from each other: clicking hearts must never cost somebody the
+     *     ability to place an order. Each accepted vote is an fsync on the money paths' handle.
+     *   - the wall's own predicate (wall.WALL_EXISTS_SQL), so a hidden, withdrawn or redacted
+     *     message cannot be voted on — with the same 404 as a txid that was never ours.
+     */
+    const voteRateLimit = new Map(); // ip -> [timestamps]
+    const VOTE_WINDOWS = [
+        { ms: 10 * 60 * 1000, max: 30, label: '10 minutes' },
+        { ms: 60 * 60 * 1000, max: 100, label: 'hour' },
+    ];
+    setInterval(() => sweepRateLimit(voteRateLimit, 60 * 60 * 1000), 60 * 60 * 1000).unref?.();
+
+    const handleVote = (up) => async (req, res) => {
+        if (req.get('X-SatWire-Vote') !== '1') {
+            return res.status(400).json({ error: 'Missing vote header.' });
+        }
+        const ip = clientIp(req);
+        const gate = withinLimit(voteRateLimit, ip, VOTE_WINDOWS);
+        if (!gate.ok) {
+            res.setHeader('Retry-After', String(Math.ceil(gate.window.ms / 1000)));
+            return res.status(429).json({ error: `Too many votes. Try again in a few minutes.` });
+        }
+        // Counted before the lookup, refusals included: a 404 is still a query on the
+        // shared handle, and a caller probing txids should run out like anybody else.
+        gate.record();
+        try {
+            const result = await wallVotes.castVote(db, req.params.opReturnTxId, ip, up);
+            if (!result) return res.status(404).json({ error: 'Not found.' });
+            // The count moved, so the cached page is wrong; drop it rather than serve a
+            // stale number to the next visitor for up to CACHE_MS.
+            if (result.changed) wall.invalidate();
+            res.setHeader('Cache-Control', 'no-store');
+            return res.status(200).json({ votes: result.votes, voted: result.voted });
+        } catch (error) {
+            console.error('[API] Wall vote failed:', error.message);
+            return res.status(500).json({ error: 'Could not record that vote.' });
+        }
+    };
+    router.post('/wall/:opReturnTxId/vote', handleVote(true));
+    router.delete('/wall/:opReturnTxId/vote', handleVote(false));
 
     /**
      * GET /api/payment-qr.svg?requestId=… — a scannable BIP21 code for an open order.

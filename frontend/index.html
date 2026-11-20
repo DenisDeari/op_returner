@@ -46,7 +46,7 @@
     <meta name="twitter:description" content="Publish a message or a picture permanently in a Bitcoin OP_RETURN output. Pay with Lightning or on-chain. No account, no signup. From about 3,250 sats.">
     <meta name="twitter:image" content="https://satwire.io/og.png">
 
-    <link rel="stylesheet" href="css/styles.css?v=17">
+    <link rel="stylesheet" href="css/styles.css?v=18">
 
     <!-- No rich result will come of this: Google wants a rating for that, and inventing one
          would be a lie. It is here so an answer engine can state what this is without
@@ -95,9 +95,10 @@
             </svg>
             satwire
         </a>
+        <!-- The API link used to sit here too. It is in the footer and in the fold-out
+             above it; three copies on a phone screen was two too many. -->
         <div class="top-right">
             <span class="live" id="live"><i></i> live</span>
-            <a class="top-link" href="#api" id="api-link">API</a>
         </div>
     </header>
 
@@ -123,6 +124,27 @@
     <section class="compose">
         <div class="msg-wrap">
             <textarea id="msg" placeholder="Say it once, and let it outlive you&hellip;" aria-label="Your message"></textarea>
+        </div>
+
+        <!-- Under the message, not in the strip: how much of the limit is used is a fact
+             about the message, and it used to be a bare "0" in a circle with no unit. -->
+        <div class="msg-tools">
+            <div class="ring" id="ring" title="Bytes used of the limit">
+                <svg width="22" height="22" viewBox="0 0 34 34" aria-hidden="true">
+                    <circle class="track" cx="17" cy="17" r="15"/>
+                    <circle class="fill" cx="17" cy="17" r="15"/>
+                </svg>
+            </div>
+            <span class="bytes" id="ring-n" aria-live="polite">0 bytes</span>
+
+            <span class="spacer"></span>
+
+            <!-- The recipient fields are optional and rarely used, and they cost a phone
+                 two input rows and a paragraph. They open together, so an address can never
+                 be filled in with its amount out of sight; closing them clears both. -->
+            <button class="link-btn" id="recip-toggle" type="button" aria-expanded="false" aria-controls="recip-box">
+                + Send sats too
+            </button>
 
             <!-- The file input is the real control; the button just clicks it. A bare
                  <input type=file> cannot be styled and would sit in the composer looking
@@ -179,13 +201,14 @@
             </div>
         </div>
 
+        <div class="recip-box" id="recip-box" hidden>
         <div class="recip">
             <div class="field grow">
                 <!-- "Also pay a Bitcoin address" read, to at least one customer, as a way to
                      send bitcoin somewhere. On 2026-08-11 someone filled in their own exchange
                      deposit address and was quoted 124,970 sats to forward 1,000 of them. The
                      wording now leads with what the field is: optional, and an extra. -->
-                <input type="text" id="addr-in" placeholder="Optional &mdash; also send sats to an address"
+                <input type="text" id="addr-in" placeholder="Optional &mdash; recipient address"
                        spellcheck="false" autocomplete="off" aria-label="Optional recipient address">
             </div>
             <div class="field amt">
@@ -196,16 +219,9 @@
         <!-- recalc() owns this span's text and class from the first frame; the copy here is
              what a visitor sees if the script never runs, so it says the same thing. -->
         <div class="recip-note"><span class="note" id="amt-note">Optional. SatWire publishes your message &mdash; this only adds a payment on top.</span></div>
+        </div>
 
         <div class="strip">
-            <div class="ring" id="ring">
-                <svg width="34" height="34" aria-hidden="true">
-                    <circle class="track" cx="17" cy="17" r="15"/>
-                    <circle class="fill" cx="17" cy="17" r="15"/>
-                </svg>
-                <b id="ring-n">0</b>
-            </div>
-
             <label class="switch">
                 <input type="checkbox" id="public-toggle" checked>
                 <span class="track"></span>
@@ -282,9 +298,19 @@
     <section class="sec" id="wall-sec">
         <div class="sec-head">
             <h2>On the wire</h2>
+            <!-- New is the server's order. Top is the same page re-sorted in the browser by
+                 upvotes, so there is still one query, one cache and one ETag. Hidden until
+                 app.js runs: without it there is nothing to sort with. -->
+            <div class="seg" id="wall-sort" role="radiogroup" aria-label="Sort the wall" hidden>
+                <button type="button" role="radio" data-sort="new" aria-checked="true">New</button>
+                <button type="button" role="radio" data-sort="top" aria-checked="false">Top</button>
+            </div>
             <span class="meta" id="wall-n"></span>
         </div>
         <div class="wall" id="wall"></div>
+        <!-- The wall is fully server-rendered for crawlers; app.js folds it to the first few
+             cards and this shows the rest. -->
+        <button class="wall-more" id="wall-more" type="button" hidden></button>
     </section>
 
     <!-- ============================ What this is ========================= -->
@@ -471,9 +497,21 @@
         <span>SatWire</span>
         <span><a href="/what-is-op-return">What is OP_RETURN?</a> &middot;
             <a href="/send-a-message-to-a-bitcoin-address">Message an address</a> &middot;
-            <a href="#api">API</a></span>
+            <a href="#api" id="api-link">API</a></span>
     </footer>
 
+</div>
+
+<!-- ============================ Broadcast dock ========================= -->
+<!-- Phones only (styles.css). Appears once there is a message and the composer's own
+     Broadcast button has scrolled away, so the price and the button are never more than a
+     thumb away. It holds no state: the total is copied from recalc(), and the button clicks
+     the real #go, so there is still exactly one way an order is placed. -->
+<div class="dock" id="dock" hidden>
+    <div class="dock-total"><strong id="dock-n">0</strong> <span>sats</span></div>
+    <button class="btn-go" id="dock-go" type="button">Broadcast
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
 </div>
 
 <!-- ============================ Image preview ========================== -->
@@ -509,6 +547,6 @@
     </div>
 </div>
 
-<script src="js/app.js?v=18"></script>
+<script src="js/app.js?v=19"></script>
 </body>
 </html>

@@ -47,6 +47,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalAmount = $('modal-amount'), modalAddress = $('modal-address');
     const modalKind = $('modal-kind'), modalWallet = $('modal-wallet'), modalWait = $('modal-wait');
     const railPick = $('rail-pick');
+    const recipToggle = $('recip-toggle'), recipBox = $('recip-box');
+    const wallSort = $('wall-sort'), wallMore = $('wall-more');
+    const dock = $('dock'), dockN = $('dock-n'), dockGo = $('dock-go');
 
     // --- State -------------------------------------------------------------
     // One key, unchanged from the previous build so orders already in flight in a
@@ -853,7 +856,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        ringN.textContent = bytes >= 1000 ? `${Math.floor(bytes / 1000)}k` : bytes;
+        // Said with its unit and against the limit. It was a bare number in a circle, and
+        // "0" next to a toggle reads as anything but a byte count.
+        ringN.textContent = imageMode && !image ? '…' : `${fmt(bytes)} / ${fmt(limit)} bytes`;
         ring.querySelector('.fill').style.strokeDashoffset = RING_CIRC - RING_CIRC * Math.min(1, bytes / limit);
         ring.className = bytes >= limit ? 'ring full' : 'ring';
 
@@ -871,6 +876,8 @@ document.addEventListener('DOMContentLoaded', () => {
         bdSvc.textContent = fmt(SERVICE_FEE);
         bdRec.textContent = fmt(amount);
         animateTotal(total);
+        dockN.textContent = fmt(total);
+        syncDock();
 
         // What the fee slider actually costs, named in sats.
         //
@@ -1435,19 +1442,82 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderWall(messages) {
-        wallEl.innerHTML = '';
-        wallN.textContent = messages.length ? `${fmt(messages.length)} published` : '';
+    // Upvotes. Which messages this browser has voted on is remembered here only so the
+    // arrow can be drawn filled; the server holds the truth (one vote per address, see
+    // backend/src/wall_votes.js) and every click's answer overwrites this.
+    const VOTE_STORE = 'satwire_votes';
+    let myVotes = new Set();
+    try { myVotes = new Set(JSON.parse(localStorage.getItem(VOTE_STORE)) || []); } catch { myVotes = new Set(); }
+    const saveVotes = () => { try { localStorage.setItem(VOTE_STORE, JSON.stringify([...myVotes].slice(-500))); } catch { /* quota */ } };
 
-        if (!messages.length) {
+    // Sort and fold. "Top" re-sorts the page the server sent; it is remembered per browser.
+    const SORT_STORE = 'satwire_wall_sort';
+    let wallSortBy = 'new';
+    try { if (localStorage.getItem(SORT_STORE) === 'top') wallSortBy = 'top'; } catch { /* private mode */ }
+    let wallMessages = [];
+    let wallExpanded = false;
+    // A phone shows a handful of cards and a button; a three-column desktop shows more,
+    // because each card there costs a third of the height.
+    const wallFoldAt = () => (window.matchMedia('(min-width: 900px)').matches ? 9
+        : window.matchMedia('(min-width: 621px)').matches ? 8 : 5);
+
+    // Mirrors VOTE_ICON in backend/src/wall_html.js. A constant of ours, so building it
+    // from markup is fine; nothing from a row ever goes near it.
+    const VOTE_ICON_PATH = 'M8 3.5 3 9h3.2v4h3.6V9H13L8 3.5Z';
+    function voteIcon() {
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(NS, 'svg');
+        svg.setAttribute('width', '13'); svg.setAttribute('height', '13');
+        svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('fill', 'none');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS(NS, 'path');
+        path.setAttribute('d', VOTE_ICON_PATH);
+        path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.5');
+        path.setAttribute('stroke-linejoin', 'round');
+        svg.appendChild(path);
+        return svg;
+    }
+
+    function paintVote(button, votes, voted) {
+        button.setAttribute('aria-pressed', voted ? 'true' : 'false');
+        button.setAttribute('aria-label', voted ? 'Remove your upvote' : 'Upvote this message');
+        const n = button.querySelector('.vote-n');
+        if (n) n.textContent = votes > 0 ? fmt(votes) : '';
+    }
+
+    function sortedWall() {
+        if (wallSortBy !== 'top') return wallMessages;
+        // Stable: equal votes keep the server's newest-first order.
+        return wallMessages
+            .map((m, i) => ({ m, i }))
+            .sort((a, b) => ((b.m.votes || 0) - (a.m.votes || 0)) || (a.i - b.i))
+            .map((x) => x.m);
+    }
+
+    function applyFold() {
+        const cards = wallEl.querySelectorAll('.note-card');
+        const foldAt = wallFoldAt();
+        const folding = !wallExpanded && cards.length > foldAt + 1;
+        cards.forEach((c, i) => { c.hidden = folding && i >= foldAt; });
+        wallMore.hidden = !folding;
+        if (folding) wallMore.textContent = `Show ${fmt(cards.length - foldAt)} more`;
+    }
+
+    function renderWall(messages) {
+        if (messages) wallMessages = messages;
+        wallEl.innerHTML = '';
+        wallN.textContent = wallMessages.length ? `${fmt(wallMessages.length)} published` : '';
+
+        if (!wallMessages.length) {
             const p = document.createElement('p');
             p.className = 'wall-empty';
             p.textContent = 'Nothing here yet. Yours could be first.';
             wallEl.appendChild(p);
+            applyFold();
             return;
         }
 
-        messages.forEach((m, i) => {
+        sortedWall().forEach((m, i) => {
             const card = document.createElement('article');
             card.className = 'note-card';
             card.style.animationDelay = `${Math.min(i, 12) * 0.04}s`;
@@ -1476,8 +1546,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // part of a row ever reaches the HTML parser here either.
             const whenText = m.publishedAt ? ago(m.publishedAt) : '';
             const txidForLink = String(m.opReturnTxId || '').toLowerCase();
+            const hasTxid = TXID_ONLY.test(txidForLink);
             let when;
-            if (whenText && TXID_ONLY.test(txidForLink)) {
+            if (whenText && hasTxid) {
                 when = document.createElement('a');
                 when.className = 'card-date';
                 when.href = `/m/${encodeURIComponent(txidForLink)}`;
@@ -1487,20 +1558,84 @@ document.addEventListener('DOMContentLoaded', () => {
             when.textContent = whenText;
             foot.appendChild(when);
 
+            const acts = document.createElement('span');
+            acts.className = 'card-acts';
+            if (hasTxid) {
+                const vote = document.createElement('button');
+                vote.type = 'button';
+                vote.className = 'vote';
+                vote.dataset.txid = txidForLink;
+                vote.appendChild(voteIcon());
+                const n = document.createElement('span');
+                n.className = 'vote-n';
+                vote.appendChild(n);
+                paintVote(vote, Math.max(0, Math.floor(Number(m.votes) || 0)), myVotes.has(txidForLink));
+                acts.appendChild(vote);
+            }
             if (m.opReturnTxId) {
                 const link = document.createElement('a');
                 link.href = `https://mempool.space/tx/${encodeURIComponent(m.opReturnTxId)}`;
                 link.target = '_blank';
                 link.rel = 'noopener';
                 link.textContent = 'tx ↗';
-                foot.appendChild(link);
+                acts.appendChild(link);
             }
+            foot.appendChild(acts);
 
             card.appendChild(p);
             card.appendChild(foot);
             wallEl.appendChild(card);
         });
+        applyFold();
     }
+
+    // One listener for every card, server-rendered or not. Optimistic: the arrow fills at
+    // once and the server's answer then sets both the count and the state.
+    const votesInFlight = new Set();
+    wallEl.addEventListener('click', async (e) => {
+        const button = e.target.closest('button.vote');
+        if (!button) return;
+        const txid = String(button.dataset.txid || '');
+        if (!TXID_ONLY.test(txid) || votesInFlight.has(txid)) return;
+
+        const up = button.getAttribute('aria-pressed') !== 'true';
+        const row = wallMessages.find((m) => String(m.opReturnTxId || '').toLowerCase() === txid);
+        const before = row ? (Number(row.votes) || 0) : (parseInt((button.querySelector('.vote-n') || {}).textContent, 10) || 0);
+        paintVote(button, Math.max(0, before + (up ? 1 : -1)), up);
+        votesInFlight.add(txid);
+        try {
+            const res = await fetch(`/api/wall/${encodeURIComponent(txid)}/vote`, {
+                method: up ? 'POST' : 'DELETE',
+                headers: { 'X-SatWire-Vote': '1' },
+            });
+            if (!res.ok) throw new Error(String(res.status));
+            const data = await res.json();
+            const votes = Math.max(0, Math.floor(Number(data.votes) || 0));
+            if (data.voted) myVotes.add(txid); else myVotes.delete(txid);
+            saveVotes();
+            if (row) row.votes = votes;
+            paintVote(button, votes, !!data.voted);
+        } catch {
+            paintVote(button, before, !up);     // put it back the way it was
+        } finally {
+            votesInFlight.delete(txid);
+        }
+    });
+
+    function setWallSort(by) {
+        wallSortBy = by === 'top' ? 'top' : 'new';
+        wallSort.querySelectorAll('button').forEach((b) => {
+            b.setAttribute('aria-checked', b.dataset.sort === wallSortBy ? 'true' : 'false');
+        });
+        try { localStorage.setItem(SORT_STORE, wallSortBy); } catch { /* private mode */ }
+    }
+    wallSort.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-sort]');
+        if (!b || b.dataset.sort === wallSortBy) return;
+        setWallSort(b.dataset.sort);
+        renderWall();
+    });
+    wallMore.addEventListener('click', () => { wallExpanded = true; applyFold(); });
 
     // --- Payment modal -----------------------------------------------------
     let invoiceTimer = null;
@@ -1558,9 +1693,10 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         modal.hidden = false;
+        syncDock();
         beacon('pay_opened');
     }
-    const closePayment = () => { modal.hidden = true; clearInterval(invoiceTimer); };
+    const closePayment = () => { modal.hidden = true; clearInterval(invoiceTimer); syncDock(); };
 
     // --- Pay with ------------------------------------------------------------
     function setPayMethod(method, { remember = true } = {}) {
@@ -1581,6 +1717,44 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Disclosures -------------------------------------------------------
+    // The recipient fields. Open together, close together, and closing CLEARS them: a
+    // price that silently includes a payout to an address the customer can no longer see
+    // is exactly the confusion the 2026-08-11 order came from.
+    function setRecipOpen(open) {
+        recipBox.hidden = !open;
+        recipToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        recipToggle.textContent = open ? '− Remove payout' : '+ Send sats too';
+        if (!open && (addrIn.value || amtIn.value)) {
+            addrIn.value = '';
+            amtIn.value = '';
+            recalc();
+            if (pendingSource) { clearTimeout(budgetTimer); budgetTimer = setTimeout(reencode, 140); }
+        }
+    }
+    recipToggle.addEventListener('click', () => {
+        const open = recipBox.hidden;
+        setRecipOpen(open);
+        if (open) addrIn.focus();
+    });
+
+    // The phone dock. Shown only while there is something to publish and the real button
+    // is off screen; it clicks that button, so it can never place an order differently.
+    let goVisible = true;
+    function syncDock() {
+        const hasPayload = !!image || !!pendingSource || bytesOf(msg.value) > 0;
+        dock.hidden = goVisible || !hasPayload || !modal.hidden;
+    }
+    if ('IntersectionObserver' in window) {
+        new IntersectionObserver((entries) => {
+            goVisible = entries.some((en) => en.isIntersecting);
+            syncDock();
+        }).observe(go);
+    }
+    dockGo.addEventListener('click', () => {
+        go.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        go.click();
+    });
+
     optBtn.addEventListener('click', () => {
         optBtn.setAttribute('aria-expanded', drawer.classList.toggle('open') ? 'true' : 'false');
     });
@@ -1599,7 +1773,7 @@ document.addEventListener('DOMContentLoaded', () => {
             api.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }
-    apiLink.addEventListener('click', () => setTimeout(openApiIfHashed, 0));
+    if (apiLink) apiLink.addEventListener('click', () => setTimeout(openApiIfHashed, 0));
     window.addEventListener('hashchange', openApiIfHashed);
 
     // --- Wiring ------------------------------------------------------------
@@ -1661,6 +1835,11 @@ document.addEventListener('DOMContentLoaded', () => {
     imgBudgetN.textContent = fmt(parseInt(imgBudget.value, 10) || 0);
     recalc();
     renderOrders();
+    wallSort.hidden = false;
+    setWallSort(wallSortBy);
+    // The server already rendered the wall; fold it now so the first paint on a phone is
+    // not the whole wall followed by a jump when /api/wall answers.
+    applyFold();
     loadWall();
     openApiIfHashed();
     poll();

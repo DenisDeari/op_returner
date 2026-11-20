@@ -147,6 +147,12 @@ it. No customer hit this. The guard now sits on both publishing passes and delib
 | Whether signed bytes are on chain is `signedTxFate`: exists / dead (input spent by a CONFIRMED other tx) / unknown → wait. Never `/tx/:id/status`, never "the explorers lack it" | `chain_providers.js`, used by `treasury.js` and `lightning.js` |
 | Bytes a silent host might have taken are kept as possibly-accepted and never rebuilt | `chain_providers.js` `mayHaveBeenAccepted`, `treasury.js` |
 | One worker per Lightning order; a second one writes nothing | `lightning.js` `fulfilling`, `request_service.js` |
+| One upvote per voter per message — the primary key, not application code | `schema.js` `CREATE_WALL_VOTES_SQL` |
+| A voter is stored as a keyed hash, never as an address | `wall_votes.js` `voterId` (HMAC under `system_settings.wall_vote_key`) |
+| Only a message on the wall can be voted on, and every refusal is the same 404 | `wall_votes.js` via `wall.WALL_EXISTS_SQL` (built from `WALL_WHERE_SQL`) |
+| The wall emits a vote COUNT, never who voted | `wall.js` `WALL_SELECT_SQL` |
+| Nothing anywhere branches on a vote count except the wall's sort | — keep it that way |
+| The recipient address and amount open, close and clear together | `frontend/js/app.js` `setRecipOpen` |
 
 A fee at exactly 1 sat/vByte sits on the minimum relay fee and providers reject it as
 `non standard: low fee rate`. That is why the floor is 2, not 1. The extra always comes
@@ -930,6 +936,51 @@ coerced** — `"false"` is a thing a caller might send meaning no.
 Treasury-funded and free messages published through `routes/internal.js` create no
 `requests` row at all, so they can never appear on the wall whatever `isPublic` says.
 
+**Hiding is done from Kommando** (SatWire → Bestellungen → order → "Von der Wand nehmen"),
+which calls the visibility endpoint above. On 2026-11-11 two of three identical "Hey
+hacker…" messages (2 Nov, `708f3b95…` and `41e23bb9…`) were hidden that way; the 3 Nov copy
+stays up.
+
+### Upvotes — added 2026-11-11
+
+The operator asked for a voting system. What was built, and why each choice:
+
+| Choice | Why |
+|---|---|
+| Free, anonymous, undoable | No accounts here, and a paid vote would be a new money path for a ranking feature |
+| One per client address per message | Same "who is this" as every limiter (`http_hygiene.js` `clientIp`); IPv6 cut to its /64 because privacy addresses rotate inside it |
+| Stored as HMAC-SHA256(key, address) cut to 128 bits | A plain hash of an IPv4 address is reversible by trying all of them; the key is 32 random bytes in `system_settings.wall_vote_key`, created on first vote |
+| `wall_votes (opReturnTxId, voter, at)`, PK on the pair | The one-vote rule is the schema; a second vote is an `INSERT OR IGNORE` no-op |
+| Keyed on the txid | The request id is a bearer capability — same rule as the payload URL |
+| `POST`/`DELETE /api/wall/:txid/vote` with `X-SatWire-Vote: 1` | No CORS on this origin, so a cross-site `<form>` cannot send the header and cannot vote with a visitor's address |
+| Own rate limit: 30 per 10 min, 100 per hour, per address, refusals counted | Each vote is an fsync on the money paths' handle; probing txids runs out like anything else |
+| Existence check runs `WALL_WHERE_SQL` | Hidden, withdrawn, redacted or un-stamped messages cannot be voted on, and their 404 is identical to an unknown txid's — not a moderation oracle |
+| The listing carries `votes` (a count) and stays newest-first | "Top" is a client-side re-sort of the same page: one query, one cache, one ETag. With more than `MAX_LIMIT` (100) messages, Top ranks only the newest 100 — revisit then |
+| A vote that changed the count calls `wall.invalidate()` | The next visitor sees it immediately rather than up to 10 s later |
+
+Votes on a message that is later hidden stay in the table and come back if it is un-hidden,
+the same way un-hiding restores the customer's own choice. Which messages *this browser* voted
+on is in `localStorage` (`satwire_votes`) only to draw the arrow filled; every click's answer
+from the server overwrites it.
+
+`wall_votes.js` (tests) holds it: 62 assertions, and two guards were checked by reintroducing
+the bug — dropping `WALL_WHERE_SQL` from `WALL_EXISTS_SQL` fails 6, dropping the header check
+fails 4.
+
+### The phone layout — 2026-11-11
+
+On a 390 px screen the Broadcast button was below the first screen and the page was ~8,000 px
+tall. What changed: the byte counter and the image button moved into a row under the message
+(the counter now says `n / limit bytes`); the recipient fields went behind **+ Send sats too**
+(see the invariant above — closing clears both); the header API link was dropped (it is in the
+footer and the fold-out); on phones the hero subtitle is hidden and cards are compact; the wall
+folds to 5 cards (8 at tablet width, 9 on desktop) with a **Show N more** button — the
+server-rendered HTML still carries every card for crawlers; and a **dock** with the total and
+a Broadcast button appears on phones once there is a message and the real button has scrolled
+away. The dock clicks `#go`; it never places an order itself. The fee chip deliberately stayed
+in the strip rather than moving into the total's fold-out: its surcharge is the warning
+*What the fee slider costs* is about, and a warning nobody opens is not a warning.
+
 ### The preview dialog
 
 The thumbnail opens a larger preview with the budget slider under it, so the customer judges
@@ -1434,7 +1485,8 @@ visitor keeps the old file for a week now that versioned URLs are cached.
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
-`/home/admin/op_returner_tests/` — **1,182 assertions across fifteen files**, all offline:
+`/home/admin/op_returner_tests/` — **1,262 assertions across sixteen files** (counted
+2026-11-11), all offline:
 
 - `unit_harness.js` — 91. Intake validation, builder guards, sizing, dust, Taproot,
   classification.
@@ -1450,6 +1502,12 @@ There is no test runner in the repo. Verification lives outside it, in
   whitelists, intake opt-in, moderation, the payment QR's refusals, and the ALTER-based
   upgrade path on a database that already exists.
 
+- `wall_votes.js` — 62. Upvotes: one per voter, IPv6 by /64, the IPv4-mapped form, undo;
+  that no address is stored and the hash is keyed; only wall messages can be voted on, with
+  five byte-identical refusals; the header guard; votes surviving hide/un-hide; the count in
+  the listing and nothing else; cache invalidation; the rate limit, refusals included; the
+  server-rendered button escaping a non-numeric count; and the shipped client and markup
+  (header sent, `textContent`, version bumps, the recipient box, the dock clicking `#go`).
 - `confirmations.js` — 36. The confirmation watch, its bounds, the "unreadable is not
   unconfirmed" rule, the operator alert for a transaction that never got mined, and the
   invariant that no money path reads `opReturnConfirmedAt`.

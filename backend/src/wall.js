@@ -115,11 +115,17 @@ const WALL_WHERE_SQL = `
 // Text stays inline: it is capped at 1,000 bytes and is what the card actually renders.
 // An image row carries its `opReturnTxId`, which the client turns into an <img src> against
 // the payload endpoint below.
+//
+// `votes` is a COUNT and nothing else — never who voted, never when. It rides on the
+// primary key of wall_votes, so it is one index range per row on a listing capped at
+// MAX_LIMIT. The listing stays newest-first: "Top" is a client-side re-sort of this same
+// page, so there is one cached query and one ETag, not two.
 const WALL_SELECT_SQL = `
     SELECT CASE WHEN payloadKind IN ('image/webp', 'image/jpeg') THEN NULL ELSE message END AS message,
            payloadKind,
            opReturnTxId,
-           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt
+           COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) AS publishedAt,
+           (SELECT COUNT(*) FROM wall_votes v WHERE v.opReturnTxId = requests.opReturnTxId) AS votes
       FROM requests
      ${WALL_WHERE_SQL}
      ORDER BY COALESCE(lastAttemptAt, paymentConfirmedAt, createdAt) DESC
@@ -134,6 +140,18 @@ const WALL_SELECT_SQL = `
 // public: it is in the listing, it is printed on the card, and it is on the chain.
 const WALL_PAYLOAD_SQL = `
     SELECT message, payloadKind
+      FROM requests
+     ${WALL_WHERE_SQL}
+       AND opReturnTxId = ?
+     LIMIT 1
+`;
+
+// Is this txid on the wall right now? The vote endpoint asks this before it writes, with
+// the wall's own predicate, so a hidden, withdrawn or redacted message cannot collect
+// votes — and, as with the payload endpoint, the refusal for "hidden" is the same as for
+// "never existed", so voting is not a moderation oracle either.
+const WALL_EXISTS_SQL = `
+    SELECT 1 AS onWall
       FROM requests
      ${WALL_WHERE_SQL}
        AND opReturnTxId = ?
@@ -301,6 +319,8 @@ module.exports = {
     WALL_SELECT_SQL,
     WALL_MESSAGE_SQL,
     WALL_SITEMAP_SQL,
+    WALL_EXISTS_SQL,
+    TXID_RE,
     SITEMAP_MAX,
     MAX_LIMIT,
     DEFAULT_LIMIT,
