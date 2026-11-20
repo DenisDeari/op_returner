@@ -168,6 +168,7 @@ function createWebhookRouter(db, rootNode, config) {
                                 amount: paidValue,
                                 message: matched.message,
                                 payloadKind: matched.payloadKind,
+                                paymentMethod: matched.paymentMethod,
                             }, config);
                             break; // Address processed, break inner loop
                         } else if (chainConfirmations === 0 && isSufficientAmount) {

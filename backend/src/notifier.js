@@ -259,11 +259,29 @@ function preview(message, payloadKind) {
     return esc(truncate(payload.describe(message, payloadKind), 200));
 }
 
+/**
+ * How the order was paid for, named in every lifecycle notification.
+ *
+ * NULL is on-chain: every row written before Lightning existed, and every on-chain order
+ * since (`schema.js`, `queue.js`). Compared against the literal rather than
+ * `lightning.LIGHTNING` because `lightning.js` requires THIS module — importing it back
+ * would be a require cycle on a money path.
+ *
+ * On-chain is named out loud rather than left blank. A label that appears only for
+ * Lightning reads as "this one is special" on a glance and says nothing on the other
+ * notifications, and the method is what decides how long the operator should expect to
+ * wait: an on-chain order publishes after the payment's first confirmation (~10 minutes),
+ * a Lightning one within seconds.
+ */
+function methodLabel(paymentMethod) {
+    return paymentMethod === 'lightning' ? '⚡ Lightning' : '⛓ On-chain';
+}
+
 // --- Lifecycle notifications ---------------------------------------------
 
 function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshis, targetAddress, paymentMethod }, config) {
     fire(
-        `🟡 <b>New order</b>${paymentMethod === 'lightning' ? ' ⚡ Lightning' : ''}\n\n` +
+        `🟡 <b>New order</b> · ${methodLabel(paymentMethod)}\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Awaiting <b>${esc(requiredAmountSatoshis)} sats</b>` +
         (targetAddress ? `\nRecipient: <code>${esc(targetAddress)}</code>` : '') +
@@ -273,9 +291,9 @@ function notifyNewOrder({ requestId, message, payloadKind, requiredAmountSatoshi
     );
 }
 
-function notifyPaymentReceived({ requestId, amount, message, payloadKind }, config) {
+function notifyPaymentReceived({ requestId, amount, message, payloadKind, paymentMethod }, config) {
     fire(
-        `💰 <b>Payment received</b> — ${esc(amount)} sats\n\n` +
+        `💰 <b>Payment received</b> — ${esc(amount)} sats · ${methodLabel(paymentMethod)}\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `Publishing now…\nOrder <code>${esc(shortId(requestId))}</code>`,
         config,
@@ -283,9 +301,9 @@ function notifyPaymentReceived({ requestId, amount, message, payloadKind }, conf
     );
 }
 
-function notifyDelivered({ requestId, message, payloadKind, opReturnTxId }, config) {
+function notifyDelivered({ requestId, message, payloadKind, opReturnTxId, paymentMethod }, config) {
     fire(
-        `✅ <b>Published to the blockchain</b>\n\n` +
+        `✅ <b>Published to the blockchain</b> · ${methodLabel(paymentMethod)}\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         `https://mempool.space/tx/${esc(opReturnTxId)}\n` +
         `Order <code>${esc(shortId(requestId))}</code>`,
@@ -294,7 +312,7 @@ function notifyDelivered({ requestId, message, payloadKind, opReturnTxId }, conf
     );
 }
 
-function notifyFailed({ requestId, message, payloadKind, reason, amount, terminal, refund }, config) {
+function notifyFailed({ requestId, message, payloadKind, reason, amount, terminal, refund, paymentMethod }, config) {
     let refundLine = '';
     if (refund?.ok) {
         refundLine = `\n\n↩️ Automatically refunded ${esc(refund.amount)} sats.`;
@@ -307,7 +325,7 @@ function notifyFailed({ requestId, message, payloadKind, reason, amount, termina
     }
 
     fire(
-        `${terminal ? '🔴' : '🟠'} <b>Order ${terminal ? 'FAILED' : 'failed — will retry'}</b>\n\n` +
+        `${terminal ? '🔴' : '🟠'} <b>Order ${terminal ? 'FAILED' : 'failed — will retry'}</b> · ${methodLabel(paymentMethod)}\n\n` +
         `<i>"${preview(message, payloadKind)}"</i>\n\n` +
         (amount ? `Customer paid: <b>${esc(amount)} sats</b>\n` : '') +
         `Reason: ${esc(truncate(reason, 200))}` +
@@ -420,6 +438,7 @@ module.exports = {
     sendPhoto,
     buildMultipart,
     isEnabled,
+    methodLabel,
     CAPTION_MAX_CHARS,
     PHOTO_FILENAMES,
     notifyNewOrder,

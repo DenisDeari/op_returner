@@ -99,6 +99,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
                 message: request.message,
                 payloadKind: request.payloadKind,
                 opReturnTxId: result.opReturnTxId,
+                paymentMethod: request.paymentMethod,
             }, config);
             return { success: true, opReturnTxId: result.opReturnTxId };
         }
@@ -159,6 +160,7 @@ async function fulfillRequest(request, db, rootNode, config, options = {}) {
             amount: request.paymentReceivedSatoshis,
             terminal,
             refund,
+            paymentMethod: request.paymentMethod,
         }, config);
 
         return {

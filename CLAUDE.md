@@ -337,15 +337,33 @@ Four ceilings sit on top of each other. The lowest wins.
 
 | Ceiling | Value | Where |
 |---|---|---|
-| Text | 1,000 bytes | `system_settings.max_payload_size` |
+| Text | **20,000 bytes** live (seeded 1,000) | `system_settings.max_payload_size` |
 | Image | **20,000 bytes** live | `system_settings.max_image_payload_size` |
 | Builder backstop | 20,000 bytes | `op_return_creator.js` `MAX_ON_CHAIN_PAYLOAD_BYTES` |
 | Browser encoder | 1024 px longest edge | `frontend/js/app.js` `IMAGE_SIZES` |
 | Bitcoin standardness | 100,000 bytes | Core v30 default, not our constraint |
 
+**The composer trims typed text to the limit, and it must not trim against its own
+fallback.** `frontend/js/app.js` starts at `MAX_BYTES = 1000` because `recalc()` runs once
+before `/api/config/limits` resolves, and the trim happens as the customer types — so for
+one fetch's width the page would cut a paste at 1,000 bytes against a live limit of 20,000,
+silently, with no error and no way to tell what was lost. `LIMITS_LOADED` gates it: nothing
+is cut until the server's figure is in, and an oversize payload in that window is refused at
+intake with a message instead. Found 2026-10-26 while answering "why did that message look
+cut off" — it was not the cause that time, and it would have been eventually.
+`operator_view.js` section 8b holds it in place.
+
 `POST /api/admin/config/limits` sets the first two and **clamps both against the builder
 backstop**. That clamp is not optional: a settings value above it would be quoted to a
 customer and then refused by the builder *after they had paid*.
+
+**The live text limit is 20,000 bytes, not the 1,000 `database.js` seeds.** Read the
+`system_settings` row before quoting either number. It was 10,000 and was raised to the
+builder backstop on 2026-10-26, on the operator's decision and on the evidence below that a
+19,820-byte payload has been published and mined. A full 20,000 bytes of text costs the
+customer about 43,000 sats at the 2 sat/vB floor, so the ceiling is now priced, not
+configured: text and image share the same number and neither can go higher without changing
+`MAX_ON_CHAIN_PAYLOAD_BYTES`.
 
 **`database.js` seeds `max_image_payload_size` at 2,000, not 20,000.** Production was raised
 to 20,000 by hand and that is the live value; a *fresh* database gets 2,000, and the admin
@@ -421,23 +439,40 @@ Three things about that directory:
 to disagree — so the answer could simply be wrong. The probe checks `blob.type`, because a
 browser that cannot produce a format does not throw, it silently returns PNG.
 
-### The part that is still unproven
+### A multi-kilobyte OP_RETURN does work — corrected 2026-10-26
 
-**The largest OP_RETURN this service has ever broadcast is 64 bytes.** Every published
-message predates Core v30. Whether BlockCypher — first in the broadcast order — relays a
-multi-kilobyte OP_RETURN is untested, and it has already shown it applies stricter rules
-than the Esplora hosts.
+**The largest OP_RETURN this service has broadcast is 19,820 bytes**, and it confirmed.
+This section used to say 64 bytes and call the whole thing unproven; that was written
+before the first image went out and was never corrected. The actual record:
 
-Two things reduce the blast radius, and neither replaces an actual test:
+| | |
+|---|---|
+| Order | `76908443-1c8c-4cea-be8c-ac2b49f028b1`, 2026-08-09 14:08 |
+| Payload | 19,820 bytes, `image/webp` |
+| Customer paid | 41,890 sats at 2 sat/vB |
+| Published | `4aea4a5cb0bf23fc674e6a9a0442ada793bb41309b5e4a17434eaaf1edec0bc8`, **first attempt**, 0.5 s after the payment confirmed |
+| Mined | block **961,740**, 2026-08-09 14:42 — 20 minutes later |
+
+So the 20,000-byte backstop is not a guess any more: a payload one hundred and eighty bytes
+under it has been through the whole path, at the relay floor, and got into a block without a
+retry. What is *still* unproven is anything **above** 20,000 — raising
+`MAX_ON_CHAIN_PAYLOAD_BYTES` is the untested step, not using the room below it.
+
+**Which host took it is not recorded.** `request_events` logs `published` with the txid, not
+the provider, so whether BlockCypher relayed it or `tryProviders` fell through to Esplora
+cannot be read back. Treat BlockCypher's appetite for a large OP_RETURN as unknown rather
+than as proven, and keep the contested rule that makes the difference survivable.
+
+Two things reduce the blast radius of the untested part:
 
 - A `datacarrier` rejection is now **contested**, so all three hosts are asked before it
   counts (see *Error classification*). Before that fix, BlockCypher alone could veto a
   transaction the others would have taken, and it refunded.
 - `confirm_watch.js` reports a transaction that broadcast but never got mined.
 
-Knots nodes still reject payloads over 83 bytes, which costs propagation but not validity.
-A multi-kilobyte transaction at the 2 sat/vB default is also a much bigger bet on the
-mempool than a 250-byte one.
+Knots nodes still reject payloads over 83 bytes, which costs propagation but not validity —
+the 19,820-byte one was mined in 20 minutes regardless. A multi-kilobyte transaction at the
+2 sat/vB default is still a much bigger bet on the mempool than a 250-byte one.
 
 **The safe way to test is the treasury**, not a customer order: `POST /api/internal/embed`
 is API-key-only and spends from `m/84'/0'/0'/2/0`, so no customer money is involved. As of
@@ -537,6 +572,17 @@ lifecycle notifications that hold a payload (new order, payment received, delive
 - **Anything at all going wrong sends the text instead.** A picture Telegram will not take is
   worse than plain text; silence is worse than both.
 
+**Every lifecycle notification names the payment method** (2026-10-26) — `⚡ Lightning`
+or `⛓ On-chain`, from `notifier.js` `methodLabel`. On-chain is said out loud rather than
+left blank: before this, the label appeared only on a new Lightning order, so an absent one
+meant both "on-chain" and "this message does not say". The method is what tells the operator
+whether an order is waiting on a confirmation (~10 minutes) or should already be on chain
+(seconds). `NULL` is on-chain — every row written before Lightning, and every on-chain order
+since — so the label must not be built from a truthiness test, and `methodLabel` compares
+against the literal `'lightning'` rather than `lightning.LIGHTNING` because `lightning.js`
+requires `notifier.js` and the import back would be a cycle on a money path. Each call site
+passes the row's own column; `operator_view.js` reads the source and fails if one stops.
+
 **The multipart body is built by hand.** The container runs Node 18, where `File` is not a
 global and `require('node:buffer').File` prints an ExperimentalWarning — and axios only emits
 `filename="…"` when a part carries a `.name`, which Telegram needs or it reads the part as a
@@ -563,6 +609,34 @@ modal inside the same `try` as an awaited BlockCypher lookup, whose catch replac
 with one red line: a provider timeout took the customer's picture, their payment figures and
 their refund address with it. The modal is now painted first and the lookup fills its own slot,
 guarded by `histSlot.isConnected` so a late answer cannot land under a different order.
+
+### A customer message stops being a warning once it is answered — 2026-10-28
+
+`alerts.js` raised a `customer_message` alert from `userFeedback IS NOT NULL` alone, so
+every message a customer had ever left sat in the warnings panel forever. Four of them,
+all from one person on 2026-08-06, were still there in late October — long after the
+orders had been refunded and the customer had been emailed. A panel whose job is showing
+money that needs attention cannot also be an inbox nobody can empty.
+
+`userFeedbackAckAt` is the fix: the alert query is now
+`userFeedback IS NOT NULL AND userFeedbackAckAt IS NULL`, and the panel has a **Mark as
+answered** button on those alerts (`POST /api/admin/requests/:requestId/feedback/ack`).
+
+What it does *not* do matters as much:
+
+- **The message is never cleared.** `userFeedback` and `userFeedbackAt` stay on the row;
+  only a timestamp is added. The text is still in the request's details and still goes
+  through redaction at 180 days like any other customer content.
+- **It records a human, not a dismissal.** The endpoint writes a `feedback_answered`
+  event, so the durable history says the operator dealt with the customer rather than
+  that a warning was switched off.
+- **It touches nothing to do with money.** One `UPDATE` of one timestamp column.
+  Conditional on `userFeedbackAckAt IS NULL`, so a double click keeps the first time, and
+  acknowledging an already-acknowledged message is a 200, not an error.
+
+This is the only alert kind that can be dismissed. Everything else in the panel is
+computed from the state of the order — a stranded payment stops being a warning by being
+refunded or published, never by being clicked.
 
 ## The treasury
 
@@ -1130,6 +1204,22 @@ on-chain order can have used (`loadRequestIndex` → `changeIndices`), and the t
 finished complete in 29 s with nothing stale. The receive branch is most of it and is
 walked on purpose — a late payment can land on any index ever issued.
 
+**The scan now runs on a timer — 2026-10-28.** Both caches expire after
+`WALLET_CACHE_TTL_MS` (10 minutes) and the overview cache lives in memory, so it dies with
+the process: before this, the first visit after any quiet spell — and every first visit
+after a restart or deploy — paid for the whole ~160-lookup pass and waited about 29 s for
+it. `server.js` `warmWallet` re-reads the wallet every `WALLET_WARM_INTERVAL_MS` (6 h,
+four times a day), starting `WALLET_WARM_DELAY_MS` (2 min) after boot rather than at boot,
+for the same reason the confirmation watch does not run at startup: reconciliation is
+already talking to providers while the service comes up.
+
+Three properties keep it harmless: it calls the same read-only `scanWallet` the panel
+calls, so it can never spend; it passes `refresh: true`, because a warm pass that honoured
+the cache would return the cached answer and refresh nothing; and an overlapping pass is
+skipped, not queued, so a scan that outlives its budget cannot double the provider load.
+It inherits the Esplora-only rule from the balance lookups — if that ever changes, this
+job becomes four BlockCypher bursts a day on top of everything else.
+
 **That demotion is opt-in, and broadcasts must never use it** — see the note in
 `tryProviders` about who gets to declare a transaction invalid. A wallet scan tripping a
 rate limit must not be able to reshuffle that.
@@ -1372,14 +1462,19 @@ There is no test runner in the repo. Verification lives outside it, in
   every refusal is an identical null so it is not an oracle; both queries are built from the
   same `WALL_WHERE_SQL`; and the **shipped** `wallImage` from `frontend/js/app.js` builds the
   right URL. Uses `fixtures/sample_200x200.webp`.
-- `operator_view.js` — 105. What the operator and the customer can actually see: the
+- `operator_view.js` — 123. What the operator and the customer can actually see: the
   hand-rolled multipart body byte for byte, every refusal `sendPhoto` makes before spending a
   rate-limit slot, one Telegram call per notification, the text fallback, the admin panel's
   allowlist checked against the wall's, the thumbnail being appended rather than interpolated,
   the details modal painting before the block explorer is asked, and the fee surcharge shown
   matching the one `queue.js` charges across all six address types, and the admin token being
   remembered in sessionStorage, restored on reload, and thrown away on a 401 from the admin API
-  but not from anywhere else. `axios.post` is stubbed before `notifier.js` is required.
+  but not from anywhere else. Since 2026-10-26 it also checks that every lifecycle
+  notification names the payment method, that NULL reads as on-chain rather than as a blank,
+  and — by reading the shipped source — that all seven call sites pass it, which the
+  hand-built notifier calls above cannot see; plus that the composer never trims text
+  against its own fallback limit before `/api/config/limits` answers. `axios.post` is
+  stubbed before `notifier.js` is required.
 - `lightning.js` — 189. Lightning end to end, against the real routers and a FAKE phoenixd
   running as an actual HTTP server (so auth, form encoding and the webhook HMAC are real):
   the price covers what the treasury spends and the page shows the same price; no invoice

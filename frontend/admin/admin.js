@@ -313,6 +313,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // moderate, and the server refuses the flip anyway.
             const onWall = !!req.isPublic && req.status === 'op_return_broadcasted';
             const hidden = !!req.hiddenByAdmin;
+            // The operator's own orders and his family's: real orders, not revenue.
+            const mine = !!req.operatorOwn;
 
             return `
             <tr${req.userFeedback ? ' class="has-note"' : ''}>
@@ -323,6 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span class="status status-${escapeHtml(req.status)}">${escapeHtml(req.status.replace(/_/g, ' '))}</span>
                     ${underpaid ? `<span class="underpaid-flag" title="Received ${escapeHtml(req.paymentReceivedSatoshis)} of ${escapeHtml(req.requiredAmountSatoshis)} sats">UNDERPAID</span>` : ''}
                     ${req.paymentMethod === 'lightning' ? '<span class="wall-flag" title="Paid over Lightning — published from the treasury">⚡ LN</span>' : ''}
+                    ${mine ? '<span class="wall-flag" title="Yours or a relative\'s — not customer revenue">MINE</span>' : ''}
                     ${onWall ? `<span class="wall-flag${hidden ? ' hidden' : ''}" title="${hidden ? 'Hidden from the public wall' : (req.publicSource === 'operator' ? 'On the public wall — put there by you, not opted into by the customer' : 'On the public wall — the customer opted in')}">${hidden ? 'HIDDEN' : (req.publicSource === 'operator' ? 'ON WALL*' : 'ON WALL')}</span>` : ''}
                 </td>
                 <td>${note}</td>
@@ -333,6 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     ${canRefund ? `<button class="button-refund" data-id="${escapeHtml(req.id)}" style="background-color: #f0ad4e; margin-left: 5px;">Refund</button>` : ''}
                     ${req.paymentMethod === 'lightning' && req.pendingTxId && !settled && !inFlight ? `<button class="button-resolve" data-id="${escapeHtml(req.id)}" style="background-color: #c9302c; margin-left: 5px;" title="A signed treasury transaction may or may not be on chain">Resolve tx</button>` : ''}
                     ${onWall ? `<button class="button-wall" data-id="${escapeHtml(req.id)}" data-hidden="${hidden ? '1' : '0'}" style="background-color: #6f42c1; margin-left: 5px;">${hidden ? 'Show on wall' : 'Hide from wall'}</button>` : ''}
+                    <button class="button-own" data-id="${escapeHtml(req.id)}" data-own="${mine ? '1' : '0'}" style="background-color: #777; margin-left: 5px;" title="Bookkeeping only — moves no money">${mine ? 'Not mine' : 'Mark as mine'}</button>
                     <button class="button-delete" data-id="${escapeHtml(req.id)}" style="background-color: #d9534f; margin-left: 5px;">Delete</button>
                 </td>
             </tr>
@@ -556,6 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="alert-meta">
                         ${a.since ? `since ${escapeHtml(new Date(a.since).toLocaleString())}` : ''}
                         ${a.address ? ` &middot; <a href="https://mempool.space/address/${encodeURIComponent(a.address)}" target="_blank">view address</a>` : ''}
+                        ${a.kind === 'customer_message' ? ` &middot; <button class="btn-tiny alert-ack-btn" data-ack-id="${escapeHtml(String(a.requestId))}">Mark as answered</button>` : ''}
                     </div>
                 </div>
             `).join('');
@@ -708,6 +713,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // A customer's message stays on the row forever; this only says the operator dealt
+    // with it, so it stops being a warning. Nothing here touches money.
+    alertsBody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.alert-ack-btn');
+        if (!btn) return;
+        const requestId = btn.dataset.ackId;
+        btn.disabled = true;
+        btn.textContent = 'Marking...';
+        try {
+            const res = await fetch(`${API_BASE_URL}/requests/${encodeURIComponent(requestId)}/feedback/ack`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${adminPassword}` },
+            });
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+            fetchAlerts();
+        } catch (err) {
+            alert(`Could not mark it as answered: ${err.message}`);
+            btn.disabled = false;
+            btn.textContent = 'Mark as answered';
+        }
+    });
+
     /** A percentage, or an em dash when the denominator is zero — never "0%", which reads
      *  as a measured result rather than as nothing to measure. */
     function rate(part, whole) {
@@ -785,6 +813,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const refundButton = event.target.closest('.button-refund');
         const deleteButton = event.target.closest('.button-delete');
         const wallButton = event.target.closest('.button-wall');
+        const ownButton = event.target.closest('.button-own');
+
+        if (ownButton) {
+            const requestId = ownButton.dataset.id;
+            const own = ownButton.dataset.own !== '1';
+            ownButton.disabled = true;
+            ownButton.textContent = 'Saving...';
+            try {
+                const response = await fetch(`${API_BASE_URL}/requests/${encodeURIComponent(requestId)}/own`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${adminPassword}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ own }),
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || 'Could not save.');
+                fetchRequests();
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+                ownButton.disabled = false;
+                ownButton.textContent = own ? 'Mark as mine' : 'Not mine';
+            }
+        }
 
         if (wallButton) {
             const requestId = wallButton.dataset.id;

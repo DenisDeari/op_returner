@@ -35,6 +35,9 @@ const KINDS = Object.freeze({
     REFUNDED: 'refunded',
     REFUND_FAILED: 'refund_failed',
     FEEDBACK: 'feedback',
+    // The operator answered that message, or judged it needed no answer. Recorded so the
+    // row says a human dealt with the customer, not merely that a warning was cleared.
+    FEEDBACK_ANSWERED: 'feedback_answered',
     CANCELLED: 'cancelled',
     ARCHIVED: 'archived',
     UNEXPECTED_PAYMENT: 'unexpected_payment',

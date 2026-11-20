@@ -52,6 +52,13 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // Customer message left on a failed request, shown in the admin panel.
     'ADD COLUMN userFeedback TEXT',
     'ADD COLUMN userFeedbackAt TEXT',
+    // When the operator dealt with that message — answered the customer, or decided it
+    // needed no answer. The alert is raised from userFeedback alone, so before this
+    // existed every message a customer ever left stayed in the warnings panel forever,
+    // and a panel whose job is showing what needs attention filled with what does not.
+    // The message itself is never cleared: this records that it was handled, and the
+    // durable history keeps a FEEDBACK_ANSWERED event next to it.
+    'ADD COLUMN userFeedbackAckAt TEXT',
     // Retention. Rows are archived rather than deleted, so the record of what a customer
     // asked for — and which address it was quoted at — survives forever. `status` is
     // deliberately NOT overwritten: archivedAt marks the row dead, status still says how
@@ -160,6 +167,11 @@ const REQUEST_COLUMN_MIGRATIONS = [
     // message is published twice, and the treasury pays twice.
     'ADD COLUMN pendingTxId TEXT',
     'ADD COLUMN pendingTxHex TEXT',
+    // The operator's own messages, and his family's. Technically ordinary orders — they
+    // were quoted, paid and published like any other — but they are not revenue, and
+    // counting them as such flatters every figure the service reports about itself.
+    // Set by hand from the admin panel; nothing infers it, because nothing can.
+    'ADD COLUMN operatorOwn INTEGER DEFAULT 0',
 ];
 
 // The only index on `requests`.

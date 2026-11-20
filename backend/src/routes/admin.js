@@ -401,6 +401,83 @@ function createAdminRouter(db, rootNode, config) {
         }
     });
 
+    // Mark a customer's message as dealt with: it leaves the warnings panel, the text
+    // and the FEEDBACK_ANSWERED event stay on the row. Nothing about the order's money
+    // changes here — this endpoint touches one timestamp and nothing else.
+    router.post('/requests/:requestId/feedback/ack', protect, async (req, res) => {
+        const { requestId } = req.params;
+
+        try {
+            const row = await dbGet(
+                db,
+                'SELECT id, userFeedback, userFeedbackAckAt FROM requests WHERE id = ?',
+                [requestId]
+            );
+            if (!row) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+            if (!row.userFeedback) {
+                return res.status(409).json({ error: 'This customer never left a message.' });
+            }
+            if (row.userFeedbackAckAt) {
+                // Already done is success, not an error: two clicks on a slow panel, or a
+                // retry, must not turn into a failure the operator has to interpret.
+                return res.status(200).json({ success: true, requestId, acknowledgedAt: row.userFeedbackAckAt });
+            }
+
+            const acknowledgedAt = new Date().toISOString();
+            // Conditional UPDATE, per the house pattern: the first click wins and a second
+            // one changes nothing, so the recorded time is when it was actually handled.
+            const ack = await dbRun(
+                db,
+                'UPDATE requests SET userFeedbackAckAt = ? WHERE id = ? AND userFeedbackAckAt IS NULL',
+                [acknowledgedAt, requestId]
+            );
+            if (ack.changes === 0) {
+                const now = await dbGet(db, 'SELECT userFeedbackAckAt FROM requests WHERE id = ?', [requestId]);
+                return res.status(200).json({ success: true, requestId, acknowledgedAt: now && now.userFeedbackAckAt });
+            }
+
+            requestEvents.record(
+                db, requestId, requestEvents.KINDS.FEEDBACK_ANSWERED,
+                'customer message marked as dealt with by the operator'
+            );
+            console.log(`[Admin] Customer message on ${requestId} marked as answered.`);
+
+            res.status(200).json({ success: true, requestId, acknowledgedAt });
+        } catch (error) {
+            console.error(`Failed to acknowledge feedback for ${requestId}:`, error.message);
+            res.status(500).json({ error: 'Failed to update the message.' });
+        }
+    });
+
+    // Mark an order as the operator's own (or a relative's), so it can be left out of
+    // anything that claims to measure the business. Bookkeeping only: it moves no money,
+    // changes no status, and is reversible.
+    router.post('/requests/:requestId/own', protect, async (req, res) => {
+        const { requestId } = req.params;
+        const { own } = req.body || {};
+
+        try {
+            if (typeof own !== 'boolean') {
+                return res.status(400).json({ error: 'own must be true or false.' });
+            }
+
+            const row = await dbGet(db, 'SELECT id FROM requests WHERE id = ?', [requestId]);
+            if (!row) {
+                return res.status(404).json({ error: 'Request not found.' });
+            }
+
+            await dbRun(db, 'UPDATE requests SET operatorOwn = ? WHERE id = ?', [own ? 1 : 0, requestId]);
+            console.log(`[Admin] Request ${requestId} marked as ${own ? "the operator's own" : 'a customer order'}.`);
+
+            res.status(200).json({ success: true, requestId, operatorOwn: own });
+        } catch (error) {
+            console.error(`Failed to set operatorOwn for ${requestId}:`, error.message);
+            res.status(500).json({ error: 'Failed to update the order.' });
+        }
+    });
+
     router.post('/refund/:requestId', protect, async (req, res) => {
         const { requestId } = req.params;
         try {
@@ -516,7 +593,7 @@ function createAdminRouter(db, rootNode, config) {
                     treasury.noteBroadcast(row.pendingTxHex, treasury.getTreasuryAddress(rootNode, config.NETWORK), config.NETWORK);
                 }
                 requestEvents.record(db, requestId, requestEvents.KINDS.PUBLISHED, `operator confirmed ${row.pendingTxId} is on chain${contradicts ? ' (forced)' : ''}`);
-                notifier.notifyDelivered({ requestId, message: row.message, payloadKind: row.payloadKind, opReturnTxId: row.pendingTxId }, config);
+                notifier.notifyDelivered({ requestId, message: row.message, payloadKind: row.payloadKind, opReturnTxId: row.pendingTxId, paymentMethod: row.paymentMethod }, config);
             } else {
                 const write = await dbRun(
                     db,

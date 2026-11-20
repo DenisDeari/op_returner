@@ -202,6 +202,19 @@ const WALLET_SCAN_BUDGET_MS = 25 * 1000;
 // operator pressed the button and is watching a spinner; the page-load path is the one
 // that must stay quick, and it is served from the overview cache anyway.
 const WALLET_REFRESH_BUDGET_MS = 60 * 1000;
+// How often the service re-reads the wallet on its own, so the panel is served from a
+// warm cache instead of making whoever opens it wait out a scan. The caches expire after
+// WALLET_CACHE_TTL_MS, which is ten minutes, so without this the first visit of the day
+// always paid for ~160 Esplora lookups — about 29 s — and so did the first visit after
+// every restart, because the overview cache lives in memory.
+//
+// Four times a day is cheap for mempool.space and deliberately far below anything a rate
+// limit would notice. It must stay on the Esplora path: balance lookups never go to
+// BlockCypher, whose per-address billing once spent the allowance the webhooks need.
+const WALLET_WARM_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Not at boot. Startup already runs reconciliation, which talks to providers, and a
+// deploy should not fire a second burst at them while the service is still coming up.
+const WALLET_WARM_DELAY_MS = 2 * 60 * 1000;
 
 // Telegram notifications. Silently inactive unless both the token and chat id are set,
 // so the service behaves exactly as before when they are absent.
@@ -295,6 +308,8 @@ module.exports = {
     WALLET_SCAN_CONCURRENCY,
     WALLET_SCAN_BUDGET_MS,
     WALLET_REFRESH_BUDGET_MS,
+    WALLET_WARM_INTERVAL_MS,
+    WALLET_WARM_DELAY_MS,
     // Telegram notifications
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,

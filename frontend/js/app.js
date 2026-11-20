@@ -4,7 +4,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let SERVICE_FEE = 3000;     // config.js SERVICE_FEE_SATS, refreshed from /api/config/limits
     const RING_CIRC = 94.25;    // 2 * pi * r, r = 15
-    let MAX_BYTES = 1000;       // max_payload_size — text
+    let MAX_BYTES = 1000;       // max_payload_size — text, until the server says otherwise
+    // Whether that figure is the SERVER'S or still the fallback above. Text is trimmed to
+    // fit the limit as it is typed, so trimming against a guess silently eats a customer's
+    // words — and the guess is 20x too small while the live limit is 20,000. The window is
+    // one fetch wide and a paste lands in a single event, so it is reachable. Until the
+    // real limit is known, nothing is cut: an oversize payload is refused at intake with a
+    // message that says so, which is recoverable in a way a silent truncation is not.
+    let LIMITS_LOADED = false;
     let MAX_IMAGE_BYTES = 0;    // max_image_payload_size — 0 until the server says otherwise
     // config.js MIN_FEE_RATE, refreshed from /api/config/limits. The hardcoded fallback is
     // mandatory: recalc() runs once at init, before that fetch resolves.
@@ -288,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .then((r) => r.json())
         .then((d) => {
             if (d.maxPayloadSize) MAX_BYTES = d.maxPayloadSize;
+            LIMITS_LOADED = true;
             if (Number.isFinite(d.serviceFeeSats)) SERVICE_FEE = d.serviceFeeSats;
             MAX_IMAGE_BYTES = Number.isFinite(d.maxImagePayloadSize) ? d.maxImagePayloadSize : 0;
             // The server has always sent this and the page has always ignored it, keeping a
@@ -837,7 +845,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             bytes = bytesOf(msg.value);
             limit = MAX_BYTES;
-            if (bytes > limit) {
+            if (LIMITS_LOADED && bytes > limit) {
                 let cut = msg.value;
                 while (bytesOf(cut) > limit) cut = cut.slice(0, -1);
                 msg.value = cut;

@@ -154,10 +154,12 @@ async function computeAlerts(db, config = {}) {
     }
 
     // --- Customers who wrote to you --------------------------------------
+    // Only the ones still waiting on the operator. A dismissed message keeps its text
+    // and its FEEDBACK_ANSWERED event; it just stops being a warning.
     const feedback = await dbAll(
         db,
         `SELECT id, userFeedback, userFeedbackAt FROM requests
-         WHERE userFeedback IS NOT NULL
+         WHERE userFeedback IS NOT NULL AND userFeedbackAckAt IS NULL
          ORDER BY userFeedbackAt DESC LIMIT 20`
     );
     for (const r of feedback) {

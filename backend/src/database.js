@@ -124,11 +124,13 @@ function initializeDatabase(onReady) {
             //
             // Bitcoin Core v30 relaxed the datacarrier limit from 83 bytes to 100,000, so
             // consensus and default Core policy are not the constraint here. Our provider
-            // chain is: the largest OP_RETURN this service has ever actually broadcast is
-            // 64 bytes, every published message predates the relaxation, and BlockCypher
-            // is first in the broadcast order and has already shown it applies stricter
-            // rules than the Esplora hosts (2026-08-06, dust). Whether it relays a
-            // multi-kilobyte OP_RETURN is untested.
+            // chain is: the largest OP_RETURN this service has actually broadcast is
+            // 19,820 bytes (2026-08-09, mined in block 961,740 on the first attempt), and
+            // BlockCypher is first in the broadcast order and has shown it applies
+            // stricter rules than the Esplora hosts (2026-08-06, dust). Which host took
+            // the large one is not recorded, so BlockCypher's appetite for a multi-
+            // kilobyte OP_RETURN is still unknown — see CLAUDE.md, "A multi-kilobyte
+            // OP_RETURN does work". Untested is anything ABOVE 20,000 bytes.
             //
             // So this is the knob to raise once a real broadcast has been observed at the
             // size you want, and not before — taking money for a payload no provider will

@@ -685,6 +685,11 @@ function createApiRouter(db, rootNode, config, requestQueue) {
                 payloadKind: payloadCheck.kind,
                 requiredAmountSatoshis: result.requiredAmountSatoshis,
                 targetAddress,
+                // Spelled out rather than omitted, even though NULL is exactly what
+                // queue.js wrote and what notifier.js reads as on-chain: every lifecycle
+                // notification names the method now, and operator_view.js checks each call
+                // site passes it. An omission here would be indistinguishable from the bug.
+                paymentMethod: null,
             }, config);
 
             res.status(201).json({

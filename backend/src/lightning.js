@@ -604,6 +604,7 @@ async function recordPayment(db, row, payment, config) {
     } else {
         notifier.notifyPaymentReceived({
             requestId: row.id, amount: paidSats, message: row.message, payloadKind: row.payloadKind,
+            paymentMethod: row.paymentMethod,
         }, config);
     }
     return true;

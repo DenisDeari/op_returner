@@ -10,6 +10,7 @@ const requestQueue = require('./src/queue');
 const { cleanupOldRequests } = require('./src/cleanup');
 const { runReconciliation } = require('./src/reconcile');
 const { checkPendingConfirmations } = require('./src/confirm_watch');
+const walletScan = require('./src/wallet_scan');
 const eventLog = require('./src/event_log');
 const wall = require('./src/wall');
 const wallHtml = require('./src/wall_html');
@@ -348,4 +349,40 @@ function startScheduledJobs() {
             console.warn(`[ConfirmWatch] Pass failed: ${e.message}`));
     }, CONFIRM_WATCH_INTERVAL_MS);
     console.log(`[Server] Confirmation watch scheduled to run every ${CONFIRM_WATCH_INTERVAL_MS / (1000 * 60)} minutes.`);
+
+    // Keeps the wallet caches warm. Read-only, Esplora-only, and it moves no money: the
+    // same scan the panel runs, done on a timer so the operator never waits for one.
+    // Both caches expire in ten minutes and the overview one does not survive a restart,
+    // so before this the first visit after any gap paid ~29 s of block-explorer lookups.
+    //
+    // refresh: true on purpose. A warm pass that honoured the cache would return the
+    // cached answer and refresh nothing, which is the one thing this job must not do.
+    const WALLET_WARM_INTERVAL_MS = config.WALLET_WARM_INTERVAL_MS;
+    let walletWarmInFlight = false;
+    const warmWallet = async () => {
+        // A scan can outlive its budget on a bad day; overlapping passes would double the
+        // provider load for no benefit, so a late one is skipped rather than queued.
+        if (walletWarmInFlight) {
+            console.warn('[WalletWarm] Previous pass still running; skipping this one.');
+            return;
+        }
+        walletWarmInFlight = true;
+        const startedAt = Date.now();
+        try {
+            const overview = await walletScan.scanWallet(db, rootNode, config, { refresh: true });
+            const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+            // "incomplete" means the budget ran out and some addresses kept their old
+            // figures — worth saying, because the panel will show them as stale.
+            console.log(`[WalletWarm] Wallet re-read in ${seconds}s${overview && overview.incomplete ? ' (incomplete: ran out of time)' : ''}.`);
+        } catch (e) {
+            console.warn(`[WalletWarm] Pass failed: ${e.message}`);
+        } finally {
+            walletWarmInFlight = false;
+        }
+    };
+    setTimeout(() => {
+        warmWallet();
+        setInterval(warmWallet, WALLET_WARM_INTERVAL_MS);
+    }, config.WALLET_WARM_DELAY_MS);
+    console.log(`[Server] Wallet warm scan scheduled every ${WALLET_WARM_INTERVAL_MS / (1000 * 60 * 60)} hours, first one in ${config.WALLET_WARM_DELAY_MS / (1000 * 60)} minutes.`);
 }
