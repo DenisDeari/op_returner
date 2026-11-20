@@ -64,6 +64,13 @@ h2{font:400 clamp(26px,4vw,34px)/1.2 var(--serif);margin:0 0 32px}
 .front .paint{position:absolute;left:9.46%;top:6.67%;width:81.08%;height:80.81%}
 .front .paint svg{width:100%;height:100%;display:block}
 .front .cap{position:absolute;left:0;right:0;bottom:4.2%;text-align:center;font:italic 2.4cqw var(--serif);color:#5E5B52}
+.front .fmsg{position:absolute;left:12.16%;width:75.68%;top:52.86%;height:16.67%;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.front .fmsg span{font:2.5cqw/1.4 var(--serif);color:#1F2A24;text-align:center;white-space:pre-wrap;overflow-wrap:break-word;max-height:100%}
+.front .fmsg.long span{font-size:1.85cqw}
+.front .fqr{position:absolute;left:39.86%;top:70.48%;width:20.27cqw}
+.back .how{position:absolute;top:36%;left:12%;right:12%;text-align:center;font:2.9cqw/1.9 var(--serif);color:#1F2A24}
+.back .how b{display:block;font:600 2.2cqw var(--sans);letter-spacing:.24em;text-transform:uppercase;color:#6B6A62;margin-bottom:3cqw}
+.back .how span{display:block}
 .back .orn{position:absolute;top:3.8%;left:50%;width:12cqw;transform:translateX(-50%)}
 .back .msg{position:absolute;top:20%;left:10%;right:10%;height:30%;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .back .msg span{font:2.9cqw/1.55 var(--serif);text-align:center;white-space:pre-wrap;overflow-wrap:break-word;max-height:100%}
@@ -147,32 +154,31 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
 <!-- placeholder paintings -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16213A"/><stop offset=".55" stop-color="#3E4D6B"/><stop offset="1" stop-color="#8A97AE"/></linearGradient>
-    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6D7F96"/><stop offset=".5" stop-color="#E7B9A0"/><stop offset=".75" stop-color="#F3DDC4"/></linearGradient>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16213A"/><stop offset=".42" stop-color="#3E4D6B"/><stop offset=".62" stop-color="#8A97AE"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6D7F96"/><stop offset=".34" stop-color="#E7B9A0"/><stop offset=".5" stop-color="#F3DDC4"/></linearGradient>
     <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#EFE3CC"/><stop offset="1" stop-color="#E2C9A0"/></linearGradient>
     <linearGradient id="silver" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E4E6E8"/><stop offset=".45" stop-color="#AEB3B8"/><stop offset=".55" stop-color="#C9CDD1"/><stop offset="1" stop-color="#9097A0"/></linearGradient>
     <symbol id="m1" viewBox="0 0 120 170" preserveAspectRatio="none">
       <rect width="120" height="170" fill="url(#g1)"/>
-      <g fill="#F1EBDD"><circle cx="89" cy="33" r="8.5"/><circle cx="20" cy="16" r=".55"/><circle cx="38" cy="8" r=".45"/><circle cx="56" cy="24" r=".5"/><circle cx="108" cy="12" r=".45"/><circle cx="12" cy="42" r=".45"/><circle cx="44" cy="46" r=".4"/></g>
-      <path d="M0 114 C20 98 38 104 56 96 C76 88 94 102 120 92 L120 170 L0 170Z" fill="#7F8DA4"/>
-      <path d="M0 132 C26 118 52 126 74 120 C92 115 106 122 120 118 L120 170 L0 170Z" fill="#E7EBF0"/>
-      <g fill="#1E2B26"><path d="M16 132 l5 -20 l5 20z"/><path d="M24 130 l4 -15 l4 15z"/><path d="M96 124 l6 -24 l6 24z"/><path d="M107 123 l4 -14 l4 14z"/></g>
-      <rect x="50" y="114" width="13" height="10" fill="#2A2724"/><path d="M48 115 l8.5 -7 l8.5 7z" fill="#E7EBF0"/><rect x="54" y="117" width="3.4" height="3.4" fill="#E9B85C"/>
+      <g fill="#F1EBDD"><circle cx="89" cy="26" r="8"/><circle cx="20" cy="14" r=".55"/><circle cx="38" cy="8" r=".45"/><circle cx="56" cy="22" r=".5"/><circle cx="108" cy="12" r=".45"/><circle cx="12" cy="38" r=".45"/><circle cx="44" cy="42" r=".4"/></g>
+      <path d="M0 80 C20 66 38 72 56 64 C76 56 94 70 120 60 L120 170 L0 170Z" fill="#7F8DA4"/>
+      <path d="M0 94 C26 82 52 90 74 84 C92 79 106 86 120 82 L120 170 L0 170Z" fill="#EEF1F5"/>
+      <g fill="#1E2B26"><path d="M14 93 l5 -20 l5 20z"/><path d="M22 91 l4 -15 l4 15z"/><path d="M96 87 l6 -24 l6 24z"/><path d="M107 86 l4 -14 l4 14z"/></g>
+      <rect x="50" y="77" width="13" height="10" fill="#2A2724"/><path d="M48 78 l8.5 -7 l8.5 7z" fill="#EEF1F5"/><rect x="54" y="80" width="3.4" height="3.4" fill="#E9B85C"/>
     </symbol>
     <symbol id="m2" viewBox="0 0 120 170" preserveAspectRatio="none">
       <rect width="120" height="170" fill="url(#g2)"/>
-      <circle cx="60" cy="96" r="13" fill="#FBEBD2"/>
-      <path d="M0 108 C30 100 50 106 80 101 C100 98 110 102 120 100 L120 170 L0 170Z" fill="#B9A9A6"/>
-      <g fill="#3C4A4A"><path d="M6 124 l7 -34 l7 34z"/><path d="M20 126 l6 -27 l6 27z"/><path d="M88 124 l8 -38 l8 38z"/><path d="M102 126 l6 -26 l6 26z"/><path d="M36 122 l4 -16 l4 16z"/><path d="M76 122 l4 -17 l4 17z"/></g>
-      <path d="M0 124 C30 116 60 126 90 120 C104 117 112 120 120 119 L120 170 L0 170Z" fill="#F4EFEA"/>
-      <path d="M52 170 C56 150 62 138 60 124" fill="none" stroke="#D9CFC8" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="60" cy="66" r="12" fill="#FBEBD2"/>
+      <path d="M0 76 C30 68 50 74 80 69 C100 66 110 70 120 68 L120 170 L0 170Z" fill="#B9A9A6"/>
+      <g fill="#3C4A4A"><path d="M6 92 l7 -34 l7 34z"/><path d="M20 94 l6 -27 l6 27z"/><path d="M88 92 l8 -38 l8 38z"/><path d="M102 94 l6 -26 l6 26z"/><path d="M36 90 l4 -16 l4 16z"/><path d="M76 90 l4 -17 l4 17z"/></g>
+      <path d="M0 92 C30 84 60 94 90 88 C104 85 112 88 120 87 L120 170 L0 170Z" fill="#F6F1EC"/>
     </symbol>
     <symbol id="m3" viewBox="0 0 120 170" preserveAspectRatio="none">
       <rect width="120" height="170" fill="url(#g3)"/>
-      <circle cx="78" cy="58" r="22" fill="#D9862F"/>
-      <path d="M0 100 C24 84 44 96 66 88 C88 80 104 92 120 84 L120 170 L0 170Z" fill="#B55B3A"/>
-      <path d="M0 122 C30 106 56 120 82 110 C100 103 112 110 120 106 L120 170 L0 170Z" fill="#7C3E33"/>
-      <path d="M0 144 C28 132 60 142 90 134 C104 130 114 134 120 132 L120 170 L0 170Z" fill="#3F2A2C"/>
+      <circle cx="78" cy="36" r="17" fill="#D9862F"/>
+      <path d="M0 66 C24 50 44 62 66 54 C88 46 104 58 120 50 L120 170 L0 170Z" fill="#C9744A"/>
+      <path d="M0 80 C30 66 56 78 82 70 C100 64 112 70 120 67 L120 170 L0 170Z" fill="#9C4F3C"/>
+      <path d="M0 94 C28 84 60 92 90 86 C104 83 114 86 120 85 L120 170 L0 170Z" fill="#F3E7D3"/>
     </symbol>
     <symbol id="scr" viewBox="0 0 38 38">
       <rect width="38" height="38" rx="2" fill="#fff"/>
@@ -204,7 +210,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       </div>
       <div class="hero-art" aria-hidden="true">
         <div class="env"><div class="flap"></div><div class="seal">₿</div></div>
-        <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
+        <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="fmsg"><span data-b="msg"></span></div><svg class="fqr" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="cap" data-b="cap"></div></div>
       </div>
     </div>
   </div>
@@ -278,8 +284,8 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
           <button type="button" role="tab" data-tab="env" aria-selected="false" data-i="t_env"></button>
         </div>
         <div class="stage">
-          <div class="face front" data-pane="front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
-          <div class="face back" data-pane="back" hidden><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="msg"><span data-b="msg"></span></div><div class="rule"></div><svg class="scratch" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="lab" data-i="scratch"></div><div class="url">satwire.io</div></div>
+          <div class="face front" data-pane="front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="fmsg"><span data-b="msg"></span></div><svg class="fqr" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="cap" data-b="cap"></div></div>
+          <div class="face back" data-pane="back" hidden><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="how"><b data-i="h_t"></b><span data-i="h_1"></span><span data-i="h_2"></span><span data-i="h_3"></span></div><div class="url">satwire.io</div></div>
           <div class="env" data-pane="env" hidden><div class="stamp"></div><div class="addr" data-b="addr"></div></div>
         </div>
       </div>
@@ -289,8 +295,8 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
   <section>
     <h2 data-i="arrives"></h2>
     <div class="arrive" id="arrive">
-      <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
-      <div class="face back"><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="msg"><span data-b="msg"></span></div><div class="rule"></div><svg class="scratch" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="lab" data-i="scratch"></div><div class="url">satwire.io</div></div>
+      <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="fmsg"><span data-b="msg"></span></div><svg class="fqr" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="cap" data-b="cap"></div></div>
+      <div class="face back"><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="how"><b data-i="h_t"></b><span data-i="h_1"></span><span data-i="h_2"></span><span data-i="h_3"></span></div><div class="url">satwire.io</div></div>
       <div class="env" id="arrive-env"><div class="stamp"></div><div class="addr" data-b="addr"></div></div>
     </div>
     <div class="bill">
@@ -325,7 +331,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
 (function(){
   var T={
     de:{draft:'Entwurf',eyebrow:'Weihnachten 2026',h1:'Bitcoin, als Brief verschenkt.',
-      lead:'Eine gemalte Karte, deine Worte und echtes Bitcoin zum Freirubbeln.',cta:'Karte gestalten',
+      lead:'Ein Gemälde mit deinen Worten und echtem Bitcoin zum Freirubbeln.',cta:'Karte gestalten',
       how:'So funktioniert es',s1t:'Du gestaltest',s1:'Motiv wählen, Nachricht schreiben, Betrag festlegen.',
       s2t:'Die Karte kommt an',s2:'Per Post von uns, oder du druckst sie selbst.',
       s3t:'Rubbeln, scannen, fertig',s3:'Das Bitcoin landet in der eigenen Wallet. Deine Nachricht steht dann für immer in der Blockchain.',
@@ -333,7 +339,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       bt:'Selbst drucken',b1:'Sofort als PDF',b2:'Auf A4 oder A5 drucken',b3:'Auch am 24. Dezember noch rechtzeitig',tbd:'Preis folgt',
       yourcard:'Deine Karte',f1:'1 · Motiv',f1h:'Platzhalter. Die echten Gemälde folgen.',f2:'2 · Nachricht',f3:'3 · Betrag',f4:'4 · Versand',
       as:'Karte und Umschlag per Post',bs:'Karte als PDF',p_name:'Name des Empfängers',p_street:'Straße und Hausnummer',p_zip:'PLZ',p_city:'Ort',
-      t_front:'Vorderseite',t_back:'Rückseite',t_env:'Umschlag',scratch:'FREIRUBBELN · SCANNEN',
+      t_front:'Vorderseite',t_back:'Rückseite',t_env:'Umschlag',h_t:'So löst du dein Geschenk ein',h_1:'1 · Feld auf der Vorderseite freirubbeln',h_2:'2 · QR-Code scannen',h_3:'3 · Wallet wählen, fertig',
       arrives:'Das kommt an',r_gift:'Bitcoin-Geschenk',r_cardA:'Karte und Umschlag',r_cardB:'Karte als PDF',r_fee:'Netzwerkgebühr',r_feev:'beim Bezahlen',
       pay:'Weiter zur Zahlung',payh:'Im Entwurf noch ohne Funktion.',paysel:'Bezahlen',p_btc:'Alles mit Bitcoin',p_btc_s:'Eine Zahlung, Lightning oder on-chain',p_split:'Karte per Kreditkarte',p_split_s:'Das Geschenk danach mit Bitcoin',r_ship:'Versand (Europa)',priceA:'15 € + 2,50 € Versand',priceB:'5 €',total:'Gesamt',plusship:' + Versand',bycard:' per Karte',
       faq:'Fragen',q1:'Braucht der Beschenkte Vorwissen?',a_1:'Nein. Code freirubbeln, scannen und drei Schritten folgen.',
@@ -342,7 +348,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       cap:'Winterlicht · gemalt von …',msg:'Lieber Max,\n\nfrohe Weihnachten! Ein kleines Stück Bitcoin von mir. Diese Zeilen bleiben für immer in der Blockchain.\n\nDein Bruder',
       addr:'Max Mustermann\nMusterstraße 1\n12345 Musterstadt',approx:'≈ '},
     en:{draft:'Draft',eyebrow:'Christmas 2026',h1:'Bitcoin, given as a letter.',
-      lead:'A painted card, your words, and real bitcoin under a scratch-off.',cta:'Create your card',
+      lead:'A painting that carries your words and real bitcoin under a scratch-off.',cta:'Create your card',
       how:'How it works',s1t:'You create',s1:'Pick a painting, write your message, choose the amount.',
       s2t:'The card arrives',s2:'Posted by us, or printed by you.',
       s3t:'Scratch, scan, done',s3:'The bitcoin lands in their own wallet. Your message then stays on the blockchain forever.',
@@ -350,7 +356,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       bt:'Print it yourself',b1:'Instantly, as a PDF',b2:'Print on A4 or A5',b3:'Still in time on 24 December',tbd:'Price to follow',
       yourcard:'Your card',f1:'1 · Painting',f1h:'Placeholders. The real paintings will follow.',f2:'2 · Message',f3:'3 · Amount',f4:'4 · Delivery',
       as:'Card and envelope by post',bs:'Card as a PDF',p_name:'Recipient’s name',p_street:'Street and number',p_zip:'Postcode',p_city:'City',
-      t_front:'Front',t_back:'Back',t_env:'Envelope',scratch:'SCRATCH · SCAN',
+      t_front:'Front',t_back:'Back',t_env:'Envelope',h_t:'How to redeem your gift',h_1:'1 · Scratch the field on the front',h_2:'2 · Scan the QR code',h_3:'3 · Choose a wallet, done',
       arrives:'This is what arrives',r_gift:'Bitcoin gift',r_cardA:'Card and envelope',r_cardB:'Card as a PDF',r_fee:'Network fee',r_feev:'at checkout',
       pay:'Continue to payment',payh:'Not active in this draft.',paysel:'Payment',p_btc:'All in bitcoin',p_btc_s:'One payment, Lightning or on-chain',p_split:'Card by credit card',p_split_s:'Then the gift in bitcoin',r_ship:'Postage (Europe)',priceA:'€15 + €2.50 postage',priceB:'€5',total:'Total',plusship:' + postage',bycard:' by card',
       faq:'Questions',q1:'Does the recipient need to know Bitcoin?',a_1:'No. Scratch the code, scan it and follow three steps.',
@@ -384,7 +390,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
     $$('.lang button').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-set')===S.lang)});
     $$('[data-b="motif"]').forEach(function(u){u.setAttribute('href','#m'+S.motif)});
     $$('[data-b="cap"]').forEach(function(e){e.textContent=t.cap});
-    $$('[data-b="msg"]').forEach(function(e){e.textContent=S.msg||t.msg});
+    $$('[data-b="msg"]').forEach(function(e){e.textContent=S.msg||t.msg;e.parentNode.classList.toggle('long',(S.msg||t.msg).length>170)});
     $('#msg').placeholder=t.msg; $('#cnt').textContent=S.msg.length;
     var a=[$('#a_name').value,$('#a_street').value,($('#a_zip').value+' '+$('#a_city').value).trim()].filter(Boolean).join('\n');
     $$('[data-b="addr"]').forEach(function(e){e.textContent=a||t.addr});
@@ -415,8 +421,8 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
   function on(sel,ev,fn){$$(sel).forEach(function(e){e.addEventListener(ev,fn)})}
   on('.lang button','click',function(){S.lang=this.getAttribute('data-set');render()});
   on('.motifs button','click',function(){S.motif=+this.getAttribute('data-motif');S.tab='front';render()});
-  on('#msg','input',function(){S.msg=this.value;S.tab='back';render()});
-  on('#msg','focus',function(){S.tab='back';render()});
+  on('#msg','input',function(){S.msg=this.value;S.tab='front';render()});
+  on('#msg','focus',function(){S.tab='front';render()});
   on('#chips button','click',function(){S.sats=+this.getAttribute('data-sats');$('#sats').value=S.sats;render()});
   on('#sats','input',function(){S.sats=Math.max(0,Math.floor(+this.value||0));render()});
   on('.seg button','click',function(){S.mode=this.getAttribute('data-mode');if(S.mode==='A')S.tab='env';render()});
