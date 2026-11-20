@@ -154,6 +154,16 @@ app.get(`/${AIM_PAGE}`, (req, res) => {
 });
 app.get(`/${AIM_PAGE}.html`, (req, res) => res.redirect(301, `/${AIM_PAGE}`));
 
+// Christmas gift letters. /christmas/formats is the internal artwork brief for the painter:
+// noindex in its own <meta>, not linked from anywhere, not in the sitemap. Same shape as
+// the explainer: extension-less URL, the .html spelling 301s to it.
+app.get('/christmas/formats', (req, res) => {
+    res.setHeader('Cache-Control', hygiene.CACHE_REVALIDATE);
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.sendFile(path.join(FRONTEND_DIR, 'christmas', 'formats.html'));
+});
+app.get('/christmas/formats.html', (req, res) => res.redirect(301, '/christmas/formats'));
+
 // One published message, at /m/<txid>.
 //
 // The template is read the same way the homepage's is, so an edit is live without a

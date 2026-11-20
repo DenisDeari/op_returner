@@ -1482,6 +1482,25 @@ purpose: `express.static` serves that directory and nothing else should end up i
 **`?v=N` must be bumped on both the CSS and the JS whenever either changes**, or a returning
 visitor keeps the old file for a week now that versioned URLs are cached.
 
+## The Christmas pages
+
+`/christmas` is planned as a gift product: a posted or home-printed A5 card whose scratch-off
+QR code lets the recipient claim bitcoin, with the giver's message published at claim time.
+**None of that is built yet.** Nothing under `backend/src/` knows about it.
+
+What exists, since 2026-11-20:
+
+- `frontend/christmas/formats.html` — the artwork brief for the painter. One static file,
+  German, no script, `noindex`. Deliberately bare: the card front with its dimensions, the
+  back, three lines of data. The operator asked for exactly that; do not dress it up.
+- `GET /christmas/formats` in `server.js`, the same shape as the explainer: extension-less
+  URL, the `.html` spelling 301s to it, plus an `X-Robots-Tag: noindex, nofollow` header.
+  It is not in the sitemap and nothing links to it.
+
+When the gift flow is built, a held gift is **paid but must not be published** until it is
+claimed. `reconcile.js` publishes every paid order and refunds every failed one on its own,
+so both passes need a guard for held gifts before the first one is sold.
+
 ## Testing
 
 There is no test runner in the repo. Verification lives outside it, in
@@ -1641,6 +1660,13 @@ in the `op-returner_op_returner_data` Docker volume.
 `docker restart op_returner` — `docker compose up -d` alone will not reload JS. Only
 compose-file or env changes need `up -d`. **Editing a file under `backend/src/` changes
 nothing until that restart**, so a "fixed" money path is still broken until you do it.
+
+**A deploy check must not be `curl … | grep -q` — found 2026-11-20.** `grep -q` exits on its
+first match, `curl` then fails writing the rest of a large page (exit 23), and under
+`set -o pipefail` the pipeline counts as failed. The upvotes deploy rolled itself back for
+exactly this: every suite passed, the homepage had its vote buttons, and the check said it
+did not. `/api/wall` passed the same shape of check only because it is small. Read the page
+into a string first: `grep -q … <<<"$(curl -s …)"`.
 
 **phoenixd** is its own compose service, built from `deploy/phoenixd/Dockerfile` — the
 official **JVM** release on OpenJDK 21, pinned by SHA-256 to ACINQ's signed checksums. Not
