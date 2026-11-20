@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>SatWire Christmas · Entwurf</title>
+<style>
+:root{
+  --paper:#F4EFE6; --card:#FBF8F2; --ink:#1F2A24; --muted:#6B6A62; --line:#D9D1C2; --stage:#EAE3D6;
+  --night:#13211A; --night2:#1D3327; --gold:#C8892E; --btc:#F2A33A; --seal:#8E2F2A;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+.draft{position:fixed;left:12px;bottom:12px;z-index:9;background:var(--ink);color:var(--card);font:600 11px var(--sans);letter-spacing:.14em;text-transform:uppercase;padding:6px 10px;border-radius:3px;opacity:.85}
+
+/* hero */
+.hero{color:#F3ECDD;overflow:hidden;
+  background:
+    radial-gradient(circle at 23% 31%,rgba(255,255,255,.7) 0 1px,transparent 1.6px) 13px 7px/97px 83px,
+    radial-gradient(circle at 71% 57%,rgba(255,255,255,.45) 0 .9px,transparent 1.4px) 41px 29px/151px 127px,
+    radial-gradient(circle at 37% 79%,rgba(255,255,255,.3) 0 1.5px,transparent 2.1px) 67px 53px/211px 173px,
+    linear-gradient(180deg,var(--night),var(--night2));
+  animation:snow 60s linear infinite}
+@keyframes snow{to{background-position:13px 837px,41px 1299px,67px 1783px,0 0}}
+@media (prefers-reduced-motion:reduce){.hero{animation:none}}
+header{display:flex;justify-content:space-between;align-items:center;padding:22px 0}
+.brand{font-family:var(--serif);font-size:20px;letter-spacing:.04em}
+.lang button{font:600 12px var(--sans);letter-spacing:.1em;background:none;border:1px solid rgba(243,236,221,.3);color:rgba(243,236,221,.7);padding:6px 10px;cursor:pointer}
+.lang button[aria-pressed="true"]{background:#F3ECDD;color:var(--night);border-color:#F3ECDD}
+.lang button:first-child{border-radius:3px 0 0 3px}.lang button:last-child{border-radius:0 3px 3px 0;border-left:0}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:40px;align-items:center;padding:40px 0 88px}
+.eyebrow{font:600 12px var(--sans);letter-spacing:.2em;text-transform:uppercase;color:var(--btc);margin:0 0 16px}
+h1{font:400 clamp(38px,6vw,64px)/1.06 var(--serif);margin:0 0 18px;letter-spacing:-.01em;hyphens:auto;overflow-wrap:break-word}
+.lead{font:italic 20px/1.45 var(--serif);color:rgba(243,236,221,.8);margin:0 0 30px;max-width:460px}
+.btn{display:inline-block;background:var(--btc);color:#1A1408;font:600 15px var(--sans);letter-spacing:.02em;padding:14px 26px;border-radius:4px;text-decoration:none;border:0;cursor:pointer}
+.btn:hover{background:#FFB550}
+.hero-art{position:relative;padding:14% 0 6% 12%}
+.hero-art .env{transform:rotate(4deg)}
+.hero-art .face{position:absolute;left:0;top:0;width:44%;transform:rotate(-7deg)}
+
+/* shared */
+section{padding:64px 0}
+section + section{border-top:1px solid var(--line)}
+h2{font:400 clamp(26px,4vw,34px)/1.2 var(--serif);margin:0 0 32px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}
+.steps b{display:block;font:400 40px/1 var(--serif);color:var(--gold);margin-bottom:10px}
+.steps h3{font:600 16px var(--sans);margin:0 0 4px}
+.steps p{margin:0;color:var(--muted);font-size:15px}
+.opts{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.opt{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:28px}
+.opt .k{font:600 12px var(--sans);letter-spacing:.16em;color:var(--gold)}
+.opt h3{font:400 26px var(--serif);margin:4px 0 12px}
+.opt ul{margin:0 0 18px;padding-left:18px;color:#3B4440}
+.opt .price{font:400 20px var(--serif);border-top:1px solid var(--line);padding-top:14px}
+
+/* card faces (HTML, sized by container width) */
+.face{position:relative;aspect-ratio:148/210;container-type:inline-size;background:#FBF8F2;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,.1),0 14px 34px rgba(20,30,25,.22)}
+.front .paint{position:absolute;left:9.46%;top:6.67%;width:81.08%;height:80.81%}
+.front .paint svg{width:100%;height:100%;display:block}
+.front .cap{position:absolute;left:0;right:0;bottom:4.2%;text-align:center;font:italic 2.4cqw var(--serif);color:#5E5B52}
+.back .orn{position:absolute;top:3.8%;left:50%;width:12cqw;transform:translateX(-50%)}
+.back .msg{position:absolute;top:20%;left:10%;right:10%;height:30%;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.back .msg span{font:2.9cqw/1.55 var(--serif);text-align:center;white-space:pre-wrap;overflow-wrap:break-word;max-height:100%}
+.back .rule{position:absolute;top:52.5%;left:36%;right:36%;border-top:1px solid #CFC6B4}
+.back .scratch{position:absolute;top:57.5%;left:50%;width:25.7cqw;transform:translateX(-50%)}
+.back .lab{position:absolute;top:79.2%;left:0;right:0;text-align:center;font:600 1.9cqw var(--sans);letter-spacing:.3em;color:#6B6A62}
+.back .url{position:absolute;bottom:4.2%;left:0;right:0;text-align:center;font:2.1cqw var(--sans);letter-spacing:.2em;color:#9C7A3C}
+.env{position:relative;aspect-ratio:229/162;container-type:inline-size;background:#22362B;border-radius:4px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.12),0 14px 34px rgba(20,30,25,.25)}
+.env .stamp{position:absolute;right:4.8%;top:6.5%;width:9.6%;aspect-ratio:22/26;border:1px dashed #7E9284}
+.env .addr{position:absolute;left:44%;top:54%;width:44%;min-height:27%;background:#F4EFE6;padding:3cqw 3.6cqw;font:3.1cqw/1.5 var(--serif);color:#1F2A24;white-space:pre-line;overflow:hidden}
+.env .flap{position:absolute;inset:0;background:#2B4436;clip-path:polygon(0 0,100% 0,50% 45.7%)}
+.env .seal{position:absolute;left:50%;top:45.7%;width:15.3%;aspect-ratio:1;transform:translate(-50%,-50%);border-radius:50%;background:var(--seal);box-shadow:inset 0 0 0 .55cqw var(--seal),inset 0 0 0 .8cqw #B3554C;display:grid;place-items:center;color:#F1E3D3;font:8cqw/1 var(--serif)}
+
+/* builder */
+.builder{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px;align-items:start}
+.field{padding:22px 0;border-bottom:1px solid var(--line)}
+.field:first-child{padding-top:0}
+.field > label, .field > .lbl{display:block;font:600 12px var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+.motifs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.motifs button{padding:0;border:2px solid transparent;border-radius:6px;background:none;cursor:pointer;overflow:hidden;aspect-ratio:120/170}
+.motifs button svg{width:100%;height:100%;display:block}
+.motifs button[aria-pressed="true"]{border-color:var(--gold)}
+.hint{font-size:13px;color:var(--muted);margin:8px 0 0}
+textarea,input[type=text],input[type=number]{width:100%;font:16px/1.5 var(--sans);color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:4px;padding:11px 12px}
+textarea{font-family:var(--serif);font-size:17px;min-height:132px;resize:vertical}
+textarea:focus,input:focus{outline:2px solid var(--gold);outline-offset:1px;border-color:transparent}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips button{font:600 14px var(--sans);background:var(--card);border:1px solid var(--line);color:var(--ink);padding:9px 14px;border-radius:999px;cursor:pointer}
+.chips button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.amt{display:flex;align-items:center;gap:12px;margin-top:12px}
+.amt input{max-width:170px}
+.amt span{color:var(--muted)}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.seg button{text-align:left;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px;cursor:pointer;font:15px var(--sans);color:var(--ink)}
+.seg button b{display:block;font:400 19px var(--serif)}
+.seg button small{color:var(--muted)}
+.seg button[aria-pressed="true"]{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold)}
+.addrgrid{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-top:14px}
+.addrgrid .full{grid-column:1/-1}
+.preview{position:sticky;top:20px}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button{font:600 12px var(--sans);letter-spacing:.1em;text-transform:uppercase;background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:8px 10px;cursor:pointer}
+.tabs button[aria-selected="true"]{color:var(--ink);border-color:var(--gold)}
+.stage{background:var(--stage);border-radius:8px;padding:32px;display:grid;place-items:center;min-height:480px}
+.stage > div{width:100%;max-width:300px}
+.stage > .env{max-width:400px}
+[hidden]{display:none !important}
+
+/* summary */
+.arrive{display:grid;grid-template-columns:1fr 1fr 1.55fr;gap:24px;align-items:center;background:var(--stage);border-radius:8px;padding:32px}
+.arrive.noenv{grid-template-columns:1fr 1fr;max-width:620px}
+.bill{max-width:520px;margin:32px 0 0 auto}
+.bill table{width:100%;border-collapse:collapse}
+.bill td{padding:11px 0;border-bottom:1px solid var(--line)}
+.bill td:last-child{text-align:right;font-family:var(--serif);font-size:18px}
+.bill .btn{width:100%;margin-top:20px;text-align:center;font-size:16px}
+.bill .hint{text-align:center}
+details{border-bottom:1px solid var(--line);padding:16px 0}
+summary{cursor:pointer;font:400 19px var(--serif)}
+details p{margin:10px 0 0;color:#3B4440;max-width:640px}
+footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}
+
+@media (max-width:820px){
+  .hero-grid,.builder,.opts{grid-template-columns:1fr}
+  .hero-grid{padding-bottom:56px}
+  .steps{grid-template-columns:1fr;gap:22px}
+  .preview{position:static;order:-1}
+  .stage{min-height:0;padding:20px}
+  .arrive,.arrive.noenv{grid-template-columns:1fr 1fr;padding:16px;gap:14px}
+  .arrive .env{grid-column:1/-1}
+  section{padding:44px 0}
+}
+</style>
+</head>
+<body>
+<div class="draft" data-i="draft">Entwurf</div>
+
+<!-- placeholder paintings -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16213A"/><stop offset=".55" stop-color="#3E4D6B"/><stop offset="1" stop-color="#8A97AE"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6D7F96"/><stop offset=".5" stop-color="#E7B9A0"/><stop offset=".75" stop-color="#F3DDC4"/></linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#EFE3CC"/><stop offset="1" stop-color="#E2C9A0"/></linearGradient>
+    <linearGradient id="silver" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E4E6E8"/><stop offset=".45" stop-color="#AEB3B8"/><stop offset=".55" stop-color="#C9CDD1"/><stop offset="1" stop-color="#9097A0"/></linearGradient>
+    <symbol id="m1" viewBox="0 0 120 170" preserveAspectRatio="none">
+      <rect width="120" height="170" fill="url(#g1)"/>
+      <g fill="#F1EBDD"><circle cx="89" cy="33" r="8.5"/><circle cx="20" cy="16" r=".55"/><circle cx="38" cy="8" r=".45"/><circle cx="56" cy="24" r=".5"/><circle cx="108" cy="12" r=".45"/><circle cx="12" cy="42" r=".45"/><circle cx="44" cy="46" r=".4"/></g>
+      <path d="M0 114 C20 98 38 104 56 96 C76 88 94 102 120 92 L120 170 L0 170Z" fill="#7F8DA4"/>
+      <path d="M0 132 C26 118 52 126 74 120 C92 115 106 122 120 118 L120 170 L0 170Z" fill="#E7EBF0"/>
+      <g fill="#1E2B26"><path d="M16 132 l5 -20 l5 20z"/><path d="M24 130 l4 -15 l4 15z"/><path d="M96 124 l6 -24 l6 24z"/><path d="M107 123 l4 -14 l4 14z"/></g>
+      <rect x="50" y="114" width="13" height="10" fill="#2A2724"/><path d="M48 115 l8.5 -7 l8.5 7z" fill="#E7EBF0"/><rect x="54" y="117" width="3.4" height="3.4" fill="#E9B85C"/>
+    </symbol>
+    <symbol id="m2" viewBox="0 0 120 170" preserveAspectRatio="none">
+      <rect width="120" height="170" fill="url(#g2)"/>
+      <circle cx="60" cy="96" r="13" fill="#FBEBD2"/>
+      <path d="M0 108 C30 100 50 106 80 101 C100 98 110 102 120 100 L120 170 L0 170Z" fill="#B9A9A6"/>
+      <g fill="#3C4A4A"><path d="M6 124 l7 -34 l7 34z"/><path d="M20 126 l6 -27 l6 27z"/><path d="M88 124 l8 -38 l8 38z"/><path d="M102 126 l6 -26 l6 26z"/><path d="M36 122 l4 -16 l4 16z"/><path d="M76 122 l4 -17 l4 17z"/></g>
+      <path d="M0 124 C30 116 60 126 90 120 C104 117 112 120 120 119 L120 170 L0 170Z" fill="#F4EFEA"/>
+      <path d="M52 170 C56 150 62 138 60 124" fill="none" stroke="#D9CFC8" stroke-width="5" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m3" viewBox="0 0 120 170" preserveAspectRatio="none">
+      <rect width="120" height="170" fill="url(#g3)"/>
+      <circle cx="78" cy="58" r="22" fill="#D9862F"/>
+      <path d="M0 100 C24 84 44 96 66 88 C88 80 104 92 120 84 L120 170 L0 170Z" fill="#B55B3A"/>
+      <path d="M0 122 C30 106 56 120 82 110 C100 103 112 110 120 106 L120 170 L0 170Z" fill="#7C3E33"/>
+      <path d="M0 144 C28 132 60 142 90 134 C104 130 114 134 120 132 L120 170 L0 170Z" fill="#3F2A2C"/>
+    </symbol>
+    <symbol id="scr" viewBox="0 0 38 38">
+      <rect width="38" height="38" rx="2" fill="#fff"/>
+      <path class="qrp" transform="translate(2 2)" fill="#1F2A24" d=""/>
+      <path d="M15 0 L36 0 Q38 0 38 2 L38 36 Q38 38 36 38 L2 38 Q0 38 0 36 L0 17 C4 15 6 18 9 13 C11 9 14 11 13 6 C12 3 15 2 15 0 Z" fill="url(#silver)"/>
+    </symbol>
+    <symbol id="ornm" viewBox="0 0 24 34">
+      <line x1="12" y1="0" x2="12" y2="8" stroke="#9C7A3C" stroke-width=".5"/>
+      <circle cx="12" cy="20" r="10" fill="none" stroke="#C8892E" stroke-width=".8"/>
+      <text x="12" y="24.2" text-anchor="middle" font-size="12" fill="#C8892E" font-family="Georgia,serif">₿</text>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="hero">
+  <div class="wrap">
+    <header>
+      <div class="brand">SatWire</div>
+      <div class="lang" role="group" aria-label="Sprache / Language">
+        <button type="button" data-set="de" aria-pressed="true">DE</button><button type="button" data-set="en" aria-pressed="false">EN</button>
+      </div>
+    </header>
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow" data-i="eyebrow"></p>
+        <h1 data-i="h1"></h1>
+        <p class="lead" data-i="lead"></p>
+        <a class="btn" href="#karte" data-i="cta"></a>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="env"><div class="flap"></div><div class="seal">₿</div></div>
+        <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <section>
+    <h2 data-i="how"></h2>
+    <div class="steps">
+      <div><b>1</b><h3 data-i="s1t"></h3><p data-i="s1"></p></div>
+      <div><b>2</b><h3 data-i="s2t"></h3><p data-i="s2"></p></div>
+      <div><b>3</b><h3 data-i="s3t"></h3><p data-i="s3"></p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i="ways"></h2>
+    <div class="opts">
+      <div class="opt"><span class="k">A</span><h3 data-i="at"></h3><ul><li data-i="a1"></li><li data-i="a2"></li><li data-i="a3"></li></ul><div class="price" data-i="tbd"></div></div>
+      <div class="opt"><span class="k">B</span><h3 data-i="bt"></h3><ul><li data-i="b1"></li><li data-i="b2"></li><li data-i="b3"></li></ul><div class="price" data-i="tbd"></div></div>
+    </div>
+  </section>
+
+  <section id="karte">
+    <h2 data-i="yourcard"></h2>
+    <div class="builder">
+      <div>
+        <div class="field">
+          <span class="lbl" data-i="f1"></span>
+          <div class="motifs">
+            <button type="button" data-motif="1" aria-pressed="true" aria-label="1"><svg><use href="#m1"/></svg></button>
+            <button type="button" data-motif="2" aria-pressed="false" aria-label="2"><svg><use href="#m2"/></svg></button>
+            <button type="button" data-motif="3" aria-pressed="false" aria-label="3"><svg><use href="#m3"/></svg></button>
+          </div>
+          <p class="hint" data-i="f1h"></p>
+        </div>
+        <div class="field">
+          <label for="msg" data-i="f2"></label>
+          <textarea id="msg" maxlength="280"></textarea>
+          <p class="hint"><span id="cnt">0</span> / 280</p>
+        </div>
+        <div class="field">
+          <span class="lbl" data-i="f3"></span>
+          <div class="chips" id="chips">
+            <button type="button" data-sats="25000" aria-pressed="false">25.000</button>
+            <button type="button" data-sats="50000" aria-pressed="true">50.000</button>
+            <button type="button" data-sats="100000" aria-pressed="false">100.000</button>
+            <button type="button" data-sats="250000" aria-pressed="false">250.000</button>
+          </div>
+          <div class="amt"><input id="sats" type="number" min="25000" step="1000" value="50000" aria-label="sats"><span>sats <span id="eur"></span></span></div>
+        </div>
+        <div class="field">
+          <span class="lbl" data-i="f4"></span>
+          <div class="seg">
+            <button type="button" data-mode="A" aria-pressed="true"><b data-i="at"></b><small data-i="as"></small></button>
+            <button type="button" data-mode="B" aria-pressed="false"><b data-i="bt"></b><small data-i="bs"></small></button>
+          </div>
+          <div class="addrgrid" id="addr">
+            <input class="full" type="text" id="a_name" data-ip="p_name" autocomplete="off">
+            <input class="full" type="text" id="a_street" data-ip="p_street" autocomplete="off">
+            <input type="text" id="a_zip" data-ip="p_zip" autocomplete="off">
+            <input type="text" id="a_city" data-ip="p_city" autocomplete="off">
+          </div>
+        </div>
+      </div>
+
+      <div class="preview">
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-tab="front" aria-selected="true" data-i="t_front"></button>
+          <button type="button" role="tab" data-tab="back" aria-selected="false" data-i="t_back"></button>
+          <button type="button" role="tab" data-tab="env" aria-selected="false" data-i="t_env"></button>
+        </div>
+        <div class="stage">
+          <div class="face front" data-pane="front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
+          <div class="face back" data-pane="back" hidden><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="msg"><span data-b="msg"></span></div><div class="rule"></div><svg class="scratch" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="lab" data-i="scratch"></div><div class="url">satwire.io</div></div>
+          <div class="env" data-pane="env" hidden><div class="stamp"></div><div class="addr" data-b="addr"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i="arrives"></h2>
+    <div class="arrive" id="arrive">
+      <div class="face front"><div class="paint"><svg><use data-b="motif" href="#m1"/></svg></div><div class="cap" data-b="cap"></div></div>
+      <div class="face back"><svg class="orn" viewBox="0 0 24 34"><use href="#ornm"/></svg><div class="msg"><span data-b="msg"></span></div><div class="rule"></div><svg class="scratch" viewBox="0 0 38 38"><use href="#scr"/></svg><div class="lab" data-i="scratch"></div><div class="url">satwire.io</div></div>
+      <div class="env" id="arrive-env"><div class="stamp"></div><div class="addr" data-b="addr"></div></div>
+    </div>
+    <div class="bill">
+      <table><tbody>
+        <tr><td data-i="r_gift"></td><td><span data-b="sats"></span> sats</td></tr>
+        <tr><td data-b="r_card"></td><td data-i="tbd"></td></tr>
+        <tr><td data-i="r_fee"></td><td data-i="r_feev"></td></tr>
+      </tbody></table>
+      <button class="btn" type="button" data-i="pay"></button>
+      <p class="hint" data-i="payh"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i="faq"></h2>
+    <details><summary data-i="q1"></summary><p data-i="a_1"></p></details>
+    <details><summary data-i="q2"></summary><p data-i="a_2"></p></details>
+    <details><summary data-i="q3"></summary><p data-i="a_3"></p></details>
+  </section>
+
+  <footer>SatWire · satwire.io</footer>
+</div>
+
+<script>
+(function(){
+  var T={
+    de:{draft:'Entwurf',eyebrow:'Weihnachten 2026',h1:'Bitcoin, als Brief verschenkt.',
+      lead:'Eine gemalte Karte, deine Worte und echtes Bitcoin zum Freirubbeln.',cta:'Karte gestalten',
+      how:'So funktioniert es',s1t:'Du gestaltest',s1:'Motiv wählen, Nachricht schreiben, Betrag festlegen.',
+      s2t:'Die Karte kommt an',s2:'Per Post von uns, oder du druckst sie selbst.',
+      s3t:'Rubbeln, scannen, fertig',s3:'Das Bitcoin landet in der eigenen Wallet. Deine Nachricht steht dann für immer in der Blockchain.',
+      ways:'Zwei Wege',at:'Wir verschicken',a1:'Gedruckt auf schwerem Papier',a2:'Dunkler Umschlag mit Siegel',a3:'Per Post, direkt zum Beschenkten oder zu dir',
+      bt:'Selbst drucken',b1:'Sofort als PDF',b2:'Auf A4 oder A5 drucken',b3:'Auch am 24. Dezember noch rechtzeitig',tbd:'Preis folgt',
+      yourcard:'Deine Karte',f1:'1 · Motiv',f1h:'Platzhalter. Die echten Gemälde folgen.',f2:'2 · Nachricht',f3:'3 · Betrag',f4:'4 · Versand',
+      as:'Karte und Umschlag per Post',bs:'Karte als PDF',p_name:'Name des Empfängers',p_street:'Straße und Hausnummer',p_zip:'PLZ',p_city:'Ort',
+      t_front:'Vorderseite',t_back:'Rückseite',t_env:'Umschlag',scratch:'FREIRUBBELN · SCANNEN',
+      arrives:'Das kommt an',r_gift:'Bitcoin-Geschenk',r_cardA:'Karte, Umschlag und Versand',r_cardB:'Karte als PDF',r_fee:'Netzwerkgebühr',r_feev:'beim Bezahlen',
+      pay:'Weiter zur Zahlung',payh:'Lightning oder on-chain. Im Entwurf noch ohne Funktion.',
+      faq:'Fragen',q1:'Braucht der Beschenkte Vorwissen?',a_1:'Nein. Code freirubbeln, scannen und drei Schritten folgen.',
+      q2:'Ist das echtes Bitcoin?',a_2:'Ja. Es landet in der eigenen Wallet, über Lightning oder on-chain.',
+      q3:'Was, wenn niemand das Geschenk einlöst?',a_3:'Nach 12 Monaten geht das Bitcoin an dich zurück.',
+      cap:'Winterlicht · gemalt von …',msg:'Lieber Max,\n\nfrohe Weihnachten! Ein kleines Stück Bitcoin von mir. Diese Zeilen bleiben für immer in der Blockchain.\n\nDein Bruder',
+      addr:'Max Mustermann\nMusterstraße 1\n12345 Musterstadt',approx:'≈ '},
+    en:{draft:'Draft',eyebrow:'Christmas 2026',h1:'Bitcoin, given as a letter.',
+      lead:'A painted card, your words, and real bitcoin under a scratch-off.',cta:'Create your card',
+      how:'How it works',s1t:'You create',s1:'Pick a painting, write your message, choose the amount.',
+      s2t:'The card arrives',s2:'Posted by us, or printed by you.',
+      s3t:'Scratch, scan, done',s3:'The bitcoin lands in their own wallet. Your message then stays on the blockchain forever.',
+      ways:'Two ways',at:'We post it',a1:'Printed on heavy paper',a2:'Dark envelope with a seal',a3:'By post, straight to them or to you',
+      bt:'Print it yourself',b1:'Instantly, as a PDF',b2:'Print on A4 or A5',b3:'Still in time on 24 December',tbd:'Price to follow',
+      yourcard:'Your card',f1:'1 · Painting',f1h:'Placeholders. The real paintings will follow.',f2:'2 · Message',f3:'3 · Amount',f4:'4 · Delivery',
+      as:'Card and envelope by post',bs:'Card as a PDF',p_name:'Recipient’s name',p_street:'Street and number',p_zip:'Postcode',p_city:'City',
+      t_front:'Front',t_back:'Back',t_env:'Envelope',scratch:'SCRATCH · SCAN',
+      arrives:'This is what arrives',r_gift:'Bitcoin gift',r_cardA:'Card, envelope and postage',r_cardB:'Card as a PDF',r_fee:'Network fee',r_feev:'at checkout',
+      pay:'Continue to payment',payh:'Lightning or on-chain. Not active in this draft.',
+      faq:'Questions',q1:'Does the recipient need to know Bitcoin?',a_1:'No. Scratch the code, scan it and follow three steps.',
+      q2:'Is it real bitcoin?',a_2:'Yes. It lands in their own wallet, over Lightning or on-chain.',
+      q3:'What if nobody claims the gift?',a_3:'After 12 months the bitcoin goes back to you.',
+      cap:'Winter Light · painted by …',msg:'Dear Max,\n\nMerry Christmas! A small piece of bitcoin from me. These words will stay on the blockchain forever.\n\nYour brother',
+      addr:'Max Mustermann\n1 Sample Street\n12345 Sampletown',approx:'≈ '}
+  };
+  var S={lang:'de',motif:1,msg:'',sats:50000,mode:'A',tab:'front',eur:null};
+  var $=function(s,r){return (r||document).querySelector(s)}, $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+
+  // placeholder QR pattern
+  (function(){
+    var N=25,s=34/N,seed=7,d='';
+    function rnd(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff}
+    function fin(i,j,cx,cy){i-=cx;j-=cy;if(i<-1||j<-1||i>7||j>7)return null;if(i<0||j<0||i>6||j>6)return false;return i===0||i===6||j===0||j===6||(i>=2&&i<=4&&j>=2&&j<=4)}
+    for(var i=0;i<N;i++)for(var j=0;j<N;j++){
+      var f=fin(i,j,0,0); if(f===null)f=fin(i,j,N-7,0); if(f===null)f=fin(i,j,0,N-7);
+      var on=f===null?rnd()<.48:f;
+      if(on)d+='M'+(i*s).toFixed(2)+' '+(j*s).toFixed(2)+'h'+s.toFixed(2)+'v'+s.toFixed(2)+'h-'+s.toFixed(2)+'z';
+    }
+    $$('.qrp').forEach(function(p){p.setAttribute('d',d)});
+  })();
+
+  function fmt(n){return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, S.lang==='de'?'.':',')}
+  function render(){
+    var t=T[S.lang];
+    document.documentElement.lang=S.lang;
+    $$('[data-i]').forEach(function(e){e.textContent=t[e.getAttribute('data-i')]});
+    $$('[data-ip]').forEach(function(e){e.placeholder=t[e.getAttribute('data-ip')]});
+    $$('.lang button').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-set')===S.lang)});
+    $$('[data-b="motif"]').forEach(function(u){u.setAttribute('href','#m'+S.motif)});
+    $$('[data-b="cap"]').forEach(function(e){e.textContent=t.cap});
+    $$('[data-b="msg"]').forEach(function(e){e.textContent=S.msg||t.msg});
+    $('#msg').placeholder=t.msg; $('#cnt').textContent=S.msg.length;
+    var a=[$('#a_name').value,$('#a_street').value,($('#a_zip').value+' '+$('#a_city').value).trim()].filter(Boolean).join('\n');
+    $$('[data-b="addr"]').forEach(function(e){e.textContent=a||t.addr});
+    $$('[data-b="sats"]').forEach(function(e){e.textContent=fmt(S.sats)});
+    $$('[data-b="r_card"]').forEach(function(e){e.textContent=S.mode==='A'?t.r_cardA:t.r_cardB});
+    $('#eur').textContent=S.eur?'· '+t.approx+Math.round(S.sats/1e8*S.eur).toLocaleString(S.lang)+' €':'';
+    $$('#chips button').forEach(function(b){b.setAttribute('aria-pressed',+b.getAttribute('data-sats')===S.sats)});
+    $$('.motifs button').forEach(function(b){b.setAttribute('aria-pressed',+b.getAttribute('data-motif')===S.motif)});
+    $$('.seg button').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-mode')===S.mode)});
+    var A=S.mode==='A';
+    $('#addr').hidden=!A; $('#arrive-env').hidden=!A; $('#arrive').classList.toggle('noenv',!A);
+    $('[data-tab="env"]').hidden=!A; if(!A&&S.tab==='env')S.tab='front';
+    $$('.tabs button').forEach(function(b){b.setAttribute('aria-selected',b.getAttribute('data-tab')===S.tab)});
+    $$('[data-pane]').forEach(function(p){p.hidden=p.getAttribute('data-pane')!==S.tab});
+  }
+  function on(sel,ev,fn){$$(sel).forEach(function(e){e.addEventListener(ev,fn)})}
+  on('.lang button','click',function(){S.lang=this.getAttribute('data-set');render()});
+  on('.motifs button','click',function(){S.motif=+this.getAttribute('data-motif');S.tab='front';render()});
+  on('#msg','input',function(){S.msg=this.value;S.tab='back';render()});
+  on('#msg','focus',function(){S.tab='back';render()});
+  on('#chips button','click',function(){S.sats=+this.getAttribute('data-sats');$('#sats').value=S.sats;render()});
+  on('#sats','input',function(){S.sats=Math.max(0,Math.floor(+this.value||0));render()});
+  on('.seg button','click',function(){S.mode=this.getAttribute('data-mode');if(S.mode==='A')S.tab='env';render()});
+  on('#addr input','input',function(){S.tab='env';render()});
+  on('#addr input','focus',function(){S.tab='env';render()});
+  on('.tabs button','click',function(){S.tab=this.getAttribute('data-tab');render()});
+  var q=(location.search.match(/[?&]lang=(de|en)/)||[])[1]; if(q)S.lang=q;
+  render();
+  try{fetch('https://mempool.space/api/v1/prices').then(function(r){return r.json()}).then(function(j){if(j&&j.EUR){S.eur=j.EUR;render()}}).catch(function(){})}catch(e){}
+})();
+</script>
+</body>
+</html>
