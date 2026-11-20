@@ -224,7 +224,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
     <h2 data-i="ways"></h2>
     <div class="opts">
       <div class="opt"><span class="k">A</span><h3 data-i="at"></h3><ul><li data-i="a1"></li><li data-i="a2"></li><li data-i="a3"></li></ul><div class="price" data-i="priceA"></div></div>
-      <div class="opt"><span class="k">B</span><h3 data-i="bt"></h3><ul><li data-i="b1"></li><li data-i="b2"></li><li data-i="b3"></li></ul><div class="price" data-i="tbd"></div></div>
+      <div class="opt"><span class="k">B</span><h3 data-i="bt"></h3><ul><li data-i="b1"></li><li data-i="b2"></li><li data-i="b3"></li></ul><div class="price" data-i="priceB"></div></div>
     </div>
   </section>
 
@@ -302,7 +302,7 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       <table><tbody>
         <tr><td data-i="r_gift"></td><td><span data-b="sats"></span> sats</td></tr>
         <tr><td data-b="r_card"></td><td data-b="cardprice"></td></tr>
-        <tr id="shiprow"><td data-i="r_ship"></td><td data-i="r_shipv"></td></tr>
+        <tr id="shiprow"><td data-i="r_ship"></td><td data-b="ship"></td></tr>
         <tr><td data-i="r_fee"></td><td data-i="r_feev"></td></tr>
         <tr class="tot"><td data-i="total"></td><td data-b="total"></td></tr>
       </tbody></table>
@@ -329,13 +329,13 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       how:'So funktioniert es',s1t:'Du gestaltest',s1:'Motiv wählen, Nachricht schreiben, Betrag festlegen.',
       s2t:'Die Karte kommt an',s2:'Per Post von uns, oder du druckst sie selbst.',
       s3t:'Rubbeln, scannen, fertig',s3:'Das Bitcoin landet in der eigenen Wallet. Deine Nachricht steht dann für immer in der Blockchain.',
-      ways:'Zwei Wege',at:'Wir verschicken',a1:'Gedruckt auf schwerem Papier',a2:'Dunkler Umschlag mit Siegel',a3:'Per Post, direkt zum Beschenkten oder zu dir',
+      ways:'Zwei Wege',at:'Wir verschicken',a1:'Gedruckt auf schwerem Papier',a2:'Dunkler Umschlag mit Siegel',a3:'Per Post in ganz Europa',
       bt:'Selbst drucken',b1:'Sofort als PDF',b2:'Auf A4 oder A5 drucken',b3:'Auch am 24. Dezember noch rechtzeitig',tbd:'Preis folgt',
       yourcard:'Deine Karte',f1:'1 · Motiv',f1h:'Platzhalter. Die echten Gemälde folgen.',f2:'2 · Nachricht',f3:'3 · Betrag',f4:'4 · Versand',
       as:'Karte und Umschlag per Post',bs:'Karte als PDF',p_name:'Name des Empfängers',p_street:'Straße und Hausnummer',p_zip:'PLZ',p_city:'Ort',
       t_front:'Vorderseite',t_back:'Rückseite',t_env:'Umschlag',scratch:'FREIRUBBELN · SCANNEN',
       arrives:'Das kommt an',r_gift:'Bitcoin-Geschenk',r_cardA:'Karte und Umschlag',r_cardB:'Karte als PDF',r_fee:'Netzwerkgebühr',r_feev:'beim Bezahlen',
-      pay:'Weiter zur Zahlung',payh:'Im Entwurf noch ohne Funktion.',paysel:'Bezahlen',p_btc:'Alles mit Bitcoin',p_btc_s:'Eine Zahlung, Lightning oder on-chain',p_split:'Karte per Kreditkarte',p_split_s:'Das Geschenk danach mit Bitcoin',r_ship:'Versand',r_shipv:'kommt dazu',priceA:'15 € zzgl. Versand',total:'Gesamt',plusship:' + Versand',bycard:' per Karte',
+      pay:'Weiter zur Zahlung',payh:'Im Entwurf noch ohne Funktion.',paysel:'Bezahlen',p_btc:'Alles mit Bitcoin',p_btc_s:'Eine Zahlung, Lightning oder on-chain',p_split:'Karte per Kreditkarte',p_split_s:'Das Geschenk danach mit Bitcoin',r_ship:'Versand (Europa)',priceA:'15 € + 2,50 € Versand',priceB:'5 €',total:'Gesamt',plusship:' + Versand',bycard:' per Karte',
       faq:'Fragen',q1:'Braucht der Beschenkte Vorwissen?',a_1:'Nein. Code freirubbeln, scannen und drei Schritten folgen.',
       q2:'Ist das echtes Bitcoin?',a_2:'Ja. Es landet in der eigenen Wallet, über Lightning oder on-chain.',
       q3:'Was, wenn niemand das Geschenk einlöst?',a_3:'Nach 12 Monaten geht das Bitcoin an dich zurück.',
@@ -346,20 +346,20 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
       how:'How it works',s1t:'You create',s1:'Pick a painting, write your message, choose the amount.',
       s2t:'The card arrives',s2:'Posted by us, or printed by you.',
       s3t:'Scratch, scan, done',s3:'The bitcoin lands in their own wallet. Your message then stays on the blockchain forever.',
-      ways:'Two ways',at:'We post it',a1:'Printed on heavy paper',a2:'Dark envelope with a seal',a3:'By post, straight to them or to you',
+      ways:'Two ways',at:'We post it',a1:'Printed on heavy paper',a2:'Dark envelope with a seal',a3:'By post, anywhere in Europe',
       bt:'Print it yourself',b1:'Instantly, as a PDF',b2:'Print on A4 or A5',b3:'Still in time on 24 December',tbd:'Price to follow',
       yourcard:'Your card',f1:'1 · Painting',f1h:'Placeholders. The real paintings will follow.',f2:'2 · Message',f3:'3 · Amount',f4:'4 · Delivery',
       as:'Card and envelope by post',bs:'Card as a PDF',p_name:'Recipient’s name',p_street:'Street and number',p_zip:'Postcode',p_city:'City',
       t_front:'Front',t_back:'Back',t_env:'Envelope',scratch:'SCRATCH · SCAN',
       arrives:'This is what arrives',r_gift:'Bitcoin gift',r_cardA:'Card and envelope',r_cardB:'Card as a PDF',r_fee:'Network fee',r_feev:'at checkout',
-      pay:'Continue to payment',payh:'Not active in this draft.',paysel:'Payment',p_btc:'All in bitcoin',p_btc_s:'One payment, Lightning or on-chain',p_split:'Card by credit card',p_split_s:'Then the gift in bitcoin',r_ship:'Postage',r_shipv:'added at checkout',priceA:'€15 plus postage',total:'Total',plusship:' + postage',bycard:' by card',
+      pay:'Continue to payment',payh:'Not active in this draft.',paysel:'Payment',p_btc:'All in bitcoin',p_btc_s:'One payment, Lightning or on-chain',p_split:'Card by credit card',p_split_s:'Then the gift in bitcoin',r_ship:'Postage (Europe)',priceA:'€15 + €2.50 postage',priceB:'€5',total:'Total',plusship:' + postage',bycard:' by card',
       faq:'Questions',q1:'Does the recipient need to know Bitcoin?',a_1:'No. Scratch the code, scan it and follow three steps.',
       q2:'Is it real bitcoin?',a_2:'Yes. It lands in their own wallet, over Lightning or on-chain.',
       q3:'What if nobody claims the gift?',a_3:'After 12 months the bitcoin goes back to you.',
       cap:'Winter Light · painted by …',msg:'Dear Max,\n\nMerry Christmas! A small piece of bitcoin from me. These words will stay on the blockchain forever.\n\nYour brother',
       addr:'Max Mustermann\n1 Sample Street\n12345 Sampletown',approx:'≈ '}
   };
-  var S={lang:'de',motif:1,msg:'',sats:50000,mode:'A',tab:'front',eur:null,pay:'btc'};var CARD_EUR=15;
+  var S={lang:'de',motif:1,msg:'',sats:50000,mode:'A',tab:'front',eur:null,pay:'btc'};
   var $=function(s,r){return (r||document).querySelector(s)}, $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
 
   // placeholder QR pattern
@@ -395,14 +395,17 @@ footer{padding:36px 0 64px;color:var(--muted);font-size:14px;border-top:1px soli
     $$('.motifs button').forEach(function(b){b.setAttribute('aria-pressed',+b.getAttribute('data-motif')===S.motif)});
     $$('.seg button').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-mode')===S.mode)});
     var A=S.mode==='A';
-    var eurTxt=S.lang==='de'?'15,00 €':'€15.00', cardSats=S.eur?Math.round(CARD_EUR/S.eur*1e8/100)*100:null, btc=S.pay==='btc';
+    var btc=S.pay==='btc', cardE=A?15:5, shipE=A?2.5:0;
+    function eur(n){return S.lang==='de'?n.toFixed(2).replace('.',',')+' €':'€'+n.toFixed(2)}
+    function toSats(e){return S.eur?Math.round(e/S.eur*1e8/100)*100:null}
+    function both(e){var x=toSats(e);return btc&&x?eur(e)+' · '+t.approx+fmt(x)+' sats':eur(e)}
     $$('#paysel button').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-pay')===S.pay)});
     $('#shiprow').hidden=!A;
-    $$('[data-b="cardprice"]').forEach(function(e){e.textContent=!A?t.tbd:(btc&&cardSats?eurTxt+' · '+t.approx+fmt(cardSats)+' sats':eurTxt)});
-    var tot;
-    if(!A) tot=fmt(S.sats)+' sats + PDF';
-    else if(btc) tot=(cardSats?t.approx+fmt(S.sats+cardSats):fmt(S.sats))+' sats'+(cardSats?'':' + '+eurTxt)+t.plusship;
-    else tot=eurTxt+t.bycard+' + '+fmt(S.sats)+' sats'+t.plusship;
+    $$('[data-b="cardprice"]').forEach(function(e){e.textContent=both(cardE)});
+    $$('[data-b="ship"]').forEach(function(e){e.textContent=both(shipE)});
+    var tot, sumE=cardE+shipE, sumS=toSats(sumE);
+    if(btc) tot=sumS?t.approx+fmt(S.sats+sumS)+' sats':fmt(S.sats)+' sats + '+eur(sumE);
+    else tot=eur(sumE)+t.bycard+' + '+fmt(S.sats)+' sats';
     $$('[data-b="total"]').forEach(function(e){e.textContent=tot});
     $('#addr').hidden=!A; $('#arrive-env').hidden=!A; $('#arrive').classList.toggle('noenv',!A);
     $('[data-tab="env"]').hidden=!A; if(!A&&S.tab==='env')S.tab='front';
